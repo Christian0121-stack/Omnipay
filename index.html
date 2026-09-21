@@ -1,0 +1,1309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>OmniPay — Disaster-Resilient Payments</title>
+<link rel="icon" type="image/x-icon" href="OMNIPAYLOGO.ico">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+
+  <div id="loadingOverlay">
+    <div class="loading-ring"></div>
+    <div class="loading-text" id="loadingText">Please wait…</div>
+  </div>
+
+  <div class="alert-banner" id="alertBanner">
+    <span id="alertIcon">⚠️</span>
+    <span id="alertMsg">Alert message</span>
+  </div>
+
+  <div class="screen no-nav active" id="splash">
+
+    <div class="splash-ring3"></div>
+
+    <div class="splash-worldmap"></div>
+
+    <svg class="splash-hex" width="42" height="48" viewBox="0 0 42 48" fill="none"><polygon points="21,2 40,13 40,35 21,46 2,35 2,13" stroke="#2563EB" stroke-width="1.5" fill="none" opacity="0.55"/></svg>
+    <svg class="splash-hex" width="28" height="32" viewBox="0 0 28 32" fill="none"><polygon points="14,2 26,9 26,23 14,30 2,23 2,9" stroke="#2563EB" stroke-width="1.2" fill="none" opacity="0.4"/></svg>
+    <svg class="splash-hex" width="22" height="25" viewBox="0 0 22 25" fill="none"><polygon points="11,1.5 20,7 20,18 11,23.5 2,18 2,7" stroke="#2563EB" stroke-width="1" fill="none" opacity="0.35"/></svg>
+    <svg class="splash-hex" width="36" height="41" viewBox="0 0 36 41" fill="none"><polygon points="18,2 34,11 34,30 18,39 2,30 2,11" stroke="#2563EB" stroke-width="1.3" fill="none" opacity="0.5"/></svg>
+    <svg class="splash-hex" width="24" height="28" viewBox="0 0 24 28" fill="none"><polygon points="12,2 22,8 22,20 12,26 2,20 2,8" stroke="#2563EB" stroke-width="1" fill="none" opacity="0.38"/></svg>
+    <svg class="splash-hex" width="44" height="50" viewBox="0 0 44 50" fill="none"><polygon points="22,2 42,13 42,37 22,48 2,37 2,13" stroke="#2563EB" stroke-width="1.5" fill="none" opacity="0.5"/></svg>
+    <svg class="splash-hex" width="30" height="35" viewBox="0 0 30 35" fill="none"><polygon points="15,2 28,9.5 28,25.5 15,33 2,25.5 2,9.5" stroke="#2563EB" stroke-width="1.2" fill="none" opacity="0.4"/></svg>
+    <svg class="splash-hex" width="38" height="44" viewBox="0 0 38 44" fill="none"><polygon points="19,2 36,11.5 36,32.5 19,42 2,32.5 2,11.5" stroke="#2563EB" stroke-width="1.4" fill="none" opacity="0.45"/></svg>
+    <svg class="splash-hex" width="26" height="30" viewBox="0 0 26 30" fill="none"><polygon points="13,1.5 24,8 24,22 13,28.5 2,22 2,8" stroke="#2563EB" stroke-width="1.1" fill="none" opacity="0.38"/></svg>
+    <svg class="splash-hex" width="32" height="37" viewBox="0 0 32 37" fill="none"><polygon points="16,2 30,10 30,27 16,35 2,27 2,10" stroke="#2563EB" stroke-width="1.2" fill="none" opacity="0.42"/></svg>
+
+    <svg class="splash-circuit-tr" viewBox="0 0 180 180" fill="none">
+      <path d="M180 0 L120 0 L120 20 L80 20 L80 50 L100 50 L100 70 L60 70" stroke="#2563EB" stroke-width="1.2" fill="none"/>
+      <path d="M180 30 L150 30 L150 60 L130 60 L130 90" stroke="#2563EB" stroke-width="1.2" fill="none"/>
+      <path d="M180 70 L160 70 L160 100 L140 100" stroke="#2563EB" stroke-width="1" fill="none"/>
+      <circle cx="120" cy="20" r="3" fill="#2563EB" opacity="0.7"/>
+      <circle cx="80" cy="50" r="3" fill="#0EA5E9" opacity="0.7"/>
+      <circle cx="150" cy="60" r="2.5" fill="#2563EB" opacity="0.6"/>
+      <circle cx="130" cy="90" r="2.5" fill="#0EA5E9" opacity="0.5"/>
+      <circle cx="160" cy="100" r="2" fill="#2563EB" opacity="0.5"/>
+      <path d="M155 0 L155 12" stroke="#2563EB" stroke-width="1.2" fill="none"/>
+      <path d="M165 0 L165 8" stroke="#0EA5E9" stroke-width="1" fill="none"/>
+    </svg>
+
+    <svg class="splash-circuit-bl" viewBox="0 0 180 180" fill="none">
+      <path d="M0 180 L60 180 L60 160 L100 160 L100 130 L80 130 L80 110 L120 110" stroke="#2563EB" stroke-width="1.2" fill="none"/>
+      <path d="M0 150 L30 150 L30 120 L50 120 L50 90" stroke="#2563EB" stroke-width="1.2" fill="none"/>
+      <path d="M0 110 L20 110 L20 80 L40 80" stroke="#2563EB" stroke-width="1" fill="none"/>
+      <circle cx="60" cy="160" r="3" fill="#2563EB" opacity="0.7"/>
+      <circle cx="100" cy="130" r="3" fill="#0EA5E9" opacity="0.7"/>
+      <circle cx="30" cy="120" r="2.5" fill="#2563EB" opacity="0.6"/>
+      <circle cx="50" cy="90" r="2.5" fill="#0EA5E9" opacity="0.5"/>
+      <circle cx="20" cy="80" r="2" fill="#2563EB" opacity="0.5"/>
+      <path d="M0 28 L12 28" stroke="#2563EB" stroke-width="1.2" fill="none"/>
+      <path d="M0 18 L8 18" stroke="#0EA5E9" stroke-width="1" fill="none"/>
+    </svg>
+
+    <svg class="splash-circuit-tl" viewBox="0 0 140 140" fill="none">
+      <path d="M0 0 L40 0 L40 25 L70 25 L70 55 L50 55" stroke="#2563EB" stroke-width="1" fill="none"/>
+      <path d="M0 40 L25 40 L25 70" stroke="#0EA5E9" stroke-width="1" fill="none"/>
+      <circle cx="40" cy="25" r="2.5" fill="#2563EB" opacity="0.6"/>
+      <circle cx="70" cy="55" r="2.5" fill="#0EA5E9" opacity="0.55"/>
+    </svg>
+
+    <svg class="splash-circuit-br" viewBox="0 0 140 140" fill="none">
+      <path d="M140 140 L100 140 L100 115 L70 115 L70 85 L90 85" stroke="#2563EB" stroke-width="1" fill="none"/>
+      <path d="M140 100 L115 100 L115 70" stroke="#0EA5E9" stroke-width="1" fill="none"/>
+      <circle cx="100" cy="115" r="2.5" fill="#2563EB" opacity="0.6"/>
+      <circle cx="70" cy="85" r="2.5" fill="#0EA5E9" opacity="0.55"/>
+    </svg>
+
+    <div class="splash-logo" style="position:relative;z-index:2;">
+      <img src="OMNIPAY LOGO 5.png" alt="OmniPay" style="width:132px;height:132px;object-fit:cover;border-radius:50%;filter:drop-shadow(0 4px 16px rgba(37,99,235,0.35));"
+           onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+      <div style="display:none;width:132px;height:132px;border-radius:50%;background:linear-gradient(135deg,#2563EB,#0EA5E9);align-items:center;justify-content:center;font-size:44px;box-shadow:0 4px 20px rgba(37,99,235,0.4);">💳</div>
+    </div>
+
+    <div class="splash-title" style="position:relative;z-index:2;">
+      <span class="splash-omni">Omni</span><span class="splash-pay">Pay</span>
+    </div>
+
+    <div class="splash-tagline" style="position:relative;z-index:2;">
+      When the Grid Fails,<br>the Economy <span class="tagline-accent">Doesn't.</span>
+    </div>
+
+    <div class="splash-loader" style="position:relative;z-index:2;">
+      <div class="splash-loader-bar"></div>
+    </div>
+  </div>
+
+  <div class="screen no-nav auth-screen" id="login">
+    <div class="auth-header">
+      <div class="auth-header-blob3"></div>
+      <img src="OMNIPAY LOGO 5.png" alt="OmniPay" class="auth-logo-img" style="width:72px;height:72px;object-fit:contain;margin-bottom:8px;filter:drop-shadow(0 4px 12px rgba(37,99,235,0.3));" onerror="this.style.display='none';">
+      <h1>Welcome Back</h1>
+      <p>Sign in to your OmniPay account</p>
+    </div>
+    <div class="auth-body">
+      <div class="input-group">
+        <label>Username</label>
+        <input type="text" id="loginUser" placeholder="Enter username" autocomplete="username">
+      </div>
+      <div class="input-group">
+        <label>Password</label>
+        <div class="input-wrapper">
+          <input type="password" id="loginPass" placeholder="Enter password" autocomplete="current-password">
+          <button class="input-toggle" onclick="togglePass('loginPass',this)">👁</button>
+        </div>
+      </div>
+      <div style="text-align:right; margin-top:-4px;">
+        <a href="#" style="font-size:13px; color:var(--primary); font-weight:600;" onclick="event.preventDefault(); showModal('forgotModal')">Forgot Password?</a>
+      </div>
+      <button class="btn btn-primary btn-block" id="loginBtn" onclick="doLogin()">Sign In →</button>
+      <div class="divider">or</div>
+      <button class="btn btn-ghost btn-block" onclick="showAlert('yellow','📱 Biometric login activated!')">🔑 Sign in with Biometrics</button>
+      <div class="auth-switch">
+        Don't have an account? <a onclick="goTo('register')">Create Account</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="screen no-nav auth-screen" id="register">
+    <div class="auth-header">
+      <div class="auth-header-blob3"></div>
+      <img src="OMNIPAY LOGO 5.png" alt="OmniPay" class="auth-logo-img" style="width:72px;height:72px;object-fit:contain;margin-bottom:8px;filter:drop-shadow(0 4px 12px rgba(37,99,235,0.3));" onerror="this.style.display='none';">
+      <h1>Create Account</h1>
+      <p>Join OmniPay — Payments that work anywhere</p>
+    </div>
+    <div class="auth-body">
+      <div style="display:flex;align-items:center;gap:0;margin-bottom:20px;">
+        <div id="regDot1" style="width:32px;height:32px;border-radius:50%;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;flex-shrink:0;transition:all .3s;">1</div>
+        <div style="flex:1;height:3px;background:var(--border);position:relative;overflow:hidden;"><div id="regLine" style="position:absolute;left:0;top:0;height:100%;background:var(--primary);width:0%;transition:width .4s;"></div></div>
+        <div id="regDot2" style="width:32px;height:32px;border-radius:50%;background:var(--border);color:var(--text-muted);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;flex-shrink:0;transition:all .3s;">2</div>
+      </div>
+
+      <div id="regStep1">
+        <div style="background:var(--primary-light);border:1.5px solid var(--primary);border-radius:14px;padding:14px 16px;margin-bottom:16px;">
+          <div style="font-size:15px;font-weight:800;color:var(--primary);">👤 Personal Information</div>
+          <div style="font-size:12px;color:var(--primary);opacity:0.75;font-weight:500;margin-top:2px;">Step 1 of 2 — Tell us who you are</div>
+        </div>
+        <div class="grid-2">
+          <div class="input-group">
+            <label>First Name</label>
+            <input type="text" id="regFirst" placeholder="Juan" oninput="this.classList.remove('error')">
+          </div>
+          <div class="input-group">
+            <label>Last Name</label>
+            <input type="text" id="regLast" placeholder="Dela Cruz" oninput="this.classList.remove('error')">
+          </div>
+        </div>
+        <div class="input-group">
+          <label>Mobile Number</label>
+          <input type="tel" id="regPhone" placeholder="+63 9XX XXX XXXX" oninput="this.classList.remove('error')">
+        </div>
+        <div class="input-group">
+          <label>Email Address</label>
+          <input type="email" id="regEmail" placeholder="juan@email.com" oninput="this.classList.remove('error')">
+        </div>
+        <div class="input-group">
+          <label>Country</label>
+          <select id="regCountry" onchange="onRegCountryChange(this)">
+            <option value="">Select Country</option>
+            <option value="🇦🇺 Australia">🇦🇺 Australia</option>
+            <option value="🇧🇭 Bahrain">🇧🇭 Bahrain</option>
+            <option value="🇧🇩 Bangladesh">🇧🇩 Bangladesh</option>
+            <option value="🇧🇷 Brazil">🇧🇷 Brazil</option>
+            <option value="🇨🇦 Canada">🇨🇦 Canada</option>
+            <option value="🇨🇳 China">🇨🇳 China</option>
+            <option value="🇪🇬 Egypt">🇪🇬 Egypt</option>
+            <option value="🇫🇷 France">🇫🇷 France</option>
+            <option value="🇩🇪 Germany">🇩🇪 Germany</option>
+            <option value="🇬🇭 Ghana">🇬🇭 Ghana</option>
+            <option value="🇮🇳 India">🇮🇳 India</option>
+            <option value="🇮🇩 Indonesia">🇮🇩 Indonesia</option>
+            <option value="🇮🇷 Iran">🇮🇷 Iran</option>
+            <option value="🇮🇶 Iraq">🇮🇶 Iraq</option>
+            <option value="🇮🇱 Israel">🇮🇱 Israel</option>
+            <option value="🇮🇹 Italy">🇮🇹 Italy</option>
+            <option value="🇯🇵 Japan">🇯🇵 Japan</option>
+            <option value="🇯🇴 Jordan">🇯🇴 Jordan</option>
+            <option value="🇰🇿 Kazakhstan">🇰🇿 Kazakhstan</option>
+            <option value="🇰🇪 Kenya">🇰🇪 Kenya</option>
+            <option value="🇰🇼 Kuwait">🇰🇼 Kuwait</option>
+            <option value="🇲🇾 Malaysia">🇲🇾 Malaysia</option>
+            <option value="🇲🇽 Mexico">🇲🇽 Mexico</option>
+            <option value="🇳🇬 Nigeria">🇳🇬 Nigeria</option>
+            <option value="🇳🇴 Norway">🇳🇴 Norway</option>
+            <option value="🇴🇲 Oman">🇴🇲 Oman</option>
+            <option value="🇵🇰 Pakistan">🇵🇰 Pakistan</option>
+            <option value="🇵🇭 Philippines" selected>🇵🇭 Philippines</option>
+            <option value="🇶🇦 Qatar">🇶🇦 Qatar</option>
+            <option value="🇷🇺 Russia">🇷🇺 Russia</option>
+            <option value="🇸🇦 Saudi Arabia">🇸🇦 Saudi Arabia</option>
+            <option value="🇸🇬 Singapore">🇸🇬 Singapore</option>
+            <option value="🇸🇴 Somalia">🇸🇴 Somalia</option>
+            <option value="🇸🇦 South Africa">🇸🇦 South Africa</option>
+            <option value="🇰🇷 South Korea">🇰🇷 South Korea</option>
+            <option value="🇪🇸 Spain">🇪🇸 Spain</option>
+            <option value="🇱🇰 Sri Lanka">🇱🇰 Sri Lanka</option>
+            <option value="🇸🇪 Sweden">🇸🇪 Sweden</option>
+            <option value="🇨🇭 Switzerland">🇨🇭 Switzerland</option>
+            <option value="🇹🇼 Taiwan">🇹🇼 Taiwan</option>
+            <option value="🇹🇿 Tanzania">🇹🇿 Tanzania</option>
+            <option value="🇹🇭 Thailand">🇹🇭 Thailand</option>
+            <option value="🇹🇳 Tunisia">🇹🇳 Tunisia</option>
+            <option value="🇹🇷 Turkey">🇹🇷 Turkey</option>
+            <option value="🇦🇪 UAE">🇦🇪 UAE</option>
+            <option value="🇬🇧 United Kingdom">🇬🇧 United Kingdom</option>
+            <option value="🇺🇸 United States">🇺🇸 United States</option>
+            <option value="🇻🇳 Vietnam">🇻🇳 Vietnam</option>
+            <option value="🇾🇪 Yemen">🇾🇪 Yemen</option>
+          </select>
+        </div>
+        <button class="btn btn-primary btn-block" onclick="nextRegStep()">Continue → Step 2 of 2</button>
+        <div class="auth-switch">
+          Already have an account? <a onclick="goTo('login')">Sign In</a>
+        </div>
+      </div>
+
+      <div id="regStep2" style="display:none;">
+        <div style="background:var(--primary-light);border:1.5px solid var(--primary);border-radius:14px;padding:14px 16px;margin-bottom:16px;">
+          <div style="font-size:15px;font-weight:800;color:var(--primary);">🔑 Account Information</div>
+          <div style="font-size:12px;color:var(--primary);opacity:0.75;font-weight:500;margin-top:2px;">Step 2 of 2 — Set up your account &amp; security</div>
+        </div>
+        <div class="input-group">
+          <label>Username</label>
+          <input type="text" id="regUser" placeholder="juandelacruz" oninput="this.classList.remove('error')" autocomplete="username">
+        </div>
+        <div style="height:1px;background:var(--border);margin:4px 0 12px;"></div>
+        <div style="font-size:12px;font-weight:700;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px;">🔐 Security</div>
+        <div class="input-group">
+          <label>Password <span style="font-size:11px;color:var(--text-muted);">(min 6 chars + number)</span></label>
+          <div class="input-wrapper">
+            <input type="password" id="regPass" placeholder="e.g. Secure1pass" autocomplete="new-password" oninput="this.classList.remove('error')">
+            <button class="input-toggle" onclick="togglePass('regPass',this)">👁</button>
+          </div>
+        </div>
+        <div class="input-group">
+          <label>6-Digit PIN</label>
+          <div class="input-wrapper">
+            <input type="password" id="regPin" placeholder="······" maxlength="6" inputmode="numeric" oninput="this.classList.remove('error')">
+            <button class="input-toggle" onclick="togglePass('regPin',this)">👁</button>
+          </div>
+        </div>
+        <div class="input-group">
+          <label>Account Type</label>
+          <select id="regType">
+            <option value="personal">👤 Personal</option>
+            <option value="merchant">🏪 Merchant</option>
+            <option value="enterprise">🏢 Enterprise</option>
+          </select>
+        </div>
+        <div style="display:flex; align-items:flex-start; gap:10px; margin-top:12px; margin-bottom:4px;">
+          <input type="checkbox" id="regTerms" style="margin-top:3px; accent-color:var(--primary); width:16px; height:16px; flex-shrink:0;">
+          <label for="regTerms" style="font-size:13px; color:var(--text-muted); line-height:1.5; font-weight:500;">
+            I agree to the <a href="#" style="color:var(--primary);">Terms of Service</a> and <a href="#" style="color:var(--primary);">Privacy Policy</a>
+          </label>
+        </div>
+        <button class="btn btn-primary btn-block" id="registerBtn" onclick="doRegister()" style="margin-top:16px;">🚀 Create Account &amp; Generate Wallet</button>
+        <button class="btn btn-ghost btn-block mt-12" onclick="prevRegStep()">← Back</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="screen no-nav" id="wallet-setup">
+    <div class="ws-icon">⭐</div>
+    <div class="ws-title">Setting Up Your Wallet</div>
+    <div class="ws-sub">Creating your Freighter wallet<br>on Stellar Testnet…</div>
+
+    <div class="ws-steps" id="wsSteps">
+      <div class="ws-step" id="wsStep1">
+        <div class="ws-step-icon">🔑</div>
+        <div class="ws-step-info">
+          <div class="ws-step-name">Generating Keypair</div>
+          <div class="ws-step-desc">Creating your public/secret key pair</div>
+        </div>
+        <div class="ws-step-status" id="wsS1">⏳</div>
+      </div>
+      <div class="ws-step" id="wsStep2">
+        <div class="ws-step-icon">🌐</div>
+        <div class="ws-step-info">
+          <div class="ws-step-name">Connecting to Testnet</div>
+          <div class="ws-step-desc">Linking to Stellar Testnet Horizon</div>
+        </div>
+        <div class="ws-step-status" id="wsS2">⏸️</div>
+      </div>
+      <div class="ws-step" id="wsStep3">
+        <div class="ws-step-icon">💰</div>
+        <div class="ws-step-info">
+          <div class="ws-step-name">Friendbot Funding</div>
+          <div class="ws-step-desc">Receiving 10,000 testnet XLM</div>
+        </div>
+        <div class="ws-step-status" id="wsS3">⏸️</div>
+      </div>
+      <div class="ws-step" id="wsStep4">
+        <div class="ws-step-icon">🔐</div>
+        <div class="ws-step-info">
+          <div class="ws-step-name">OmniPay Vault Setup</div>
+          <div class="ws-step-desc">Initializing offline vault &amp; trust score</div>
+        </div>
+        <div class="ws-step-status" id="wsS4">⏸️</div>
+      </div>
+    </div>
+
+    <div class="ws-wallet-card" id="wsWalletCard">
+      <div class="ws-wallet-label">Your Freighter Wallet (Testnet)</div>
+      <div class="ws-wallet-key" id="wsPublicKey">Generating…</div>
+      <div class="ws-balance-row">
+        <div class="ws-bal">
+          <div class="ws-bal-amt" id="wsXLMBal">10,000 XLM</div>
+          <div class="ws-bal-lbl">Testnet XLM (Friendbot)</div>
+        </div>
+        <div class="ws-bal">
+          <div class="ws-bal-amt" id="wsPHPBal">₱2,500.00</div>
+          <div class="ws-bal-lbl">OmniPay Starting Balance</div>
+        </div>
+      </div>
+    </div>
+
+    <button class="ws-continue-btn" id="wsContinueBtn" onclick="finishWalletSetup()">
+      Continue to OmniPay →
+    </button>
+
+    <div id="wsErrorBox" style="display:none; margin-top:16px; background:rgba(255,71,87,0.18); border:1px solid rgba(255,71,87,0.45); border-radius:14px; padding:14px 16px; width:100%;">
+      <div style="font-size:12px; font-weight:700; color:#FF6B7A; margin-bottom:4px;">⚠️ Firebase Error</div>
+      <div id="wsErrorMsg" style="font-size:12px; color:rgba(255,255,255,0.8); line-height:1.6; font-weight:500;"></div>
+      <div id="wsErrorCode" style="font-size:10px; color:rgba(255,255,255,0.4); margin-top:6px; font-family:'Courier New',monospace;"></div>
+    </div>
+  </div>
+
+  <div class="screen" id="home">
+    <div class="home-hero">
+      <div class="home-hero-glow"></div>
+      <button class="theme-toggle-btn" id="themeToggleBtn" onclick="toggleTheme()" title="Toggle dark/light mode">🌙</button>
+      <div class="hero-greeting">Good day,</div>
+      <div class="hero-name" id="heroName">Welcome 👋</div>
+      <div id="connectStatus" class="status-badge online"><span class="status-dot online"></span>Online · Stellar Testnet</div>
+      <div class="hero-balance-label">XLM Balance</div>
+      <div class="hero-balance"><span id="heroBalance">10,000.0000</span><span style="font-size:22px;font-weight:600;opacity:0.7;margin-left:4px;"> XLM</span></div>
+      <div id="heroConvRow" style="font-size:13px;color:rgba(255,255,255,0.78);margin-top:5px;font-weight:600;letter-spacing:0.2px;position:relative;z-index:1;">
+        <span id="heroConvText">Loading rate...</span>
+      </div>
+      <div class="hero-row">
+        <div class="hero-stat">
+          <div class="hero-stat-label">Account Tier</div>
+          <div class="hero-stat-val" id="heroVault">🟡 Building</div>
+        </div>
+        <div class="hero-stat">
+          <div class="hero-stat-label">Trust Score</div>
+          <div class="hero-stat-val" id="heroTrust">45</div>
+        </div>
+        <div class="hero-stat">
+          <div class="hero-stat-label">Connectivity</div>
+          <div class="hero-stat-val" id="heroPending">Online</div>
+        </div>
+      </div>
+      <div class="hero-xlm-chip" id="heroXLMChip" style="display:none;">
+        ⭐ <span id="heroXLMBal">0.0000 XLM</span> <span>· Freighter Live</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Quick Actions</div>
+      <div class="quick-actions" style="grid-template-columns:repeat(5,1fr);gap:8px;">
+        <div class="quick-action" onclick="quickSend()">
+          <div class="qa-icon" style="background:linear-gradient(135deg,#EFF6FF,#DBEAFE);">💸</div>
+          <div class="qa-label">Send</div>
+        </div>
+        <div class="quick-action" onclick="showReceiveModal()">
+          <div class="qa-icon" style="background:linear-gradient(135deg,#E8FFF6,#C6F9E8);">📲</div>
+          <div class="qa-label">Receive</div>
+        </div>
+        <div class="quick-action" onclick="showPayBillsModal()">
+          <div class="qa-icon" style="background:linear-gradient(135deg,#FFF0F9,#FFD6F0);">🧾</div>
+          <div class="qa-label">Pay Bills</div>
+        </div>
+        <div class="quick-action" onclick="navTo('vault')">
+          <div class="qa-icon" style="background:linear-gradient(135deg,#E0FAFF,#B8F5EC);">🔐</div>
+          <div class="qa-label">OmniCard</div>
+        </div>
+        <div class="quick-action" onclick="showMapModal()">
+          <div class="qa-icon" style="background:linear-gradient(135deg,#FFF3E0,#FFE0B2);">🗺️</div>
+          <div class="qa-label">Maps</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section" style="padding-top:0;">
+      <div class="card trust-card">
+        <div class="trust-header">
+          <div>
+            <div class="trust-label">Trust Score</div>
+            <div class="trust-score" id="trustScoreVal">45</div>
+          </div>
+          <div>
+            <div class="trust-tier badge-yellow" id="trustTierBadge" style="background:rgba(255,165,2,0.2);color:#FFA502;padding:6px 14px;border-radius:99px;font-size:12px;font-weight:700;">🟡 Yellow</div>
+            <div style="font-size:11px; color:rgba(255,255,255,0.5); margin-top:8px; text-align:right;">Offline: <b style="color:#fff;" id="trustPct">65%</b></div>
+          </div>
+        </div>
+        <div class="trust-bar"><div class="trust-fill" id="trustFill" style="width:45%;background:linear-gradient(90deg,#FFA502,#FFD166);"></div></div>
+        <div class="trust-stats">
+          <div class="trust-stat-item">
+            <div class="val" id="tsOffLimit">₱975</div>
+            <div class="lbl">Offline Limit</div>
+          </div>
+          <div class="trust-stat-item">
+            <div class="val" id="tsMaxUse">4×</div>
+            <div class="lbl">Max Uses</div>
+          </div>
+          <div class="trust-stat-item">
+            <div class="val" id="tsGoodTx">12</div>
+            <div class="lbl">Good Txns</div>
+          </div>
+          <div class="trust-stat-item">
+            <div class="val" id="tsLastSync">2h ago</div>
+            <div class="lbl">Last Sync</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section" style="padding-top:0;">
+      <div class="card vault-card">
+        <div class="vault-top">
+          <div>
+            <div class="vault-lbl">Daily Limit</div>
+            <div class="vault-amount" id="vaultDisplay">₱450.00</div>
+          </div>
+          <div style="font-size:30px;">🔐</div>
+        </div>
+        <div class="vault-bar"><div class="vault-fill" id="vaultBar" style="width:30%;"></div></div>
+        <div class="vault-meta">
+          <span id="vaultPctLabel">30% of balance locked</span>
+          <span id="vaultUsesLeft">4 uses remaining</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section" style="padding-top:0;">
+      <div class="row">
+        <div class="section-title" style="margin-bottom:0;">Recent Activity</div>
+        <a href="#" style="font-size:13px; color:var(--primary); font-weight:600;" onclick="navTo('history')">See All</a>
+      </div>
+      <div class="card" style="margin-top:12px; padding:8px 16px;" id="recentTxList"></div>
+    </div>
+
+    <div class="section" style="padding-top:0;" id="alertSection"></div>
+    <div style="height:20px;"></div>
+  </div>
+
+  <div class="screen" id="pay">
+    <div class="page-header">
+      <div>
+        <h2>Send &amp; Pay</h2>
+        <div class="page-header-sub" id="payModeLabel">Online Mode · Instant Settlement</div>
+      </div>
+      <div id="payStatusBadge" class="status-badge online" style="font-size:11px;"><span class="status-dot online"></span>Online</div>
+    </div>
+
+    <div class="pay-tabs">
+      <button class="pay-tab active" onclick="switchPayTab('scan',this)">📷 Scan QR</button>
+      <button class="pay-tab" onclick="switchPayTab('send',this)">💸 Send</button>
+    </div>
+
+    <div class="pay-panel active" id="panel-scan">
+      <div style="text-align:center;">
+        <div id="scanPlaceholder" style="position:relative;display:flex;align-items:center;justify-content:center;border-radius:20px;overflow:hidden;background:linear-gradient(135deg,var(--primary-light),var(--accent-light));border:2px dashed var(--primary);min-height:220px;margin-bottom:12px;">
+          <div style="text-align:center;padding:24px;">
+            <div style="font-size:52px;margin-bottom:8px;">📷</div>
+            <div style="font-size:13px;color:var(--text-muted);font-weight:500;">Camera will appear here</div>
+          </div>
+        </div>
+        <div id="scanVideoWrap" style="display:none;position:relative;border-radius:20px;overflow:hidden;margin-bottom:12px;">
+          <video id="scanVideo" autoplay playsinline muted style="width:100%;border-radius:20px;display:block;max-height:260px;object-fit:cover;"></video>
+          <canvas id="scanCanvas" style="display:none;"></canvas>
+          <div style="position:absolute;inset:0;pointer-events:none;display:flex;align-items:center;justify-content:center;">
+            <div style="width:180px;height:180px;border-radius:16px;border:3px solid rgba(37,99,235,0.8);box-shadow:0 0 0 4000px rgba(0,0,0,0.35);position:relative;">
+              <div style="position:absolute;top:-3px;left:-3px;width:28px;height:28px;border-top:4px solid #2563EB;border-left:4px solid #2563EB;border-radius:6px 0 0 0;"></div>
+              <div style="position:absolute;top:-3px;right:-3px;width:28px;height:28px;border-top:4px solid #2563EB;border-right:4px solid #2563EB;border-radius:0 6px 0 0;"></div>
+              <div style="position:absolute;bottom:-3px;left:-3px;width:28px;height:28px;border-bottom:4px solid #2563EB;border-left:4px solid #2563EB;border-radius:0 0 0 6px;"></div>
+              <div style="position:absolute;bottom:-3px;right:-3px;width:28px;height:28px;border-bottom:4px solid #2563EB;border-right:4px solid #2563EB;border-radius:0 0 6px 0;"></div>
+            </div>
+          </div>
+          <div id="scanStatus" style="position:absolute;bottom:10px;left:0;right:0;text-align:center;color:#fff;font-size:12px;font-weight:700;text-shadow:0 1px 4px rgba(0,0,0,0.8);">Scanning…</div>
+        </div>
+        <button class="btn btn-primary btn-block" id="cameraStartBtn" onclick="toggleCamera()">📷 Open Camera</button>
+        <button class="btn btn-ghost btn-block mt-12" onclick="showManualPayModal()">⌨️ Enter Code Manually</button>
+      </div>
+    </div>
+
+    <div class="pay-panel" id="panel-send">
+      <div class="input-group">
+        <label>Recipient Wallet Address</label>
+        <div class="input-wrapper">
+          <input type="text" id="sendRecipient" placeholder="Stellar Address (G…)" style="font-family:'Courier New',monospace;font-size:12px;letter-spacing:0.3px;" autocomplete="off" oninput="this.classList.remove('error')">
+          <button class="input-toggle" title="Paste" onclick="navigator.clipboard.readText().then(function(t){document.getElementById('sendRecipient').value=t;}).catch(function(){showAlert('yellow','Use long-press to paste');});" style="font-size:13px;">📋</button>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;font-weight:500;">Enter the recipient's Stellar wallet address</div>
+      </div>
+      <div style="margin-top:20px; text-align:center;">
+        <div class="amount-currency">Amount · XLM</div>
+        <input type="number" class="amount-input-big" id="sendAmount" placeholder="0.000000" min="0.0000001" step="any" oninput="updateXlmConversion()" style="letter-spacing:0.5px;">
+        <div id="xlmConversionDisplay" style="margin-top:8px;min-height:22px;font-size:13px;color:var(--text-muted);font-weight:600;"></div>
+      </div>
+      <div class="input-group mt-16">
+        <label>Note (optional)</label>
+        <input type="text" id="sendNote" placeholder="For groceries, rent, etc.">
+      </div>
+      <div class="card mt-16" style="background:var(--bg);">
+        <div class="info-row">
+          <span class="info-label">Available Balance</span>
+          <span class="info-val" id="sendBal">0.000000 XLM</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Transaction Fee</span>
+          <span class="info-val" style="color:var(--success);">0.00001 XLM (Free)</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Stellar Network</span>
+          <span class="info-val"><span class="badge badge-green">Testnet</span></span>
+        </div>
+      </div>
+      <button class="btn btn-primary btn-block mt-16" onclick="doSendMoney()">⭐ Send XLM →</button>
+      <button class="btn btn-accent btn-block mt-12" id="sendXLMBtn" onclick="showSendXLMModal()" style="display:none;">⭐ Send XLM via Freighter</button>
+    </div>
+  </div>
+
+  <div class="screen" id="vault">
+    <div class="vault-hero">
+      <h2>Offline Vault</h2>
+      <p>Locked funds for disaster-resilient payments</p>
+      <div class="vault-balance-big" id="vaultBig">₱450.00</div>
+      <div class="vault-uses-row" id="vaultUsesRow"></div>
+      <div style="margin-top:12px; font-size:12px; color:rgba(255,255,255,0.7); position:relative; z-index:1;" id="vaultPctInfo">30% of ₱1,500.00 locked (Trust: 51-75 tier allows 65%)</div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Trust-Based Limits</div>
+      <div class="card" id="trustLimitsCard"></div>
+    </div>
+
+    <div class="section" style="padding-top:0;">
+      <div class="section-title">Vault Actions</div>
+      <div class="grid-2">
+        <button class="btn btn-primary" onclick="showLockModal()">🔒 Lock Funds</button>
+        <button class="btn btn-outline" onclick="showUnlockModal()">🔓 Unlock Funds</button>
+      </div>
+    </div>
+
+    <div class="section" style="padding-top:0;">
+      <div class="section-title">Security Model</div>
+      <div class="card">
+        <div class="info-row">
+          <span class="info-label">Double-spend Prevention</span>
+          <span class="info-val"><span class="badge badge-yellow">Bounded Risk</span></span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Nonce Strategy</span>
+          <span class="info-val">Monotonic Counter</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Signing Method</span>
+          <span class="info-val">TEE-backed</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Settlement Layer</span>
+          <span class="info-val"><span class="badge badge-purple">Stellar Soroban</span></span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Max Offline Exposure</span>
+          <span class="info-val" id="maxExposure">₱975.00</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Fraud On-Sync</span>
+          <span class="info-val" style="color:var(--success);">Detect + Penalize</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section" style="padding-top:0;">
+      <div class="section-title">Pending Offline Transactions</div>
+      <div id="pendingTxList"></div>
+    </div>
+
+    <div class="section" style="padding-top:0;">
+      <button class="btn btn-accent btn-block" onclick="doSync()">🔄 Sync to Stellar Now</button>
+      <div style="text-align:center; margin-top:10px; font-size:12px; color:var(--text-muted); font-weight:500;">Syncing submits pending proofs to Stellar Soroban contract for settlement</div>
+    </div>
+    <div style="height:20px;"></div>
+  </div>
+
+  <div class="screen" id="history">
+    <div class="page-header">
+      <div>
+        <h2>Transaction History</h2>
+        <div class="page-header-sub">All payments &amp; syncs</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="showFilterModal()">🔽 Filter</button>
+    </div>
+
+    <div class="filter-row" id="filterRow">
+      <div class="filter-chip active" onclick="filterTx('all',this)">All</div>
+      <div class="filter-chip" onclick="filterTx('synced',this)">✅ Synced</div>
+      <div class="filter-chip" onclick="filterTx('pending',this)">⏳ Pending</div>
+      <div class="filter-chip" onclick="filterTx('offline',this)">📴 Offline</div>
+      <div class="filter-chip" onclick="filterTx('failed',this)">❌ Failed</div>
+    </div>
+
+    <div class="section" style="padding-top:12px;">
+      <div class="card" style="padding:8px 16px;" id="fullTxList"></div>
+    </div>
+
+    <div class="section" style="padding-top:0;">
+      <div class="section-title">Fraud Detection Log</div>
+      <div id="fraudLog"></div>
+    </div>
+    <div style="height:20px;"></div>
+  </div>
+
+  <div class="screen" id="profile">
+    <div class="profile-hero">
+      <div class="avatar">👤</div>
+      <div class="profile-name" id="profileName">User</div>
+      <div class="profile-phone" id="profilePhone">—</div>
+      <div class="profile-verified">
+        <span>✅</span> KYC Verified · Stellar Testnet
+      </div>
+      <div style="margin-top:12px; display:flex; gap:8px; justify-content:center; flex-wrap:wrap; position:relative; z-index:1;">
+        <span class="badge badge-purple" id="profileBelt">Orange Belt</span>
+        <span class="badge badge-blue"   id="profileLevel">Level 3</span>
+        <span class="badge badge-green"  id="profileType">Merchant Partner</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">OmniPay Wallet · Stellar Testnet</div>
+      <div class="freighter-card">
+
+        <div class="freighter-top">
+          <div class="freighter-logo">
+            <span>⭐</span>
+            <span>OmniPay Wallet</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span id="omniWalletConnBadge" style="font-size:11px;font-weight:700;color:#2DE878;">● Connected</span>
+            <div class="freighter-badge">TESTNET</div>
+          </div>
+        </div>
+        <div class="freighter-xlm" id="profileXLM" style="font-size:30px;">10,000.0000 XLM</div>
+        <div class="freighter-xlm-lbl">Testnet Balance · Friendbot-funded ✅</div>
+        <div class="freighter-key" id="profileWalletKey" style="margin-top:10px;">Loading wallet…</div>
+        <div id="activeWalletLabel" style="font-size:11px;color:rgba(255,255,255,0.55);margin-top:6px;font-weight:600;"></div>
+        <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+          <button class="fq-btn fq-btn-refresh" onclick="copyInternalWalletAddress()" style="font-size:11px;padding:7px 14px;">📋 Copy Address</button>
+          <button onclick="showWalletManagerModal()" style="font-size:11px;padding:7px 14px;border-radius:10px;border:1.5px solid rgba(255,255,255,0.35);background:rgba(255,255,255,0.12);color:#fff;font-weight:700;cursor:pointer;backdrop-filter:blur(4px);">💼 Switch / Add Wallet</button>
+        </div>
+
+        <span id="freighterConnBadge"  style="display:none;"></span>
+        <span id="freighterXLMDisplay" style="display:none;"></span>
+        <span id="freighterBalLbl"     style="display:none;"></span>
+        <span id="freighterKeyDisplay" style="display:none;"></span>
+        <button id="freighterDisconnectBtn" style="display:none;" onclick="disconnectFreighterWallet()"></button>
+        <button id="freighterRefreshBtn"    style="display:none;" onclick="refreshFreighterBalance()"></button>
+      </div>
+    </div>
+
+    <div class="section" style="padding-top:0;">
+      <div class="section-title">Trust Score Breakdown</div>
+      <div class="card trust-card">
+        <div class="trust-header">
+          <div>
+            <div class="trust-label">Current Score</div>
+            <div class="trust-score" id="profileTrustScore">45</div>
+          </div>
+          <div>
+            <div id="profileTrustTier" style="background:rgba(255,165,2,0.2);color:#FFA502;padding:6px 14px;border-radius:99px;font-size:12px;font-weight:700;">🟡 Level 2</div>
+          </div>
+        </div>
+        <div class="trust-bar"><div class="trust-fill" id="profileTrustFill" style="width:45%;background:linear-gradient(90deg,#FFA502,#FFD166);"></div></div>
+        <div class="trust-stats mt-12">
+          <div class="trust-stat-item"><div class="val">+10</div><div class="lbl">Sync Bonus</div></div>
+          <div class="trust-stat-item"><div class="val">+5</div><div class="lbl">KYC Bonus</div></div>
+          <div class="trust-stat-item"><div class="val" style="color:var(--danger);">-20</div><div class="lbl">Late Sync</div></div>
+          <div class="trust-stat-item"><div class="val">+3</div><div class="lbl">Tenure</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-tabs">
+      <button class="settings-tab-btn active" onclick="switchSettingsTab('summary', this)">Account Summary</button>
+      <button class="settings-tab-btn" onclick="switchSettingsTab('profile-edit', this)">Profile</button>
+      <button class="settings-tab-btn" onclick="switchSettingsTab('system', this)">System Settings</button>
+    </div>
+
+    <div class="settings-panel active" id="spanel-summary">
+      <div class="section">
+        <div class="card" id="accountSummary"></div>
+        <button class="btn btn-danger btn-block mt-16" onclick="doLogout()">🚪 Sign Out</button>
+      </div>
+    </div>
+
+    <div class="settings-panel" id="spanel-profile-edit">
+      <div class="profile-edit-form">
+        <div style="font-size:13px; color:var(--text-muted); font-weight:500; padding:4px 0;">Update your personal information below.</div>
+        <div class="grid-2">
+          <div class="input-group">
+            <label>First Name</label>
+            <input type="text" id="editFirst" placeholder="Juan">
+          </div>
+          <div class="input-group">
+            <label>Last Name</label>
+            <input type="text" id="editLast" placeholder="Dela Cruz">
+          </div>
+        </div>
+        <div class="input-group">
+          <label>Mobile Number</label>
+          <input type="tel" id="editPhone" placeholder="+63 9XX XXX XXXX">
+        </div>
+        <div class="input-group">
+          <label>Email Address</label>
+          <input type="email" id="editEmail" placeholder="juan@email.com">
+        </div>
+        <div class="input-group">
+          <label>Account Type</label>
+          <select id="editType">
+            <option value="personal">Personal</option>
+            <option value="merchant">Merchant</option>
+            <option value="enterprise">Enterprise</option>
+          </select>
+        </div>
+        <button class="btn btn-primary btn-block" id="saveProfileBtn" onclick="doSaveProfile()">💾 Save Profile</button>
+        <div style="height:8px;"></div>
+      </div>
+    </div>
+
+    <div class="settings-panel" id="spanel-system">
+      <div class="settings-list">
+        <div style="height:8px;"></div>
+        <div class="settings-item" onclick="showAlert('yellow','⚙️ Notification settings opened!')">
+          <div class="settings-icon" style="background:linear-gradient(135deg,#EAF1FF,#D6E4FF);">🔔</div>
+          <div class="settings-info">
+            <h4>Notifications</h4>
+            <p>Sync alerts, fraud warnings, payments</p>
+          </div>
+          <span class="settings-arrow">›</span>
+        </div>
+
+        <div class="settings-item">
+          <div class="settings-icon" style="background:linear-gradient(135deg,#E8FFF6,#C6F9E8);">📴</div>
+          <div class="settings-info">
+            <h4>Offline Mode</h4>
+            <p>Enable payments without internet</p>
+          </div>
+          <div class="toggle on" id="offlineToggle" onclick="toggleOfflineMode()"></div>
+        </div>
+
+        <div class="settings-item">
+          <div class="settings-icon" style="background:linear-gradient(135deg,#FFF3E0,#FFE0B2);">🔁</div>
+          <div class="settings-info">
+            <h4>Auto Sync</h4>
+            <p>Sync on Wi-Fi reconnect</p>
+          </div>
+          <div class="toggle on" id="autoSyncToggle" onclick="this.classList.toggle('on'); showAlert('success','✅ Auto-sync setting updated!')"></div>
+        </div>
+
+        <div class="settings-item" onclick="showChangePasswordModal()">
+          <div class="settings-icon" style="background:linear-gradient(135deg,#FFE8F0,#FFD0E0);">🔑</div>
+          <div class="settings-info">
+            <h4>Password</h4>
+            <p>Change your account password</p>
+          </div>
+          <span class="settings-arrow">›</span>
+        </div>
+
+        <div class="settings-item" onclick="showBiometricModal()">
+          <div class="settings-icon" style="background:linear-gradient(135deg,#F0E8FF,#DDD5FF);">🔐</div>
+          <div class="settings-info">
+            <h4>Biometric Auth</h4>
+            <p>Face ID / Fingerprint unlock</p>
+          </div>
+          <span class="settings-arrow">›</span>
+        </div>
+
+        <div class="settings-item" onclick="showStellarInfoModal()">
+          <div class="settings-icon" style="background:linear-gradient(135deg,#E0FAFF,#B8F5EC);">⭐</div>
+          <div class="settings-info">
+            <h4>Stellar Account</h4>
+            <p>View keys, Soroban contract</p>
+          </div>
+          <span class="settings-arrow">›</span>
+        </div>
+
+        <div class="settings-item" onclick="showWalletManagerModal()">
+          <div class="settings-icon" style="background:linear-gradient(135deg,#EDE9FF,#D5CCFF);">💼</div>
+          <div class="settings-info">
+            <h4>Stellar Wallets</h4>
+            <p>Add, switch &amp; check wallet balances</p>
+          </div>
+          <span class="settings-arrow">›</span>
+        </div>
+
+        <div class="settings-item" onclick="showAlert('yellow','📊 KYC verification already complete!')">
+          <div class="settings-icon" style="background:linear-gradient(135deg,#E8F4FF,#C8E8FF);">🪪</div>
+          <div class="settings-info">
+            <h4>KYC Verification</h4>
+            <p>Identity verified · +5 trust pts</p>
+          </div>
+          <span class="badge badge-green" style="font-size:11px;">Done</span>
+        </div>
+
+        <div class="settings-item" onclick="showAlert('yellow','📋 Transaction report generated!')">
+          <div class="settings-icon" style="background:linear-gradient(135deg,#FFF0F3,#FFD8E0);">📊</div>
+          <div class="settings-info">
+            <h4>Export Report</h4>
+            <p>Download transaction CSV</p>
+          </div>
+          <span class="settings-arrow">›</span>
+        </div>
+
+        <div class="settings-item" onclick="doLogout()">
+          <div class="settings-icon" style="background:linear-gradient(135deg,#FFE8E8,#FFD0D0);">🚪</div>
+          <div class="settings-info">
+            <h4>Sign Out</h4>
+            <p>Logout from this device</p>
+          </div>
+          <span class="settings-arrow" style="color:var(--danger);">›</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="height:20px;"></div>
+  </div>
+
+  <nav class="bottom-nav" id="bottomNav" style="display:none;">
+    <div class="nav-item active" id="nav-home" onclick="navTo('home')">
+      <div class="nav-icon">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="color:#8A8FA8"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      </div>
+      <span class="nav-label">Home</span>
+    </div>
+    <div class="nav-item" id="nav-history" onclick="navTo('history')">
+      <div class="nav-icon">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="color:#8A8FA8"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      </div>
+      <span class="nav-label">History</span>
+    </div>
+    <div class="nav-item" id="nav-pay" onclick="navTo('pay')">
+      <div class="nav-pay-btn">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </div>
+      <span class="nav-label">Pay</span>
+    </div>
+    <div class="nav-item" id="nav-vault" onclick="navTo('vault')">
+      <div class="nav-icon">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="color:#8A8FA8"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      </div>
+      <span class="nav-label">Vault</span>
+    </div>
+    <div class="nav-item" id="nav-profile" onclick="navTo('profile')">
+      <div class="nav-icon">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="color:#8A8FA8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      </div>
+      <span class="nav-label">Settings</span>
+    </div>
+  </nav>
+
+  <div class="modal-overlay" id="forgotModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <h3>🔑 Reset Password</h3>
+      <p class="sub">Enter the email on your account and choose a new password.</p>
+      <div class="input-group">
+        <label>Email Address</label>
+        <input type="email" id="forgotEmail" placeholder="your@email.com">
+      </div>
+      <div class="input-group mt-12">
+        <label>New Password</label>
+        <div class="input-wrapper">
+          <input type="password" id="forgotNewPass" placeholder="e.g. Secure1pass" autocomplete="new-password">
+          <button class="input-toggle" onclick="togglePass('forgotNewPass',this)">👁</button>
+        </div>
+      </div>
+      <button class="btn btn-primary btn-block mt-16" onclick="doForgotPassword()">Reset Password 🔐</button>
+      <button class="btn btn-ghost btn-block mt-12" onclick="closeModal('forgotModal')">Cancel</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="successModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <div class="pay-success">
+        <div class="success-icon">✓</div>
+        <div class="success-amount" id="successAmt">₱100.00</div>
+        <div class="success-merchant" id="successMerchant">Sent to Merchant</div>
+        <div class="badge badge-purple mt-12" id="successMode">📴 Offline Payment</div>
+        <div class="success-proof">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+            <div class="proof-label" style="margin-bottom:0;">Cryptographic Proof (Nonce + Signature)</div>
+            <button onclick="copyProofCode()" style="flex-shrink:0;font-size:11px;padding:4px 12px;border-radius:8px;border:1.5px solid var(--primary);background:var(--primary-light);color:var(--primary);font-weight:700;cursor:pointer;margin-left:8px;">📋 Copy</button>
+          </div>
+          <div class="proof-code" id="proofCode">OmniPay:nonce=001:amt=100:vault=0xA4B2:sig=3045022100F8E3...</div>
+        </div>
+        <div class="merchant-trust" id="merchantTrustInfo">
+          <div class="mt-score" style="background:var(--primary-light);">
+            <div style="font-size:18px;font-weight:800;color:var(--primary);" id="mTrustScore">72</div>
+            <div style="font-size:9px;color:var(--primary);font-weight:600;">TRUST</div>
+          </div>
+          <div>
+            <div style="font-size:13px;font-weight:700;color:var(--text);">Merchant Trust Verified</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;font-weight:500;">Accepting offline payments · Score visible on scan</div>
+          </div>
+        </div>
+        <button class="btn btn-primary btn-block mt-20" onclick="closeModal('successModal')">Done</button>
+        <button class="btn btn-ghost btn-block mt-12" onclick="closeModal('successModal'); doSync();">Sync Now 🔄</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="lockModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <h3>🔒 Lock Funds to Vault</h3>
+      <p class="sub">Funds locked on Stellar Soroban contract. Available offline.</p>
+      <div style="text-align:center; margin:16px 0;">
+        <div class="amount-currency">Amount to Lock (PHP)</div>
+        <input type="number" class="amount-input-big" id="lockAmount" placeholder="0.00">
+      </div>
+      <div class="card" style="background:var(--bg); margin-bottom:16px;">
+        <div class="info-row">
+          <span class="info-label">Your Trust Score</span>
+          <span class="info-val" id="lockTrustScore">45</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Allowed Offline %</span>
+          <span class="info-val" id="lockAllowedPct">65%</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Max You Can Lock</span>
+          <span class="info-val" id="lockMaxAmt" style="color:var(--primary); font-weight:700;">₱975.00</span>
+        </div>
+      </div>
+      <div class="progress-steps">
+        <div class="step done"></div>
+        <div class="step done"></div>
+        <div class="step active"></div>
+        <div class="step"></div>
+      </div>
+      <div style="font-size:12px;color:var(--text-muted);text-align:center;margin-bottom:16px;font-weight:500;">Step 3 of 4: Confirm lock amount</div>
+      <button class="btn btn-primary btn-block" onclick="doLockFunds()">Lock Funds on Stellar ⭐</button>
+      <button class="btn btn-ghost btn-block mt-12" onclick="closeModal('lockModal')">Cancel</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="receiveModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+
+      <div id="receiveStep1">
+        <h3>📲 Receive Payment</h3>
+        <p class="sub">Enter how much XLM you want to receive, then generate your QR code</p>
+        <div style="text-align:center;margin:20px 0 8px;">
+          <div class="amount-currency" style="margin-bottom:6px;">Amount · XLM</div>
+          <input type="number" class="amount-input-big" id="receiveAmountInput"
+                 placeholder="0.000000" min="0.0000001" step="any"
+                 oninput="updateReceiveConversion()"
+                 style="letter-spacing:0.5px;width:100%;box-sizing:border-box;">
+          <div id="receiveConvDisplay"
+               style="margin-top:8px;min-height:22px;font-size:13px;color:var(--text-muted);font-weight:600;"></div>
+        </div>
+        <div class="card" style="background:var(--bg);margin-bottom:16px;">
+          <div class="info-row">
+            <span class="info-label">Your Wallet</span>
+            <span class="info-val" id="receiveWalletKey"
+                  style="font-family:'Courier New',monospace;font-size:10px;color:var(--primary);max-width:55%;word-break:break-all;text-align:right;">Loading…</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Trust Score</span>
+            <span class="info-val"><b id="receiveTrustScore">5/100</b></span>
+          </div>
+        </div>
+        <button class="btn btn-primary btn-block" onclick="generateReceiveQR()">🔲 Generate QR Code</button>
+        <button class="btn btn-ghost btn-block mt-12" onclick="closeModal('receiveModal')">Cancel</button>
+      </div>
+
+      <div id="receiveStep2" style="display:none;">
+        <h3>📲 Scan to Pay Me</h3>
+        <p class="sub" id="receiveQRSub">Show this QR — sender scans it and amount is pre-filled</p>
+
+        <div id="receiveAmtBadge"
+             style="text-align:center;margin-bottom:12px;padding:10px 16px;background:linear-gradient(135deg,var(--primary-light),var(--accent-light));border-radius:14px;border:1.5px solid var(--primary);">
+          <div style="font-size:22px;font-weight:900;color:var(--primary);letter-spacing:-0.5px;" id="receiveAmtBig">0 XLM</div>
+          <div style="font-size:13px;color:var(--text-muted);font-weight:600;margin-top:2px;" id="receiveEquivBig">≈ loading…</div>
+        </div>
+
+        <div style="background:linear-gradient(135deg,var(--primary),var(--primary-dark));border-radius:var(--radius);padding:20px;text-align:center;margin-bottom:16px;box-shadow:0 8px 28px rgba(47,111,237,0.3);">
+          <div style="background:#fff;border-radius:16px;padding:16px;display:inline-block;box-shadow:0 4px 16px rgba(0,0,0,0.18);">
+            <div id="receiveQRContainer" style="position:relative;width:180px;height:180px;display:flex;align-items:center;justify-content:center;">
+              <div style="color:#999;font-size:12px;">Generating QR…</div>
+            </div>
+          </div>
+          <div style="color:rgba(255,255,255,0.85);font-size:12px;margin-top:10px;font-weight:600;">📷 Scan with OmniPay app</div>
+        </div>
+
+        <div class="card" style="background:var(--bg);text-align:center;margin-bottom:0;">
+          <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;font-weight:500;">Wallet Address</div>
+          <div id="receiveWalletKey2" style="font-family:'Courier New',monospace;font-size:10px;color:var(--primary);font-weight:700;word-break:break-all;line-height:1.5;"></div>
+        </div>
+        <button class="btn btn-outline btn-block mt-12" onclick="copyWalletAddress()">📋 Copy Address</button>
+        <button class="btn btn-ghost btn-block mt-10" onclick="showReceiveStep1()">← Change Amount</button>
+        <button class="btn btn-ghost btn-block mt-10" onclick="closeModal('receiveModal')">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="manualPayModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <h3>⌨️ Enter Payment Code</h3>
+      <p class="sub">Enter the merchant's OmniPay code manually</p>
+      <div class="input-group">
+        <label>Merchant Code</label>
+        <input type="text" id="manualCode" placeholder="OMNI-XXXX-XXXX" style="font-family:'Courier New',monospace; letter-spacing:2px;">
+      </div>
+      <div class="input-group mt-12">
+        <label>Amount (PHP)</label>
+        <input type="number" id="manualAmount" placeholder="0.00">
+      </div>
+      <button class="btn btn-primary btn-block mt-16" onclick="processManualPay()">Process Payment</button>
+      <button class="btn btn-ghost btn-block mt-12" onclick="closeModal('manualPayModal')">Cancel</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="stellarModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <h3>⭐ Stellar Account</h3>
+      <p class="sub">Your blockchain identity on Stellar testnet</p>
+      <div class="card" style="background:var(--bg);">
+        <div class="info-row">
+          <span class="info-label">Network</span>
+          <span class="info-val"><span class="badge badge-purple">Testnet</span></span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Public Key</span>
+          <span class="info-val" style="font-family:'Courier New',monospace; font-size:10px; color:var(--primary); max-width:55%; word-break:break-all; text-align:right;" id="stellarPubKeyShort">Loading…</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Soroban Contract</span>
+          <span class="info-val" style="font-family:'Courier New',monospace; font-size:11px; color:var(--accent-dark);" id="stellarContractAddr">C3XQ…9PRT</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">XLM Balance</span>
+          <span class="info-val" id="stellarXLMBal">10,000.0000 XLM</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Last Monotonic Counter</span>
+          <span class="info-val" id="monoCounter">5</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Vault State</span>
+          <span class="info-val"><span class="badge badge-green">Active</span></span>
+        </div>
+      </div>
+      <div style="background:linear-gradient(135deg,#FFF8E1,#FFF0C8); border-radius:14px; padding:13px 15px; margin-top:12px; border:1px solid #FFE066;">
+        <div style="font-size:12px; color:#7A4500; font-weight:700;">🔐 Security Note</div>
+        <div style="font-size:12px; color:#9A5800; margin-top:4px; line-height:1.5; font-weight:500;">Private key stored in TEE (Trusted Execution Environment). Never leaves the device. Signing happens inside secure chip.</div>
+      </div>
+      <button class="btn btn-ghost btn-block mt-16" onclick="closeModal('stellarModal')">Close</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="biometricModal">
+    <div class="modal" style="text-align:center;">
+      <div class="modal-handle"></div>
+      <div style="font-size:64px; margin:16px 0;">🔐</div>
+      <h3>Biometric Auth</h3>
+      <p class="sub" style="text-align:center;">Touch the sensor or use Face ID to authenticate</p>
+      <div style="width:84px; height:84px; border-radius:50%; background:var(--primary-light); display:flex; align-items:center; justify-content:center; margin:22px auto; font-size:36px; animation:pulse 2s infinite; border:3px solid var(--primary); box-shadow:0 0 0 8px rgba(47,111,237,0.1);">👆</div>
+      <div style="font-size:13px; color:var(--text-muted); font-weight:500;">Waiting for fingerprint…</div>
+      <button class="btn btn-ghost btn-block mt-20" onclick="closeModal('biometricModal'); showAlert('success','✅ Biometric verified!')">Simulate Verification</button>
+      <button class="btn btn-outline btn-block mt-12" onclick="closeModal('biometricModal')">Cancel</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="syncModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <h3>🔄 Sync Results</h3>
+      <p class="sub">Stellar Soroban contract settlement report</p>
+      <div id="syncResults"></div>
+      <button class="btn btn-primary btn-block mt-16" onclick="closeModal('syncModal')">Done</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="changePasswordModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <h3>🔑 Change Password</h3>
+      <p class="sub">Enter your current password and choose a new one.</p>
+      <div class="input-group">
+        <label>Current Password</label>
+        <div class="input-wrapper">
+          <input type="password" id="cpCurrent" placeholder="Enter current password">
+          <button class="input-toggle" onclick="togglePass('cpCurrent',this)">👁</button>
+        </div>
+      </div>
+      <div class="input-group mt-12">
+        <label>New Password</label>
+        <div class="input-wrapper">
+          <input type="password" id="cpNew" placeholder="e.g. Secure1pass" autocomplete="new-password">
+          <button class="input-toggle" onclick="togglePass('cpNew',this)">👁</button>
+        </div>
+      </div>
+      <div class="input-group mt-12">
+        <label>Confirm New Password</label>
+        <div class="input-wrapper">
+          <input type="password" id="cpConfirm" placeholder="Re-enter new password">
+          <button class="input-toggle" onclick="togglePass('cpConfirm',this)">👁</button>
+        </div>
+      </div>
+      <button class="btn btn-primary btn-block mt-16" id="cpSaveBtn" onclick="doChangePassword()">Update Password</button>
+      <button class="btn btn-ghost btn-block mt-12" onclick="closeModal('changePasswordModal')">Cancel</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="mapModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <h3>🗺️ Omni Core Locations</h3>
+      <p class="sub">Nearby sync points &amp; cash agents</p>
+      <div class="map-visual" id="omniCoreMap">
+        <div class="map-pin" style="top:38%; left:22%;">
+          <div class="map-pin-dot"><span>🏪</span></div>
+          <div class="map-pin-label">Omni Core · Poblacion</div>
+        </div>
+        <div class="map-pin" style="top:24%; left:62%;">
+          <div class="map-pin-dot"><span>🏪</span></div>
+          <div class="map-pin-label">Omni Core · Capitol</div>
+        </div>
+        <div class="map-pin" style="top:66%; left:48%;">
+          <div class="map-pin-dot"><span>🏪</span></div>
+          <div class="map-pin-label">Omni Core · Market</div>
+        </div>
+        <div class="map-pin" style="top:78%; left:80%;">
+          <div class="map-pin-dot"><span>🏪</span></div>
+          <div class="map-pin-label">Omni Core · Terminal</div>
+        </div>
+      </div>
+      <div class="card" style="padding:4px 16px;">
+        <div class="omnicore-item">
+          <div class="omnicore-icon">🏪</div>
+          <div class="omnicore-info">
+            <h4>Omni Core · Poblacion</h4>
+            <p>Sync point &amp; cash-in/cash-out agent</p>
+          </div>
+          <div class="omnicore-dist">0.6 km<br><span class="badge badge-green" style="margin-top:3px;">Open</span></div>
+        </div>
+        <div class="omnicore-item">
+          <div class="omnicore-icon">🏪</div>
+          <div class="omnicore-info">
+            <h4>Omni Core · Capitol</h4>
+            <p>Sync point &amp; cash-in/cash-out agent</p>
+          </div>
+          <div class="omnicore-dist">1.4 km<br><span class="badge badge-green" style="margin-top:3px;">Open</span></div>
+        </div>
+        <div class="omnicore-item">
+          <div class="omnicore-icon">🏪</div>
+          <div class="omnicore-info">
+            <h4>Omni Core · Market</h4>
+            <p>Sync point &amp; cash-in/cash-out agent</p>
+          </div>
+          <div class="omnicore-dist">2.1 km<br><span class="badge badge-yellow" style="margin-top:3px;">Closing Soon</span></div>
+        </div>
+        <div class="omnicore-item">
+          <div class="omnicore-icon">🏪</div>
+          <div class="omnicore-info">
+            <h4>Omni Core · Terminal</h4>
+            <p>Sync point &amp; cash-in/cash-out agent</p>
+          </div>
+          <div class="omnicore-dist">3.5 km<br><span class="badge badge-green" style="margin-top:3px;">Open</span></div>
+        </div>
+      </div>
+      <button class="btn btn-ghost btn-block mt-16" onclick="closeModal('mapModal')">Close</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="walletManagerModal">
+    <div class="modal-card" style="max-height:88vh;overflow-y:auto;">
+      <div class="modal-handle"></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+        <div>
+          <div style="font-size:17px;font-weight:800;color:var(--text);">💼 Stellar Wallets</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">Manage your Stellar wallet addresses</div>
+        </div>
+        <button style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--text-muted);padding:4px;" onclick="closeModal('walletManagerModal')">✕</button>
+      </div>
+
+      <div id="walletListContainer" style="margin-bottom:16px;"></div>
+
+      <div style="background:var(--primary-light);border:1.5px solid var(--primary);border-radius:14px;padding:14px 16px;margin-bottom:12px;">
+        <div style="font-size:13px;font-weight:700;color:var(--primary);margin-bottom:10px;">➕ Add Stellar Wallet Address</div>
+        <div class="input-group" style="margin-bottom:8px;">
+          <label style="font-size:12px;">Stellar Public Key (G…)</label>
+          <input type="text" id="newWalletAddress" placeholder="GABC…XYZ (56 characters)" style="font-family:'Courier New',monospace;font-size:11px;letter-spacing:0.3px;" oninput="this.classList.remove('error')">
+        </div>
+        <div class="input-group" style="margin-bottom:10px;">
+          <label style="font-size:12px;">Label (optional)</label>
+          <input type="text" id="newWalletLabel" placeholder="e.g. Savings, Trading, Business">
+        </div>
+        <button class="btn btn-primary btn-block" onclick="addNewWallet()" id="addWalletBtn">⭐ Add Wallet</button>
+      </div>
+
+      <div style="font-size:11px;color:var(--text-muted);text-align:center;line-height:1.5;padding:0 8px;">
+        Balances are fetched live from Stellar Testnet Horizon.<br>Only the active wallet is used for payments.
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="payBillsModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <div style="text-align:center; padding:24px 20px 8px;">
+        <div style="font-size:60px; margin-bottom:14px;">🧾</div>
+        <h3 style="font-size:22px; font-weight:900; color:var(--text); letter-spacing:-0.5px;">Pay Bills</h3>
+        <div style="margin-top:18px; background:linear-gradient(135deg,var(--primary-light),var(--accent-light)); border-radius:20px; padding:24px 20px; border:1.5px solid var(--border);">
+          <div style="font-size:40px; margin-bottom:12px;">⏳</div>
+          <div style="font-size:22px; font-weight:800; color:var(--primary); letter-spacing:-0.5px;">Coming Soon</div>
+          <div style="font-size:13px; color:var(--text-muted); margin-top:8px; line-height:1.6; font-weight:500;">Bill payments are currently under development.<br>This feature will be available soon!</div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; justify-content:center; margin-top:16px;">
+            <span style="background:rgba(37,99,235,0.12);color:var(--primary);padding:5px 14px;border-radius:99px;font-size:12px;font-weight:700;">💡 Electric</span>
+            <span style="background:rgba(37,99,235,0.12);color:var(--primary);padding:5px 14px;border-radius:99px;font-size:12px;font-weight:700;">💧 Water</span>
+            <span style="background:rgba(37,99,235,0.12);color:var(--primary);padding:5px 14px;border-radius:99px;font-size:12px;font-weight:700;">📡 Internet</span>
+            <span style="background:rgba(37,99,235,0.12);color:var(--primary);padding:5px 14px;border-radius:99px;font-size:12px;font-weight:700;">📱 Mobile Load</span>
+            <span style="background:rgba(37,99,235,0.12);color:var(--primary);padding:5px 14px;border-radius:99px;font-size:12px;font-weight:700;">🎬 Subscriptions</span>
+          </div>
+        </div>
+        <div style="display:none;">
+          <span id="billPayBiller"></span>
+          <input id="billAcctNo">
+          <input id="billAmount">
+          <span id="billAvailBal"></span>
+          <div id="billPayForm"></div>
+        </div>
+      </div>
+      <button class="btn btn-primary btn-block" onclick="closeModal('payBillsModal')" style="margin:8px 0 4px;">Got it!</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="sendXLMModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <h3>⭐ Send XLM via Freighter</h3>
+      <p class="sub">Sign &amp; broadcast a payment on Stellar Testnet</p>
+      <div class="card" style="background:var(--bg); margin-bottom:16px;">
+        <div class="info-row">
+          <span class="info-label">From (Freighter)</span>
+          <span class="info-val" id="xlmSendFrom" style="font-family:'Courier New',monospace; font-size:10px; color:var(--primary); max-width:55%; word-break:break-all; text-align:right;">—</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Available Balance</span>
+          <span class="info-val" id="xlmAvailBal" style="color:var(--accent); font-weight:700;">—</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Network</span>
+          <span class="info-val"><span class="badge badge-purple">Stellar Testnet</span></span>
+        </div>
+      </div>
+      <div class="input-group">
+        <label>Destination Address (starts with G)</label>
+        <input type="text" id="xlmDestination" placeholder="GXXXXXXX…XXXXX" style="font-family:'Courier New',monospace; font-size:12px; letter-spacing:0.5px;" oninput="this.classList.remove('error')">
+      </div>
+      <div class="input-group mt-12">
+        <label>Amount (XLM)</label>
+        <input type="number" id="xlmAmount" placeholder="e.g. 10" min="0.0000001" step="any" oninput="this.classList.remove('error')">
+      </div>
+      <div class="input-group mt-12">
+        <label>Memo (optional, max 28 chars)</label>
+        <input type="text" id="xlmMemo" placeholder="OmniPay payment…" maxlength="28">
+      </div>
+      <div class="xlm-tx-result" id="xlmTxResult">
+        <div class="xlm-result-icon" id="xlmResultIcon">✅</div>
+        <div class="xlm-result-title" id="xlmResultTitle">Transaction Successful!</div>
+        <div id="xlmResultHash" class="xlm-hash-box" style="display:none;"></div>
+        <div id="xlmResultError" class="xlm-error-msg" style="display:none;"></div>
+      </div>
+      <button class="btn btn-accent btn-block mt-16" id="xlmSendBtn" onclick="doSendXLM()">🚀 Send XLM</button>
+      <button class="btn btn-ghost btn-block mt-12" onclick="closeModal('sendXLMModal')">Close</button>
+    </div>
+  </div>
+
+</div><script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/stellar-sdk/10.4.1/stellar-sdk.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+<script src="script.js"></script>
+</body>
+</html>

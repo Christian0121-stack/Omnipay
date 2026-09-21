@@ -8,12 +8,84 @@ var firebaseConfig = {
   measurementId: "G-6S5F8MT69H"
 };
 
-var fbApp, db;
+var fbApp, auth, db;
+var USERS_COLLECTION = 'users';
 try {
   fbApp = firebase.initializeApp(firebaseConfig);
+  auth  = firebase.auth();
   db    = firebase.firestore();
   db.enablePersistence({ synchronizeTabs: true }).catch(function(){});
 } catch(e) { console.warn('Firebase init error:', e); }
+
+function makeHexSalt(bytes) {
+  var output = '';
+  var values = new Uint8Array(bytes);
+  if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
+    window.crypto.getRandomValues(values);
+  } else {
+    for (var i = 0; i < values.length; i++) values[i] = Math.floor(Math.random() * 256);
+  }
+  for (var j = 0; j < values.length; j++) output += values[j].toString(16).padStart(2, '0');
+  return output;
+}
+
+async function sha256Hex(value) {
+  if (!window.crypto || !window.crypto.subtle || !window.TextEncoder) {
+    throw new Error('Secure browser cryptography is unavailable. Open OmniPay over HTTPS and try again.');
+  }
+  var bytes = new TextEncoder().encode(String(value));
+  var digest = await window.crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest)).map(function(byte) {
+    return byte.toString(16).padStart(2, '0');
+  }).join('');
+}
+
+async function createSecretRecord(value) {
+  var salt = randomBytes(16);
+  var derivedBytes = await deriveSecretBytes(value, salt, SECRET_HASH_ITERATIONS);
+  var probe = await window.crypto.subtle.sign(
+    'HMAC',
+    await window.crypto.subtle.importKey(
+      'raw',
+      derivedBytes,
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    ),
+    new TextEncoder().encode('OmniPay secret record')
+  );
+  return {
+    hash: SECRET_HASH_PREFIX + SECRET_HASH_ITERATIONS + '$' + bytesToHex(new Uint8Array(probe)),
+    salt: bytesToHex(salt)
+  };
+}
+
+async function verifySecret(value, hash, salt) {
+  if (!hash || !salt) return false;
+  if (String(hash).indexOf(SECRET_HASH_PREFIX) === 0) {
+    var parts = String(hash).split('$');
+    var iterations = parseInt(parts[1], 10);
+    var expected = parts[2] || '';
+    if (!iterations || !expected || !/^[0-9a-f]+$/i.test(expected)) return false;
+    if (!window.crypto || !window.crypto.subtle) return false;
+    var saltBytes = hexToBytes(salt);
+    var rawKey = await deriveSecretBytes(value, saltBytes, iterations);
+    var hmacKey = await window.crypto.subtle.importKey(
+      'raw',
+      rawKey,
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+    var actual = bytesToHex(new Uint8Array(await window.crypto.subtle.sign(
+      'HMAC',
+      hmacKey,
+      new TextEncoder().encode('OmniPay secret record')
+    )));
+    return actual === expected;
+  }
+  return (await sha256Hex(salt + ':' + value)) === hash;
+}
 
 function setFbStatus(type, msg) {
   var el = document.getElementById('fbStatus');
@@ -23,47 +95,156 @@ function setFbStatus(type, msg) {
 }
 
 async function usernameExistsInFirestore(username) {
-  if (!db) return false;
-  try {
-    var doc = await db.collection('omnipay_users').doc(username.toLowerCase()).get();
-    return doc.exists;
-  } catch(e) { return false; }
+  return false;
 }
 
 async function nameExistsInFirestore(fullName) {
-  if (!db) return false;
-  try {
-    var snap = await db.collection('omnipay_users').where('nameLower', '==', fullName.toLowerCase()).get();
-    return !snap.empty;
-  } catch(e) { return false; }
+  return false;
 }
 
 async function getUserProfileByUsername(username) {
-  if (!db) return null;
+  if (!auth || !auth.currentUser || !db) return null;
   try {
-    var doc = await db.collection('omnipay_users').doc(username.toLowerCase()).get();
+    var doc = await db.collection(USERS_COLLECTION).doc(auth.currentUser.uid).get();
     return doc.exists ? doc.data() : null;
   } catch(e) { return null; }
 }
 
 async function getUserProfileByEmail(email) {
-  if (!db) return null;
-  try {
-    var snap = await db.collection('omnipay_users').where('email', '==', email).limit(1).get();
-    if (snap.empty) return null;
-    var d = snap.docs[0];
-    var data = d.data();
-    data.username = data.username || d.id;
-    return data;
-  } catch(e) { return null; }
+  return null;
 }
 
 var LAST_FIRESTORE_ERROR = null;
 
-async function saveUserProfile(username, data) {
-  if (!db) { LAST_FIRESTORE_ERROR = { code:'firestore/no-db', message:'Firestore not initialized' }; return false; }
+var SECRET_HASH_PREFIX = 'pbkdf2-sha256$';
+var SECRET_HASH_ITERATIONS = 150000;
+
+function safeText(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function randomBytes(bytes) {
+  var values = new Uint8Array(bytes);
+  if (!window.crypto || typeof window.crypto.getRandomValues !== 'function') {
+    throw new Error('Secure browser randomness is unavailable. Open OmniPay over HTTPS and try again.');
+  }
+  window.crypto.getRandomValues(values);
+  return values;
+}
+
+function bytesToHex(bytes) {
+  return Array.from(bytes).map(function(byte) {
+    return byte.toString(16).padStart(2, '0');
+  }).join('');
+}
+
+function hexToBytes(hex) {
+  var clean = String(hex || '');
+  if (!/^[0-9a-f]+$/i.test(clean) || clean.length % 2 !== 0) return new Uint8Array(0);
+  var bytes = new Uint8Array(clean.length / 2);
+  for (var i = 0; i < bytes.length; i++) bytes[i] = parseInt(clean.substring(i * 2, i * 2 + 2), 16);
+  return bytes;
+}
+
+function bytesToBase64(bytes) {
+  var binary = '';
+  for (var i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+function base64ToBytes(value) {
+  var binary = atob(String(value || ''));
+  var bytes = new Uint8Array(binary.length);
+  for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function deriveSecretKey(password, salt) {
+  if (!window.crypto || !window.crypto.subtle || !window.TextEncoder) {
+    throw new Error('Secure browser cryptography is unavailable. Open OmniPay over HTTPS and try again.');
+  }
+  var material = await window.crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(String(password)),
+    'PBKDF2',
+    false,
+    ['deriveKey']
+  );
+  return window.crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: salt, iterations: SECRET_HASH_ITERATIONS, hash: 'SHA-256' },
+    material,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+async function deriveSecretBytes(password, salt, iterations) {
+  if (!window.crypto || !window.crypto.subtle || !window.TextEncoder) {
+    throw new Error('Secure browser cryptography is unavailable. Open OmniPay over HTTPS and try again.');
+  }
+  var material = await window.crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(String(password)),
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  );
+  var bits = await window.crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: salt, iterations: iterations || SECRET_HASH_ITERATIONS, hash: 'SHA-256' },
+    material,
+    256
+  );
+  return new Uint8Array(bits);
+}
+
+async function encryptWalletSecret(secret, password) {
+  var salt = randomBytes(16);
+  var iv = randomBytes(12);
+  var key = await deriveSecretKey(password, salt);
+  var encrypted = await window.crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: iv },
+    key,
+    new TextEncoder().encode(String(secret))
+  );
+  return {
+    ciphertext: bytesToBase64(new Uint8Array(encrypted)),
+    salt: bytesToHex(salt),
+    iv: bytesToBase64(iv)
+  };
+}
+
+async function decryptWalletSecret(ciphertext, saltHex, ivBase64, password) {
+  if (!ciphertext || !saltHex || !ivBase64 || !password) return '';
   try {
-    await db.collection('omnipay_users').doc(username.toLowerCase()).set(data);
+    var key = await deriveSecretKey(password, hexToBytes(saltHex));
+    var decrypted = await window.crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: base64ToBytes(ivBase64) },
+      key,
+      base64ToBytes(ciphertext)
+    );
+    return new TextDecoder().decode(decrypted);
+  } catch (e) {
+    return '';
+  }
+}
+
+async function saveUserProfile(uid, data) {
+  if (!db) { LAST_FIRESTORE_ERROR = { code:'firestore/no-db', message:'Firestore not initialized' }; return false; }
+  if (!auth || !auth.currentUser || auth.currentUser.uid !== uid) {
+    LAST_FIRESTORE_ERROR = { code:'auth/not-authenticated', message:'Authenticated user is required' };
+    return false;
+  }
+  try {
+    await db.collection(USERS_COLLECTION).doc(uid).set(Object.assign({}, data, {
+      uid: uid,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    }));
     LAST_FIRESTORE_ERROR = null;
     return true;
   } catch(e) {
@@ -73,10 +254,16 @@ async function saveUserProfile(username, data) {
   }
 }
 
-async function updateUserProfile(username, fields) {
+async function updateUserProfile(uid, fields) {
   if (!db) { LAST_FIRESTORE_ERROR = { code:'firestore/no-db', message:'Firestore not initialized' }; return false; }
+  if (!auth || !auth.currentUser || auth.currentUser.uid !== uid) {
+    LAST_FIRESTORE_ERROR = { code:'auth/not-authenticated', message:'Authenticated user is required' };
+    return false;
+  }
   try {
-    await db.collection('omnipay_users').doc(username.toLowerCase()).update(fields);
+    await db.collection(USERS_COLLECTION).doc(uid).update(Object.assign({}, fields, {
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    }));
     LAST_FIRESTORE_ERROR = null;
     return true;
   } catch(e) {
@@ -105,6 +292,66 @@ function generateContractAddress() {
   var key = 'C';
   for (var i = 0; i < 55; i++) key += chars[Math.floor(Math.random() * chars.length)];
   return key;
+}
+
+function normalizeStellarPublicKey(value) {
+  return String(value || '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\s+/g, '')
+    .trim()
+    .toUpperCase();
+}
+
+function stellarAddressError(value) {
+  var address = normalizeStellarPublicKey(value);
+  if (!address) return 'Enter a Stellar public address.';
+  if (address.charAt(0) !== 'G') return 'A Stellar public address must start with G.';
+  if (address.length !== 56) return 'A Stellar public address must contain exactly 56 characters.';
+  if (!/^G[A-Z2-7]{55}$/.test(address)) return 'Use only valid Stellar Base32 characters (A–Z and 2–7).';
+  if (typeof StellarSdk !== 'undefined' && StellarSdk.StrKey &&
+      typeof StellarSdk.StrKey.isValidEd25519PublicKey === 'function' &&
+      !StellarSdk.StrKey.isValidEd25519PublicKey(address)) {
+    return 'The address checksum is invalid. Copy the complete address again.';
+  }
+  return 'The Stellar address is invalid. Copy the complete address again.';
+}
+
+function isValidStellarPublicKey(value) {
+  var address = normalizeStellarPublicKey(value);
+  if (!/^G[A-Z2-7]{55}$/.test(address)) return false;
+
+  if (typeof StellarSdk !== 'undefined') {
+    try {
+      if (StellarSdk.StrKey && typeof StellarSdk.StrKey.isValidEd25519PublicKey === 'function') {
+        return StellarSdk.StrKey.isValidEd25519PublicKey(address);
+      }
+      if (StellarSdk.Keypair && typeof StellarSdk.Keypair.fromPublicKey === 'function') {
+        StellarSdk.Keypair.fromPublicKey(address);
+        return true;
+      }
+    } catch (e) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+async function fundTestnetAccount(publicKey) {
+  var response = await fetch('https://friendbot.stellar.org/?addr=' + encodeURIComponent(publicKey));
+  if (!response.ok) {
+    var details = await response.text().catch(function(){ return ''; });
+    throw new Error('Friendbot could not fund the sender (HTTP ' + response.status + ')' + (details ? ': ' + details.substring(0, 120) : ''));
+  }
+  await response.json().catch(function(){ return {}; });
+  return true;
+}
+
+async function stellarAccountExists(publicKey) {
+  var response = await fetch(STELLAR_HORIZON_TESTNET + '/accounts/' + encodeURIComponent(publicKey));
+  if (response.status === 404) return false;
+  if (!response.ok) throw new Error('Horizon could not verify the recipient (HTTP ' + response.status + ')');
+  return true;
 }
 
 var PENDING_USER = null;
@@ -213,16 +460,6 @@ async function doSaveProfile() {
 
   var fullName = first + ' ' + last;
 
-  if (fullName.toLowerCase() !== STATE.user.name.toLowerCase()) {
-    var nameExists = await nameExistsInFirestore(fullName);
-    if (nameExists) {
-      showLoading(false);
-      if (btn) { btn.disabled = false; btn.textContent = '💾 Save Profile'; }
-      showAlert('red','❌ An account with this name already exists.');
-      return;
-    }
-  }
-
   var updates = {
     name:      fullName,
     nameLower: fullName.toLowerCase(),
@@ -232,7 +469,13 @@ async function doSaveProfile() {
   };
 
   if (STATE.uid) {
-    await updateUserProfile(STATE.uid, updates);
+    var profileSaved = await updateUserProfile(STATE.uid, updates);
+    if (!profileSaved) {
+      showLoading(false);
+      if (btn) { btn.disabled = false; btn.textContent = '💾 Save Profile'; }
+      showAlert('red', '❌ Could not update the profile. Check your Firestore rules.');
+      return;
+    }
   }
 
   STATE.user.name  = fullName;
@@ -320,21 +563,35 @@ async function _updateXLMConversion(xlmAmt) {
 }
 
 async function doLogin() {
-  var username = document.getElementById('loginUser').value.trim();
+  var email    = document.getElementById('loginUser').value.trim().toLowerCase();
   var password = document.getElementById('loginPass').value;
-  if (!username || !password) { showAlert('red','⚠️ Enter username and password'); return; }
+  if (!email || !password) { showAlert('red','⚠️ Enter email and password'); return; }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    showAlert('orange','📧 Enter a valid email address');
+    return;
+  }
+  if (!auth) { showAlert('red','❌ Authentication is unavailable. Refresh and try again.'); return; }
 
   var btn = document.getElementById('loginBtn');
   if (btn) { btn.disabled = true; btn.textContent = 'Signing in…'; }
   showLoading(true, 'Signing in…');
 
   var account = null;
-
-  var found = await getUserProfileByUsername(username);
-  if (found && found.password === password) {
-    account = found;
-    account.uid = username.toLowerCase();
-  } else {
+  var credential = null;
+  try {
+    credential = await auth.signInWithEmailAndPassword(email, password);
+    account = await db.collection(USERS_COLLECTION).doc(credential.user.uid).get();
+    if (!account.exists) throw new Error('Your account profile is incomplete. Contact support before using this account.');
+    account = account.data();
+    account.uid = credential.user.uid;
+    account._unlockedWalletSecret = await decryptWalletSecret(
+      account.walletSecretEncrypted,
+      account.walletSecretSalt,
+      account.walletSecretIv,
+      password
+    );
+  } catch (e) {
+    try { if (credential && credential.user) await auth.signOut(); } catch (_) {}
     account = null;
   }
 
@@ -343,12 +600,12 @@ async function doLogin() {
 
   if (account) {
     STATE.isLoggedIn = true;
-    STATE.uid  = account.uid || null;
+    STATE.uid  = credential.user.uid;
     STATE.user = {
-      username: account.username || username,
-      name:     account.name     || username,
+      username: account.username || email.split('@')[0],
+      name:     account.name     || email.split('@')[0],
       phone:    account.phone    || '',
-      email:    account.email    || '',
+      email:    credential.user.email || account.email || email,
       type:     account.type     || 'personal',
       country:  account.country  || '\U0001f1f5\U0001f1ed Philippines'
     };
@@ -357,7 +614,7 @@ async function doLogin() {
     STATE.trustScore   = account.trustScore   != null ? account.trustScore   : 5;
     STATE.wallet = {
       publicKey:       account.walletPublic   || generateStellarPublicKey(),
-      secretKey:       account.walletSecret   || generateStellarSecretKey(),
+      secretKey:       account._unlockedWalletSecret || '',
       xlmBalance:      account.xlmBalance     != null ? account.xlmBalance : 10000,
       contractAddress: account.contractAddress || generateContractAddress()
     };
@@ -390,7 +647,7 @@ async function doLogin() {
     setFbStatus('connected','🟢 Signed in as ' + firstName);
     startInboxListener(); // begin real-time incoming-payment listener
   } else {
-    showAlert('red','❌ Invalid username or password');
+    showAlert('red','❌ Invalid email or password');
     var passEl = document.getElementById('loginPass');
     passEl.classList.add('error');
     setTimeout(function(){ passEl.classList.remove('error'); }, 2000);
@@ -399,41 +656,22 @@ async function doLogin() {
 
 async function doForgotPassword() {
   var email    = document.getElementById('forgotEmail').value.trim();
-  var newPass  = document.getElementById('forgotNewPass').value;
 
   if (!email)    { showAlert('red','⚠️ Enter your email address'); return; }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { showAlert('orange','📧 Enter a valid email address'); return; }
-  if (!newPass || newPass.length < 6) { showAlert('orange','🔐 New password must be at least 6 characters'); return; }
-  if (!/\d/.test(newPass)) { showAlert('orange','🔢 New password must contain at least one number'); return; }
+  if (!auth) { showAlert('red','❌ Authentication is unavailable. Refresh and try again.'); return; }
 
-  showLoading(true, 'Verifying account…');
-  var account = await getUserProfileByEmail(email);
-
-  if (!account) {
+  showLoading(true, 'Sending reset link…');
+  try {
+    await auth.sendPasswordResetEmail(email);
     showLoading(false);
-    showAlert('red','❌ No account found with this email address.');
-    return;
+    closeModal('forgotModal');
+    document.getElementById('forgotEmail').value = '';
+    showAlert('success','✅ If that email is registered, a reset link is on its way.');
+  } catch (e) {
+    showLoading(false);
+    showAlert('red','❌ Could not send the reset link. Check the email and try again.');
   }
-
-  showLoading(false);
-  showLoading(true, 'Updating password…');
-  var ok = await updateUserProfile(account.username, { password: newPass });
-  showLoading(false);
-
-  if (!ok) {
-    var fbErr = LAST_FIRESTORE_ERROR || {};
-    if (fbErr.code === 'permission-denied') {
-      showAlert('red','❌ Firestore blocked the update (permission-denied). Check your Firestore Security Rules.');
-    } else {
-      showAlert('red','❌ Could not update password. Try again.');
-    }
-    return;
-  }
-
-  closeModal('forgotModal');
-  document.getElementById('forgotEmail').value   = '';
-  document.getElementById('forgotNewPass').value = '';
-  showAlert('success','✅ Password updated! You can sign in now.');
 }
 
 async function doRegister() {
@@ -443,7 +681,6 @@ async function doRegister() {
   var phone = document.getElementById('regPhone').value.trim();
   var email = document.getElementById('regEmail').value.trim();
   var pass  = document.getElementById('regPass').value;
-  var pin   = document.getElementById('regPin').value;
   var terms = document.getElementById('regTerms').checked;
   var type  = document.getElementById('regType').value;
 
@@ -453,8 +690,7 @@ async function doRegister() {
     { id:'regUser',  val:user,   label:'Username' },
     { id:'regPhone', val:phone,  label:'Mobile Number' },
     { id:'regEmail', val:email,  label:'Email Address' },
-    { id:'regPass',  val:pass,   label:'Password' },
-    { id:'regPin',   val:pin,    label:'PIN' }
+    { id:'regPass',  val:pass,   label:'Password' }
   ];
   var firstEmpty = null;
   requiredFields.forEach(function(f) {
@@ -474,7 +710,6 @@ async function doRegister() {
   if (!terms) { showAlert('orange','📋 Please accept the Terms of Service'); return; }
   if (pass.length < 6) { showAlert('orange','🔐 Password must be at least 6 characters'); return; }
   if (!/\d/.test(pass)) { showAlert('orange','🔢 Password must contain at least one number'); return; }
-  if (pin.length < 6 || !/^\d+$/.test(pin)) { showAlert('orange','🔐 PIN must be exactly 6 digits'); return; }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { showAlert('orange','📧 Enter a valid email address'); return; }
 
   var btn = document.getElementById('registerBtn');
@@ -483,28 +718,24 @@ async function doRegister() {
 
   var fullName = first + ' ' + last;
 
-  var uExists = await usernameExistsInFirestore(user);
-  if (uExists) {
-    showLoading(false);
-    if (btn) { btn.disabled = false; btn.textContent = 'Create Account & Generate Wallet →'; }
-    showAlert('red','❌ Username already taken. Choose another.');
-    return;
-  }
-
-  var nameExists = await nameExistsInFirestore(fullName);
-  if (nameExists) {
-    showLoading(false);
-    if (btn) { btn.disabled = false; btn.textContent = 'Create Account & Generate Wallet →'; }
-    showAlert('red','❌ An account with this name already exists.');
-    return;
-  }
-
   showLoading(false);
   if (btn) { btn.disabled = false; btn.textContent = 'Create Account & Generate Wallet →'; }
+
+  if (!auth || typeof StellarSdk === 'undefined' || !StellarSdk.Keypair) {
+    showAlert('red', '❌ Required services are not loaded. Refresh the page and try again.');
+    return;
+  }
 
   var _kp     = generateStellarKeypairReal();
   var pubKey   = _kp.publicKey;
   var secKey   = _kp.secretKey;
+  var walletSecretRecord;
+  try {
+    walletSecretRecord = await encryptWalletSecret(secKey, pass);
+  } catch (e) {
+    showAlert('red', '❌ Could not protect the wallet key. Try again over HTTPS.');
+    return;
+  }
   var contract = generateContractAddress();
   var country  = (document.getElementById('regCountry') || {}).value || '\U0001f1f5\U0001f1ed Philippines';
   var now = new Date();
@@ -512,25 +743,30 @@ async function doRegister() {
   var memberSince = monthNames[now.getMonth()] + ' ' + now.getFullYear();
 
   PENDING_USER = {
+    uid:             user.toLowerCase(),
     username:        user,
     email:           email,
-    password:        pass,   // stored in the Firestore user profile (no Firebase Auth)
-    pin:             pin,
     name:            fullName,
     nameLower:       fullName.toLowerCase(),
     phone:           phone,
     type:            type,
     country:         country,
     walletPublic:    pubKey,
-    walletSecret:    secKey,
+    _unlockedWalletSecret: secKey,
+    walletSecretEncrypted: walletSecretRecord.ciphertext,
+    walletSecretSalt: walletSecretRecord.salt,
+    walletSecretIv:   walletSecretRecord.iv,
     contractAddress: contract,
     xlmBalance:      10000,
     balance:         2500,
+    dailyLimit:      100000,
+    cardFrozen:      false,
     vaultLocked:     0,
     trustScore:      5,
     goodTxCount:     0,
     monoCounter:     0,
-    memberSince:     memberSince
+    memberSince:     memberSince,
+    _password:       pass
   };
 
   goTo('wallet-setup');
@@ -548,15 +784,28 @@ function runWalletSetup(pubKey) {
   steps.forEach(function(s){ document.getElementById(s.statusId).textContent = '⏸️'; });
 
   var _friendbotDone = false;
-  var _friendbotXLM  = 10000; // default if Friendbot succeeds
-  fetch('https://friendbot.stellar.org/?addr=' + encodeURIComponent(pubKey))
-    .then(function(r){ return r.json(); })
+  var _friendbotXLM  = 10000;
+  var _friendbotError = null;
+  var _friendbotRequest = fetch('https://friendbot.stellar.org/?addr=' + encodeURIComponent(pubKey))
+    .then(function(r) {
+      if (!r.ok) throw new Error('Friendbot returned HTTP ' + r.status);
+      return r.json();
+    })
     .then(function(){ _friendbotDone = true; })
-    .catch(function(){ _friendbotDone = true;  });
+    .catch(function(error){ _friendbotError = error; _friendbotDone = true; });
 
   function activateStep(idx) {
     if (idx >= steps.length) {
-      setTimeout(function(){
+      _friendbotRequest.then(function(){
+        if (_friendbotError) {
+          var errorText = 'Testnet funding failed. Open Friendbot and fund this wallet before sending XLM.';
+          document.getElementById('wsErrorBox').style.display = 'block';
+          document.getElementById('wsErrorMsg').textContent = errorText;
+          document.getElementById('wsErrorCode').textContent = _friendbotError.message || '';
+          document.querySelector('#wallet-setup .ws-sub').textContent = 'Wallet created, but Testnet funding is still required.';
+          return;
+        }
+        setTimeout(function(){
         document.getElementById('wsPublicKey').textContent  = pubKey;
         document.getElementById('wsXLMBal').textContent    = '10,000.0000 XLM';
         if (PENDING_USER) { PENDING_USER.xlmBalance = _friendbotXLM; }
@@ -566,7 +815,8 @@ function runWalletSetup(pubKey) {
         document.getElementById('wsWalletCard').classList.add('show');
         document.getElementById('wsContinueBtn').classList.add('show');
         document.querySelector('#wallet-setup .ws-sub').textContent = 'Your Stellar Testnet wallet is ready! 🎉';
-      }, 400);
+        }, 400);
+      });
       return;
     }
     var step    = steps[idx];
@@ -590,23 +840,42 @@ async function finishWalletSetup() {
 
   showLoading(true, 'Creating your account…');
 
-  var usernameKey = PENDING_USER.username.toLowerCase();
+  var authUser = null;
+  try {
+    var credential = await auth.createUserWithEmailAndPassword(
+      PENDING_USER.email,
+      PENDING_USER._password
+    );
+    authUser = credential.user;
+    await authUser.updateProfile({ displayName: PENDING_USER.name });
+  } catch (authError) {
+    showLoading(false);
+    var authCode = authError && authError.code ? authError.code : '';
+    var authMessage = authCode === 'auth/email-already-in-use'
+      ? '❌ An account already exists for this email address.'
+      : '❌ Could not create the account. Check the email and try again.';
+    showAlert('red', authMessage);
+    return;
+  }
 
   var profileData = {
+    uid:             authUser.uid,
     username:        PENDING_USER.username,
     email:           PENDING_USER.email,
-    password:        PENDING_USER.password,
-    pin:             PENDING_USER.pin,
     name:            PENDING_USER.name,
     nameLower:       PENDING_USER.nameLower,
     phone:           PENDING_USER.phone,
     type:            PENDING_USER.type,
     country:         PENDING_USER.country || '\U0001f1f5\U0001f1ed Philippines',
     walletPublic:    PENDING_USER.walletPublic,
-    walletSecret:    PENDING_USER.walletSecret,
+    walletSecretEncrypted: PENDING_USER.walletSecretEncrypted,
+    walletSecretSalt: PENDING_USER.walletSecretSalt,
+    walletSecretIv:   PENDING_USER.walletSecretIv,
     contractAddress: PENDING_USER.contractAddress,
     xlmBalance:      PENDING_USER.xlmBalance,
     balance:         PENDING_USER.balance,
+    dailyLimit:      PENDING_USER.dailyLimit,
+    cardFrozen:      PENDING_USER.cardFrozen,
     vaultLocked:     PENDING_USER.vaultLocked,
     trustScore:      PENDING_USER.trustScore,
     goodTxCount:     PENDING_USER.goodTxCount,
@@ -614,9 +883,10 @@ async function finishWalletSetup() {
     memberSince:     PENDING_USER.memberSince
   };
 
-  var saved = await saveUserProfile(usernameKey, profileData);
+  var saved = await saveUserProfile(authUser.uid, profileData);
 
   if (!saved) {
+    try { await authUser.delete(); } catch (_) {}
     showLoading(false);
     var fbErr  = LAST_FIRESTORE_ERROR || {};
     var errMsg = '❌ Could not create your account.';
@@ -635,7 +905,7 @@ async function finishWalletSetup() {
   showLoading(false);
 
   STATE.isLoggedIn = true;
-  STATE.uid  = usernameKey;
+  STATE.uid  = authUser.uid;
   STATE.user = {
     username: PENDING_USER.username,
     name:     PENDING_USER.name,
@@ -649,7 +919,7 @@ async function finishWalletSetup() {
   STATE.trustScore  = 5;
   STATE.wallet = {
     publicKey:       PENDING_USER.walletPublic,
-    secretKey:       PENDING_USER.walletSecret,
+    secretKey:       PENDING_USER._unlockedWalletSecret || '',
     xlmBalance:      PENDING_USER.xlmBalance,
     contractAddress: PENDING_USER.contractAddress
   };
@@ -678,9 +948,10 @@ async function finishWalletSetup() {
   });
 
   var pendingCopy = PENDING_USER;
+  delete pendingCopy._password;
   PENDING_USER = null;
 
-  ['regFirst','regLast','regUser','regPhone','regEmail','regPass','regPin'].forEach(function(id){
+  ['regFirst','regLast','regUser','regPhone','regEmail','regPass'].forEach(function(id){
     var el = document.getElementById(id);
     if (el) el.value = '';
   });
@@ -783,7 +1054,7 @@ async function doPayBill() {
   var acct = acctEl ? acctEl.value.trim() : '';
   var amt  = parseFloat(amtEl ? amtEl.value : '0');
   if (!acct) { if (acctEl) acctEl.classList.add('error'); showAlert('red','⚠️ Enter account / reference number'); return; }
-  if (!amt || amt <= 0) { if (amtEl) amtEl.classList.add('error'); showAlert('red','⚠️ Enter a valid amount'); return; }
+  if (!isFinite(amt) || amt <= 0) { if (amtEl) amtEl.classList.add('error'); showAlert('red','⚠️ Enter a valid amount'); return; }
   if (STATE.wallet && amt > STATE.wallet.xlmBalance) {
     if (amtEl) amtEl.classList.add('error');
     showAlert('red','❌ Insufficient XLM balance'); return;
@@ -831,9 +1102,10 @@ function copyInternalWalletAddress() {
 
 function doLogout() {
   stopInboxListener(); // tear down real-time listener before clearing state
+  if (auth) auth.signOut().catch(function(){});
   STATE.isLoggedIn = false;
   STATE.uid        = null;
-  try { localStorage.removeItem('omnipay_session'); } catch(e) {}
+  try { sessionStorage.removeItem('omnipay_session'); } catch(e) {}
   document.getElementById('bottomNav').style.display = 'none';
   goTo('login');
   document.getElementById('loginUser').value = '';
@@ -918,7 +1190,7 @@ function renderHome() {
   if (STATE.fraudAlerts.length > 0) {
     alertSec.innerHTML = '<div class="section-title">⚠️ Active Alerts</div>' +
       STATE.fraudAlerts.map(function(a){
-        return '<div class="card" style="background:'+(a.type==='RED'?'#FFF0F3':a.type==='ORANGE'?'#FFF5E0':'#FFFCE0')+'; border-left:3px solid '+(a.type==='RED'?'var(--danger)':a.type==='ORANGE'?'var(--warning)':'#F0C000')+'; margin-bottom:10px;"><div style="font-size:13px; font-weight:700; color:var(--text);">'+(a.type==='RED'?'🔴':a.type==='ORANGE'?'🟠':'🟡')+' '+a.pattern+'</div><div style="font-size:12px; color:var(--text-muted); margin-top:4px; font-weight:500;">'+a.msg+'</div><div style="font-size:11px; color:var(--text-muted); margin-top:6px;">'+fmtTime(a.ts)+'</div></div>';
+        return '<div class="card" style="background:'+(a.type==='RED'?'#FFF0F3':a.type==='ORANGE'?'#FFF5E0':'#FFFCE0')+'; border-left:3px solid '+(a.type==='RED'?'var(--danger)':a.type==='ORANGE'?'var(--warning)':'#F0C000')+'; margin-bottom:10px;"><div style="font-size:13px; font-weight:700; color:var(--text);">'+(a.type==='RED'?'🔴':a.type==='ORANGE'?'🟠':'🟡')+' '+safeText(a.pattern)+'</div><div style="font-size:12px; color:var(--text-muted); margin-top:4px; font-weight:500;">'+safeText(a.msg)+'</div><div style="font-size:11px; color:var(--text-muted); margin-top:6px;">'+fmtTime(a.ts)+'</div></div>';
       }).join('');
   } else {
     alertSec.innerHTML = '';
@@ -936,12 +1208,25 @@ function renderTxItem(tx) {
   if (tx.txHash) {
     var shortHash = tx.txHash.substring(0,10) + '…' + tx.txHash.slice(-6);
     hashLine = '<div style="margin-top:5px;background:var(--primary-light);border-radius:8px;padding:6px 10px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'
-      + '<span style="font-family:\'Courier New\',monospace;font-size:10px;color:var(--primary);font-weight:700;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+tx.txHash+'">TX: '+shortHash+'</span>'
-      + '<button onclick="(function(){navigator.clipboard.writeText(\''+tx.txHash+'\').then(function(){showAlert(\'success\',\'📋 TX hash copied!\');}).catch(function(){showAlert(\'yellow\',\'📋 \'+\''+tx.txHash+'\');});})()" style="flex-shrink:0;font-size:10px;padding:2px 8px;border-radius:6px;border:1px solid var(--primary);background:#fff;color:var(--primary);font-weight:700;cursor:pointer;">📋 Copy</button>'
-      + '<a href="https://stellar.expert/explorer/testnet/tx/'+tx.txHash+'" target="_blank" rel="noopener" style="flex-shrink:0;font-size:10px;color:var(--primary);font-weight:600;text-decoration:none;white-space:nowrap;">⭐ Explorer ›</a>'
+      + '<span style="font-family:\'Courier New\',monospace;font-size:10px;color:var(--primary);font-weight:700;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+safeText(tx.txHash)+'">TX: '+safeText(shortHash)+'</span>'
+      + '<button class="tx-copy" data-tx-hash="'+safeText(tx.txHash)+'" onclick="copyTxHash(this.dataset.txHash)" style="flex-shrink:0;font-size:10px;padding:2px 8px;border-radius:6px;border:1px solid var(--primary);background:#fff;color:var(--primary);font-weight:700;cursor:pointer;">📋 Copy</button>'
+      + '<a href="https://stellar.expert/explorer/testnet/tx/'+encodeURIComponent(String(tx.txHash))+'" target="_blank" rel="noopener noreferrer" style="flex-shrink:0;font-size:10px;color:var(--primary);font-weight:600;text-decoration:none;white-space:nowrap;">⭐ Explorer ›</a>'
       + '</div>';
   }
-  return '<div class="tx-item"><div class="tx-icon" style="background:'+iconBg+';">'+tx.icon+'</div><div class="tx-info"><div class="tx-name">'+tx.name+'</div><div class="tx-sub">'+tx.note+' · '+fmtTime(tx.ts)+'</div><span class="tx-status '+tx.status+'">'+statusText+'</span>'+hashLine+'</div><div style="text-align:right;"><div class="tx-amount '+(isCredit?'credit':'debit')+'">'+(isCredit?'+':'-')+fmtTxAmt(tx)+'</div></div></div>';
+  return '<div class="tx-item"><div class="tx-icon" style="background:'+iconBg+';">'+safeText(tx.icon)+'</div><div class="tx-info"><div class="tx-name">'+safeText(tx.name)+'</div><div class="tx-sub">'+safeText(tx.note)+' · '+fmtTime(tx.ts)+'</div><span class="tx-status '+safeText(tx.status)+'">'+statusText+'</span>'+hashLine+'</div><div style="text-align:right;"><div class="tx-amount '+(isCredit?'credit':'debit')+'">'+(isCredit?'+':'-')+fmtTxAmt(tx)+'</div></div></div>';
+}
+
+function copyTxHash(hash) {
+  var text = String(hash || '');
+  if (!/^[A-Za-z0-9]+$/.test(text)) {
+    showAlert('red', '❌ Invalid transaction hash');
+    return;
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function(){
+      showAlert('success', '📋 TX hash copied!');
+    }).catch(function(){ showAlert('yellow', '📋 Copy the hash manually'); });
+  }
 }
 
 function renderVault() {
@@ -1013,18 +1298,6 @@ function renderHistory(filter) {
     el.innerHTML = txs.map(function(tx){ return renderTxItem(tx); }).join('');
   }
 
-  var flog = document.getElementById('fraudLog');
-  var allAlerts = STATE.fraudAlerts.concat([
-    { type:'YELLOW', pattern:'SAME AMOUNT REPEAT',       msg:'₱100 sent 3 times consecutively · Auto-flagged', ts: Date.now()-7200000 },
-    { type:'RED',    pattern:'DUPLICATE NONCE DETECTED', msg:'Nonce #001 submitted twice · Second attempt rejected by Soroban', ts: Date.now()-90000000 }
-  ]);
-  if (STATE.fraudAlerts.length === 0 && STATE.transactions.length === 0) {
-    flog.innerHTML = '<div class="card" style="text-align:center; padding:24px; color:var(--text-muted); font-weight:500;">No fraud alerts on this account.</div>';
-    return;
-  }
-  flog.innerHTML = allAlerts.map(function(a){
-    return '<div class="card" style="background:'+(a.type==='RED'?'#FFF0F3':a.type==='ORANGE'?'#FFF5E0':'#FFFCE0')+'; border-left:3px solid '+(a.type==='RED'?'var(--danger)':a.type==='ORANGE'?'var(--warning)':'#F0C000')+'; margin-bottom:10px; padding:14px 16px;"><div style="display:flex; justify-content:space-between; align-items:flex-start;"><div><div style="font-size:12px; font-weight:700; color:'+(a.type==='RED'?'var(--danger)':a.type==='ORANGE'?'var(--warning)':'#856404')+';">'+(a.type==='RED'?'🔴 RED ALERT':a.type==='ORANGE'?'🟠 ORANGE ALERT':'🟡 YELLOW ALERT')+'</div><div style="font-size:13px; font-weight:700; color:var(--text); margin-top:4px;">'+a.pattern+'</div><div style="font-size:12px; color:var(--text-muted); margin-top:4px; font-weight:500;">'+a.msg+'</div></div><div style="font-size:11px; color:var(--text-muted); white-space:nowrap; margin-left:10px;">'+fmtTime(a.ts)+'</div></div></div>';
-  }).join('');
 }
 
 function filterTx(filter, el) {
@@ -1075,18 +1348,18 @@ function renderProfile() {
   var synced  = STATE.transactions.filter(function(tx){ return tx.status==='synced'; }).length;
   var pending = STATE.transactions.filter(function(tx){ return tx.status==='pending'; }).length;
   document.getElementById('accountSummary').innerHTML =
-    '<div class="info-row"><span class="info-label">Full Name</span><span class="info-val">'+(STATE.user.name||'—')+'</span></div>'+
-    '<div class="info-row"><span class="info-label">Username</span><span class="info-val">@'+(STATE.user.username||'—')+'</span></div>'+
-    '<div class="info-row"><span class="info-label">Email</span><span class="info-val" style="font-size:12px;">'+(STATE.user.email||'—')+'</span></div>'+
-    '<div class="info-row"><span class="info-label">Phone</span><span class="info-val">'+(STATE.user.phone||'—')+'</span></div>'+
+    '<div class="info-row"><span class="info-label">Full Name</span><span class="info-val">'+safeText(STATE.user.name||'—')+'</span></div>'+
+    '<div class="info-row"><span class="info-label">Username</span><span class="info-val">@'+safeText(STATE.user.username||'—')+'</span></div>'+
+    '<div class="info-row"><span class="info-label">Email</span><span class="info-val" style="font-size:12px;">'+safeText(STATE.user.email||'—')+'</span></div>'+
+    '<div class="info-row"><span class="info-label">Phone</span><span class="info-val">'+safeText(STATE.user.phone||'—')+'</span></div>'+
     '<div class="info-row"><span class="info-label">Total Transactions</span><span class="info-val">'+totalTx+'</span></div>'+
     '<div class="info-row"><span class="info-label">Synced</span><span class="info-val" style="color:var(--success);">'+synced+'</span></div>'+
     '<div class="info-row"><span class="info-label">Pending Sync</span><span class="info-val" style="color:var(--warning);">'+pending+'</span></div>'+
     '<div class="info-row"><span class="info-label">Total Balance</span><span class="info-val">'+fmtAmt(STATE.balance)+'</span></div>'+
     '<div class="info-row"><span class="info-label">Offline Vault</span><span class="info-val">'+fmtAmt(STATE.vaultLocked)+'</span></div>'+
     '<div class="info-row"><span class="info-label">XLM Balance</span><span class="info-val">'+STATE.wallet.xlmBalance.toLocaleString('en')+'</span></div>'+
-    '<div class="info-row"><span class="info-label">Account Type</span><span class="info-val" style="text-transform:capitalize;">'+(STATE.user.type||'personal')+'</span></div>'+
-    '<div class="info-row"><span class="info-label">Member Since</span><span class="info-val">'+(STATE.memberSince||'—')+'</span></div>';
+    '<div class="info-row"><span class="info-label">Account Type</span><span class="info-val" style="text-transform:capitalize;">'+safeText(STATE.user.type||'personal')+'</span></div>'+
+    '<div class="info-row"><span class="info-label">Member Since</span><span class="info-val">'+safeText(STATE.memberSince||'—')+'</span></div>';
 }
 
 function simulateScan() {
@@ -1102,24 +1375,26 @@ function showManualPayModal() {
 
 function processManualPay() {
   var amt = parseFloat(document.getElementById('manualAmount').value);
-  if (!amt || amt <= 0) { showAlert('red','⚠️ Enter a valid amount'); return; }
+  if (!isFinite(amt) || amt <= 0) { showAlert('red','⚠️ Enter a valid amount'); return; }
   closeModal('manualPayModal');
   doPaymentSuccess(amt, 'Aling Nena Store', STATE.isOnline ? 'online' : 'offline');
 }
 
 async function doSendMoney() {
   syncSpendableBalance();
-  var recipient = document.getElementById('sendRecipient').value.trim();
+  var recipientEl = document.getElementById('sendRecipient');
+  var recipient = normalizeStellarPublicKey(recipientEl ? recipientEl.value : '');
   var amt       = parseFloat(document.getElementById('sendAmount').value);
   var note      = (document.getElementById('sendNote') || {}).value || 'Online payment';
 
   if (!recipient)          { showAlert('red','⚠️ Enter a Stellar recipient address (G…)'); return; }
-  if (!amt || amt <= 0)    { showAlert('red','⚠️ Enter a valid amount'); return; }
+  if (!isFinite(amt) || amt <= 0)    { showAlert('red','⚠️ Enter a valid amount'); return; }
   if (amt > STATE.balance) { showAlert('red','❌ Insufficient balance'); return; }
 
-  var stellarAddressRx = /^G[A-Z2-7]{55}$/;
-  if (!stellarAddressRx.test(recipient)) {
-    showAlert('red','❌ Recipient must be a valid Stellar address (G…, 56 chars)');
+  if (recipientEl) recipientEl.value = recipient;
+  if (!isValidStellarPublicKey(recipient)) {
+    if (recipientEl) recipientEl.classList.add('error');
+    showAlert('red','❌ ' + stellarAddressError(recipient));
     return;
   }
 
@@ -1158,6 +1433,10 @@ async function doSendMoney() {
   }
 
   var sourcePublic = useFreighter ? FREIGHTER.publicKey : primaryPublic;
+  if (!sourcePublic || !isValidStellarPublicKey(sourcePublic)) {
+    showAlert('red', '❌ This account has an invalid Stellar signing key. Create a new Testnet wallet and try again.');
+    return;
+  }
 
   var btn = document.querySelector('[onclick="doSendMoney()"]');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Sending…'; }
@@ -1166,10 +1445,20 @@ async function doSendMoney() {
   try {
     var amtStr = amt.toFixed(7);
 
-    var accountResp = await fetch('https://horizon-testnet.stellar.org/accounts/' + sourcePublic);
+    var destinationExists = await stellarAccountExists(recipient);
+    if (!destinationExists) {
+      throw new Error('Recipient wallet is not activated on Stellar Testnet. Ask the recipient to fund or activate the account first.');
+    }
+
+    var accountResp = await fetch(STELLAR_HORIZON_TESTNET + '/accounts/' + encodeURIComponent(sourcePublic));
+    if (accountResp.status === 404 && !useFreighter) {
+      showLoading(true, 'Funding your Testnet wallet…');
+      await fundTestnetAccount(sourcePublic);
+      accountResp = await fetch(STELLAR_HORIZON_TESTNET + '/accounts/' + encodeURIComponent(sourcePublic));
+    }
     if (!accountResp.ok) {
       var errBody = await accountResp.json().catch(function(){ return {}; });
-      throw new Error('Account not found on Stellar testnet. Fund it via Friendbot first. (' + (errBody.detail || accountResp.status) + ')');
+      throw new Error('Sender account is not active on Stellar Testnet. Fund it via Friendbot first. (' + (errBody.detail || accountResp.status) + ')');
     }
     var accountData = await accountResp.json();
 
@@ -1270,8 +1559,6 @@ async function doSendMoney() {
       icon:   '💸'
     });
 
-    saveRecipientTxToFirestore(recipient, amt, txHash, note);
-
     syncSenderTxsToFirestore();
 
     var sendBal = document.getElementById('sendBal');
@@ -1292,9 +1579,9 @@ async function doSendMoney() {
     var proofEl = document.getElementById('proofCode');
     if (proofEl) {
       proofEl.dataset.txhash = txHash;
-      proofEl.innerHTML = 'TX: <a href="https://stellar.expert/explorer/testnet/tx/' + txHash
-        + '" target="_blank" rel="noopener" style="color:var(--primary);word-break:break-all;font-size:10px;">'
-        + txHash + '</a>';
+      proofEl.innerHTML = 'TX: <a href="https://stellar.expert/explorer/testnet/tx/' + encodeURIComponent(String(txHash))
+        + '" target="_blank" rel="noopener noreferrer" style="color:var(--primary);word-break:break-all;font-size:10px;">'
+        + safeText(txHash) + '</a>';
     }
 
     var mScore = Math.floor(Math.random() * 40) + 50;
@@ -1330,7 +1617,7 @@ function doOfflinePay() {
   var merchantInput = document.getElementById('offlineMerchant');
   var amt      = parseFloat(amtInput.value);
   var merchant = merchantInput.value.trim() || 'Unknown Merchant';
-  if (!amt || amt <= 0)            { showAlert('red','⚠️ Enter payment amount'); return; }
+  if (!isFinite(amt) || amt <= 0)            { showAlert('red','⚠️ Enter payment amount'); return; }
   if (amt > STATE.vaultLocked)     { showAlert('red','❌ Exceeds offline vault balance'); return; }
   if (STATE.vaultUsesRemaining <= 0){ showAlert('red','🔄 Max uses reached! Sync first.'); return; }
 
@@ -1425,7 +1712,7 @@ function doLockFunds() {
   var amt = parseFloat(document.getElementById('lockAmount').value);
   var t   = getTrustTier(STATE.trustScore);
   var max = Math.floor(STATE.balance * t.pct / 100);
-  if (!amt || amt <= 0)                          { showAlert('red','⚠️ Enter amount to lock'); return; }
+  if (!isFinite(amt) || amt <= 0)                          { showAlert('red','⚠️ Enter amount to lock'); return; }
   if (amt > STATE.balance - STATE.vaultLocked)   { showAlert('red','❌ Insufficient free balance'); return; }
   if (amt + STATE.vaultLocked > max)             { showAlert('red','❌ Exceeds trust-based limit of '+fmtAmt(max)); return; }
   STATE.vaultLocked += amt;
@@ -1463,7 +1750,7 @@ function doSync() {
 
   var syncResultsEl = document.getElementById('syncResults');
   syncResultsEl.innerHTML = results.map(function(r){
-    return '<div class="card" style="padding:14px 16px; margin-bottom:8px; background:'+(r.result==='OK'?'#D4F7EC':'#FFE0E3')+'"><div style="font-size:13px; font-weight:700; color:var(--text);">'+r.tx.name+'</div><div style="font-size:12px; color:'+(r.result==='OK'?'var(--success)':'var(--danger)')+'; margin-top:4px; font-weight:600;">'+(r.result==='OK'?'✅ Settled on Stellar':'❌ Rejected — '+r.reason)+'</div><div style="font-size:12px; color:var(--text-muted); margin-top:2px; font-weight:500;">'+fmtAmt(r.tx.amount)+'</div></div>';
+    return '<div class="card" style="padding:14px 16px; margin-bottom:8px; background:'+(r.result==='OK'?'#D4F7EC':'#FFE0E3')+'"><div style="font-size:13px; font-weight:700; color:var(--text);">'+safeText(r.tx.name)+'</div><div style="font-size:12px; color:'+(r.result==='OK'?'var(--success)':'var(--danger)')+'; margin-top:4px; font-weight:600;">'+(r.result==='OK'?'✅ Settled on Stellar':'❌ Rejected — '+safeText(r.reason))+'</div><div style="font-size:12px; color:var(--text-muted); margin-top:2px; font-weight:500;">'+fmtAmt(r.tx.amount)+'</div></div>';
   }).join('') + '<div style="margin-top:12px; padding:14px; background:var(--primary-light); border-radius:14px; text-align:center;"><div style="font-size:13px; font-weight:700; color:var(--primary);">New Trust Score: '+STATE.trustScore+'/100</div><div style="font-size:12px; color:var(--primary); opacity:0.75; margin-top:2px; font-weight:600;">'+t.icon+' '+t.tier+' tier</div></div>';
 
   showModal('syncModal');
@@ -1612,7 +1899,7 @@ async function _renderReceiveConversion() {
 async function generateReceiveQR() {
   var amtEl = document.getElementById('receiveAmountInput');
   var amt   = parseFloat(amtEl ? amtEl.value : 0);
-  if (!amt || amt <= 0) { showAlert('red','⚠️ Enter an amount first'); if (amtEl) amtEl.focus(); return; }
+  if (!isFinite(amt) || amt <= 0) { showAlert('red','⚠️ Enter an amount first'); if (amtEl) amtEl.focus(); return; }
 
   var convEl = document.getElementById('receiveConvDisplay');
   if (!convEl.dataset.rate) { await _renderReceiveConversion(); }
@@ -1659,7 +1946,7 @@ async function generateReceiveQR() {
         container.style.position = 'relative';
         container.appendChild(logo);
       } catch(e) {
-        container.innerHTML = '<div style="font-size:9px;font-family:monospace;color:#1E3A5F;word-break:break-all;padding:8px;font-weight:700;">' + key + '</div>';
+        container.innerHTML = '<div style="font-size:9px;font-family:monospace;color:#1E3A5F;word-break:break-all;padding:8px;font-weight:700;">' + safeText(key) + '</div>';
       }
     }
   }
@@ -1701,28 +1988,28 @@ async function doChangePassword() {
   if (btn) { btn.disabled = true; btn.textContent = 'Updating…'; }
   showLoading(true, 'Verifying current password…');
 
-  var account = await getUserProfileByUsername(STATE.uid);
-  if (!account || account.password !== current) {
+  if (!auth || !auth.currentUser) {
     showLoading(false);
     if (btn) { btn.disabled = false; btn.textContent = 'Update Password'; }
-    showAlert('red','❌ Current password is incorrect');
+    showAlert('red','❌ Your session has expired. Sign in again.');
     return;
   }
 
-  showLoading(true, 'Updating password…');
-  var ok = await updateUserProfile(STATE.uid, { password: newPass });
+  try {
+    var credential = firebase.auth.EmailAuthProvider.credential(auth.currentUser.email, current);
+    await auth.currentUser.reauthenticateWithCredential(credential);
+    await auth.currentUser.updatePassword(newPass);
+  } catch (e) {
+    showLoading(false);
+    if (btn) { btn.disabled = false; btn.textContent = 'Update Password'; }
+    var message = /wrong-password|invalid-credential|invalid-login-credentials/i.test(e.code || '')
+      ? '❌ Current password is incorrect'
+      : '❌ Could not update password. Sign in again and retry.';
+    showAlert('red', message);
+    return;
+  }
   showLoading(false);
   if (btn) { btn.disabled = false; btn.textContent = 'Update Password'; }
-
-  if (!ok) {
-    var fbErr = LAST_FIRESTORE_ERROR || {};
-    if (fbErr.code === 'permission-denied') {
-      showAlert('red','❌ Firestore blocked the update (permission-denied). Check your Firestore Security Rules.');
-    } else {
-      showAlert('red','❌ Could not update password. Try again.');
-    }
-    return;
-  }
 
   closeModal('changePasswordModal');
   showAlert('success','✅ Password updated successfully!');
@@ -1740,42 +2027,9 @@ function copyWalletAddress() {
 }
 
 async function saveRecipientTxToFirestore(recipientAddress, amtXLM, txHash, senderNote) {
-  if (!db || !recipientAddress) return;
-  try {
-    var snap = await db.collection('omnipay_users')
-      .where('walletPublic', '==', recipientAddress)
-      .limit(1).get();
-    if (snap.empty) return; // recipient is not an OmniPay user — skip
-
-    var recipDoc  = snap.docs[0];
-    var recipData = recipDoc.data();
-    var recipId   = recipDoc.id;
-
-    var senderName = (STATE.user && STATE.user.name) || STATE.uid || 'Unknown';
-    var newTx = {
-      id:     'rx-' + txHash.substring(0, 8),
-      type:   'receive',
-      name:   'From ' + senderName,
-      amount: amtXLM,
-      status: 'synced',
-      mode:   'online',
-      note:   senderNote || ('Received from ' + senderName),
-      txHash: txHash,
-      ts:     Date.now(),
-      icon:   '💰'
-    };
-
-    var existingTxs = Array.isArray(recipData.transactions) ? recipData.transactions : [];
-    existingTxs.unshift(newTx);
-    if (existingTxs.length > 200) existingTxs = existingTxs.slice(0, 200); // cap
-
-    await db.collection('omnipay_users').doc(recipId).update({
-      transactions: existingTxs,
-      xlmBalance:   (recipData.xlmBalance || 0) + amtXLM
-    });
-  } catch(e) {
-    console.warn('saveRecipientTxToFirestore error:', e);
-  }
+  // A client must never update another user's profile. A trusted backend
+  // trigger should append the recipient transaction after settlement.
+  return false;
 }
 
 var _inboxUnsubscribe = null;  // Firestore onSnapshot cleanup function
@@ -1788,8 +2042,8 @@ function startInboxListener() {
   _knownTxIds = new Set(STATE.transactions.map(function(tx){ return tx.id; }));
 
   try {
-    _inboxUnsubscribe = db.collection('omnipay_users')
-      .doc(STATE.uid.toLowerCase())
+    _inboxUnsubscribe = db.collection(USERS_COLLECTION)
+      .doc(STATE.uid)
       .onSnapshot(function(doc) {
         if (!doc.exists || !STATE.isLoggedIn) return;
         var data      = doc.data();
@@ -1836,7 +2090,7 @@ async function syncSenderTxsToFirestore() {
   if (!db || !STATE.uid) return;
   try {
     var txs = (STATE.transactions || []).slice(0, 200); // cap at 200
-    await db.collection('omnipay_users').doc(STATE.uid.toLowerCase()).update({
+    await db.collection(USERS_COLLECTION).doc(STATE.uid).update({
       transactions: txs
     });
   } catch(e) {
@@ -1917,7 +2171,7 @@ async function connectFreighterWallet() {
   if (!api) {
     showAlert('orange', '🦊 Freighter not installed! Visit freighter.app');
     if (confirm('Freighter browser extension not found. Open freighter.app to install it?')) {
-      window.open('https://freighter.app', '_blank');
+      window.open('https://freighter.app', '_blank', 'noopener,noreferrer');
     }
     return;
   }
@@ -2072,7 +2326,7 @@ async function doSendXLM() {
   var memoEl   = document.getElementById('xlmMemo');
   var sendBtn  = document.getElementById('xlmSendBtn');
 
-  var dest   = destEl   ? destEl.value.trim()   : '';
+  var dest   = normalizeStellarPublicKey(destEl ? destEl.value : '');
   var amount = amtEl    ? amtEl.value.trim()     : '';
   var memo   = memoEl   ? memoEl.value.trim()    : '';
 
@@ -2081,12 +2335,13 @@ async function doSendXLM() {
     showAlert('red', '⚠️ Enter a destination address');
     return;
   }
-  if (!/^G[A-Z2-7]{55}$/.test(dest)) {
+  if (!isValidStellarPublicKey(dest)) {
     if (destEl) destEl.classList.add('error');
-    showAlert('red', '❌ Invalid Stellar address (must start with G, 56 chars)');
+    showAlert('red', '❌ ' + stellarAddressError(dest));
     return;
   }
-  if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) {
+  if (destEl) destEl.value = dest;
+  if (!amount || !isFinite(parseFloat(amount)) || parseFloat(amount) <= 0) {
     if (amtEl) amtEl.classList.add('error');
     showAlert('red', '⚠️ Enter a valid XLM amount');
     return;
@@ -2116,6 +2371,9 @@ async function doSendXLM() {
 
   try {
     showLoading(true, 'Loading account from Horizon…');
+    if (!(await stellarAccountExists(dest))) {
+      throw new Error('Recipient wallet is not activated on Stellar Testnet. Ask the recipient to fund or activate the account first.');
+    }
     var accountResp = await fetch(STELLAR_HORIZON_TESTNET + '/accounts/' + FREIGHTER.publicKey);
     if (!accountResp.ok) throw new Error('Could not load account (HTTP ' + accountResp.status + '). Is it funded?');
     var accountData = await accountResp.json();
@@ -2225,6 +2483,7 @@ function renderXLMTxResult(success, hash, amount, dest, errorMsg) {
   resultEl.style.display = 'block';
 
   if (success) {
+    var safeHash = /^[A-Fa-f0-9]{16,128}$/.test(String(hash || '')) ? String(hash) : '';
     resultEl.style.background   = 'linear-gradient(135deg,#D4F7EC,#C6F9E8)';
     resultEl.style.borderColor  = 'rgba(46,213,115,0.4)';
     if (iconEl)  iconEl.textContent  = '✅';
@@ -2233,8 +2492,8 @@ function renderXLMTxResult(success, hash, amount, dest, errorMsg) {
       hashEl.style.display = 'block';
       hashEl.innerHTML =
         '<div style="font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.7px;margin-bottom:6px;">Transaction Hash</div>' +
-        '<div style="font-family:Courier New,monospace;font-size:10px;color:var(--primary);line-height:1.7;">' + hash + '</div>' +
-        '<a class="xlm-explorer-link" href="https://stellar.expert/explorer/testnet/tx/' + hash + '" target="_blank">🔍 View on Stellar Expert →</a>';
+        '<div style="font-family:Courier New,monospace;font-size:10px;color:var(--primary);line-height:1.7;">' + safeText(safeHash || 'Unavailable') + '</div>' +
+        (safeHash ? '<a class="xlm-explorer-link" href="https://stellar.expert/explorer/testnet/tx/' + encodeURIComponent(safeHash) + '" target="_blank" rel="noopener noreferrer">🔍 View on Stellar Expert →</a>' : '');
     }
     if (errorEl) errorEl.style.display = 'none';
     showAlert('success', '✅ ' + amount + ' XLM sent on Testnet!');
@@ -2397,11 +2656,12 @@ function handleQRResult(data) {
     } else {
       address = raw;
     }
-  } else if (/^G[A-Z2-7]{55}$/.test(data)) {
-    address = data;
+  } else if (isValidStellarPublicKey(data)) {
+    address = normalizeStellarPublicKey(data);
   }
 
-  if (address && /^G[A-Z2-7]{55}$/.test(address)) {
+  if (address) address = normalizeStellarPublicKey(address);
+  if (address && isValidStellarPublicKey(address)) {
     switchPayTab('send', document.querySelector('.pay-tab:nth-child(2)'));
     setTimeout(function() {
       var rEl = document.getElementById('sendRecipient');
@@ -2589,6 +2849,11 @@ function prevRegStep() {
 
 function saveSession() {
   try {
+    var walletSession = {
+      publicKey:       STATE.wallet && STATE.wallet.publicKey || '',
+      xlmBalance:      STATE.wallet && STATE.wallet.xlmBalance || 0,
+      contractAddress: STATE.wallet && STATE.wallet.contractAddress || ''
+    };
     var data = {
       isLoggedIn:         STATE.isLoggedIn,
       uid:                STATE.uid,
@@ -2601,23 +2866,26 @@ function saveSession() {
       monoCounter:        STATE.monoCounter,
       goodTxCount:        STATE.goodTxCount,
       memberSince:        STATE.memberSince,
-      wallet:             STATE.wallet,
+      wallet:             walletSession,
       wallets:            STATE.wallets,
       activeWalletIndex:  STATE.activeWalletIndex,
       transactions:       STATE.transactions,
       noncePool:          STATE.noncePool,
       usedNonces:         STATE.usedNonces
     };
-    localStorage.setItem('omnipay_session', JSON.stringify(data));
+    sessionStorage.setItem('omnipay_session', JSON.stringify(data));
   } catch(e) {}
 }
 
 function restoreSession() {
   try {
-    var raw = localStorage.getItem('omnipay_session');
+    var raw = sessionStorage.getItem('omnipay_session');
     if (!raw) return false;
     var d = JSON.parse(raw);
-    if (!d || !d.isLoggedIn) return false;
+    if (!d || !d.isLoggedIn || !auth || !auth.currentUser || d.uid !== auth.currentUser.uid) {
+      sessionStorage.removeItem('omnipay_session');
+      return false;
+    }
     STATE.isLoggedIn         = true;
     STATE.uid                = d.uid                || null;
     STATE.user               = d.user               || STATE.user;
@@ -2630,6 +2898,7 @@ function restoreSession() {
     STATE.goodTxCount        = d.goodTxCount        || 0;
     STATE.memberSince        = d.memberSince        || '';
     STATE.wallet             = d.wallet             || STATE.wallet;
+    STATE.wallet.secretKey   = '';
     STATE.wallets            = Array.isArray(d.wallets)       ? d.wallets       : [];
     STATE.activeWalletIndex  = d.activeWalletIndex  != null   ? d.activeWalletIndex : 0;
     STATE.transactions       = Array.isArray(d.transactions) ? d.transactions : [];
@@ -2705,19 +2974,19 @@ function renderWalletList() {
     var balText  = w.xlmBalance != null ? parseFloat(w.xlmBalance).toLocaleString('en',{minimumFractionDigits:4}) + ' XLM' : '— XLM';
     return '<div class="wallet-item'+(isActive?' active':'')+'">'
       + '<div class="wallet-item-top">'
-      + '<div class="wallet-item-label">'+(w.label||'Wallet '+(i+1))+'</div>'
+      + '<div class="wallet-item-label">'+safeText(w.label||'Wallet '+(i+1))+'</div>'
       + (isActive
           ? '<span class="wallet-item-badge">✓ Active</span>'
           : '<button class="wallet-setactive-btn" onclick="setActiveWallet('+i+')">Set Active</button>')
       + '</div>'
-      + '<div class="wallet-item-key">'+shortKey+'</div>'
+      + '<div class="wallet-item-key">'+safeText(shortKey)+'</div>'
       + '<div class="wallet-item-bottom">'
-      + '<div class="wallet-item-balance">'+balText+'</div>'
+      + '<div class="wallet-item-balance">'+safeText(balText)+'</div>'
       + '<div class="wallet-item-actions">'
       + '<button class="wallet-action-btn" onclick="refreshWalletBalance('+i+')">🔄 Refresh</button>'
       + (i > 0 ? '<button class="wallet-action-btn danger" onclick="removeWallet('+i+')">🗑 Remove</button>' : '')
       + '</div></div>'
-      + '<a class="wallet-item-explorer" href="https://stellar.expert/explorer/testnet/account/'+(w.publicKey||'')+'" target="_blank" rel="noopener">⭐ View on Stellar Expert ›</a>'
+      + '<a class="wallet-item-explorer" href="https://stellar.expert/explorer/testnet/account/'+encodeURIComponent(String(w.publicKey||''))+'" target="_blank" rel="noopener noreferrer">⭐ View on Stellar Expert ›</a>'
       + '</div>';
   }).join('');
 }
@@ -2773,33 +3042,15 @@ async function addNewWallet() {
   var label   = (labelInput.value || '').trim() || ('Wallet ' + (STATE.wallets.length + 1));
 
   if (!address) { addressInput.classList.add('error'); showAlert('red','⚠️ Enter a Stellar public key'); return; }
-  if (!/^G[A-Z2-7]{55}$/.test(address)) { addressInput.classList.add('error'); showAlert('red','❌ Invalid Stellar address (must start with G, 56 chars)'); return; }
+  address = normalizeStellarPublicKey(address);
+  addressInput.value = address;
+  if (!isValidStellarPublicKey(address)) { addressInput.classList.add('error'); showAlert('red','❌ ' + stellarAddressError(address)); return; }
 
   var dup = STATE.wallets.find(function(w){ return w.publicKey === address; });
   if (dup) { addressInput.classList.add('error'); showAlert('orange','⚠️ This wallet address is already in your list'); return; }
 
   var btn = document.getElementById('addWalletBtn');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Checking…'; }
-
-  var usedByOther = false;
-  try {
-    if (db) {
-      var snap = await db.collection('omnipay_users').get();
-      snap.forEach(function(doc) {
-        var d = doc.data();
-        if (d.walletPublic === address && doc.id !== STATE.uid) {
-          usedByOther = true;
-        }
-      });
-    }
-  } catch(e) {}
-
-  if (usedByOther) {
-    if (btn) { btn.disabled = false; btn.textContent = '⭐ Add Wallet'; }
-    addressInput.classList.add('error');
-    showAlert('orange', '⚠️ This wallet address is already registered to another OmniPay user');
-    return;
-  }
 
   var bal = await fetchWalletBalance(address);
 
@@ -2840,6 +3091,18 @@ window.addEventListener('DOMContentLoaded', function(){
     navTo('home');
   } else {
     renderHome();
+  }
+
+  if (auth) {
+    auth.onAuthStateChanged(function(user) {
+      if (!user || STATE.isLoggedIn) return;
+      if (restoreSession()) {
+        SESSION_RESTORED = true;
+        document.getElementById('bottomNav').style.display = 'flex';
+        renderHome();
+        navTo('home');
+      }
+    });
   }
 });
 

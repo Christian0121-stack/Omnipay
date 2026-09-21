@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#2563EB">
+<meta name="referrer" content="strict-origin-when-cross-origin">
 <title>OmniPay — Disaster-Resilient Payments</title>
 <link rel="icon" type="image/x-icon" href="OMNIPAYLOGO.ico">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -18,7 +20,7 @@
     <div class="loading-text" id="loadingText">Please wait…</div>
   </div>
 
-  <div class="alert-banner" id="alertBanner">
+  <div class="alert-banner" id="alertBanner" role="status" aria-live="assertive" aria-atomic="true">
     <span id="alertIcon">⚠️</span>
     <span id="alertMsg">Alert message</span>
   </div>
@@ -80,8 +82,8 @@
       <circle cx="70" cy="85" r="2.5" fill="#0EA5E9" opacity="0.55"/>
     </svg>
 
-    <div class="splash-logo" style="position:relative;z-index:2;">
-      <img src="OMNIPAY LOGO 5.png" alt="OmniPay" style="width:132px;height:132px;object-fit:cover;border-radius:50%;filter:drop-shadow(0 4px 16px rgba(37,99,235,0.35));"
+ <div class="splash-logo" style="position:relative;z-index:2;">
+      <img src="OMNIPAY LOGO 4.png" alt="OmniPay" style="width:132px;height:132px;object-fit:cover;border-radius:50%;filter:drop-shadow(0 4px 16px rgba(37,99,235,0.35));"
            onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
       <div style="display:none;width:132px;height:132px;border-radius:50%;background:linear-gradient(135deg,#2563EB,#0EA5E9);align-items:center;justify-content:center;font-size:44px;box-shadow:0 4px 20px rgba(37,99,235,0.4);">💳</div>
     </div>
@@ -107,9 +109,9 @@
       <p>Sign in to your OmniPay account</p>
     </div>
     <div class="auth-body">
-      <div class="input-group">
-        <label>Username</label>
-        <input type="text" id="loginUser" placeholder="Enter username" autocomplete="username">
+       <div class="input-group">
+         <label>Email Address</label>
+         <input type="email" id="loginUser" placeholder="you@example.com" autocomplete="username" inputmode="email">
       </div>
       <div class="input-group">
         <label>Password</label>
@@ -247,13 +249,6 @@
           </div>
         </div>
         <div class="input-group">
-          <label>6-Digit PIN</label>
-          <div class="input-wrapper">
-            <input type="password" id="regPin" placeholder="······" maxlength="6" inputmode="numeric" oninput="this.classList.remove('error')">
-            <button class="input-toggle" onclick="togglePass('regPin',this)">👁</button>
-          </div>
-        </div>
-        <div class="input-group">
           <label>Account Type</label>
           <select id="regType">
             <option value="personal">👤 Personal</option>
@@ -333,7 +328,7 @@
     </button>
 
     <div id="wsErrorBox" style="display:none; margin-top:16px; background:rgba(255,71,87,0.18); border:1px solid rgba(255,71,87,0.45); border-radius:14px; padding:14px 16px; width:100%;">
-      <div style="font-size:12px; font-weight:700; color:#FF6B7A; margin-bottom:4px;">⚠️ Firebase Error</div>
+       <div style="font-size:12px; font-weight:700; color:#FF6B7A; margin-bottom:4px;">⚠️ Setup Error</div>
       <div id="wsErrorMsg" style="font-size:12px; color:rgba(255,255,255,0.8); line-height:1.6; font-weight:500;"></div>
       <div id="wsErrorCode" style="font-size:10px; color:rgba(255,255,255,0.4); margin-top:6px; font-family:'Courier New',monospace;"></div>
     </div>
@@ -503,10 +498,10 @@
       <div class="input-group">
         <label>Recipient Wallet Address</label>
         <div class="input-wrapper">
-          <input type="text" id="sendRecipient" placeholder="Stellar Address (G…)" style="font-family:'Courier New',monospace;font-size:12px;letter-spacing:0.3px;" autocomplete="off" oninput="this.classList.remove('error')">
+        <input type="text" id="sendRecipient" placeholder="G… (56 characters)" aria-label="Recipient Stellar public address" style="font-family:'Courier New',monospace;font-size:12px;letter-spacing:0.3px;" autocomplete="off" spellcheck="false" oninput="this.classList.remove('error')">
           <button class="input-toggle" title="Paste" onclick="navigator.clipboard.readText().then(function(t){document.getElementById('sendRecipient').value=t;}).catch(function(){showAlert('yellow','Use long-press to paste');});" style="font-size:13px;">📋</button>
         </div>
-        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;font-weight:500;">Enter the recipient's Stellar wallet address</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;font-weight:500;">Starts with G · exactly 56 characters · Testnet account must be funded</div>
       </div>
       <div style="margin-top:20px; text-align:center;">
         <div class="amount-currency">Amount · XLM</div>
@@ -621,10 +616,6 @@
       <div class="card" style="padding:8px 16px;" id="fullTxList"></div>
     </div>
 
-    <div class="section" style="padding-top:0;">
-      <div class="section-title">Fraud Detection Log</div>
-      <div id="fraudLog"></div>
-    </div>
     <div style="height:20px;"></div>
   </div>
 
@@ -729,7 +720,7 @@
         </div>
         <div class="input-group">
           <label>Email Address</label>
-          <input type="email" id="editEmail" placeholder="juan@email.com">
+           <input type="email" id="editEmail" placeholder="juan@email.com" autocomplete="email" readonly>
         </div>
         <div class="input-group">
           <label>Account Type</label>
@@ -879,19 +870,12 @@
     <div class="modal">
       <div class="modal-handle"></div>
       <h3>🔑 Reset Password</h3>
-      <p class="sub">Enter the email on your account and choose a new password.</p>
+       <p class="sub">Enter the email on your account and we’ll send you a secure reset link.</p>
       <div class="input-group">
         <label>Email Address</label>
-        <input type="email" id="forgotEmail" placeholder="your@email.com">
+         <input type="email" id="forgotEmail" placeholder="you@example.com" autocomplete="email" inputmode="email">
       </div>
-      <div class="input-group mt-12">
-        <label>New Password</label>
-        <div class="input-wrapper">
-          <input type="password" id="forgotNewPass" placeholder="e.g. Secure1pass" autocomplete="new-password">
-          <button class="input-toggle" onclick="togglePass('forgotNewPass',this)">👁</button>
-        </div>
-      </div>
-      <button class="btn btn-primary btn-block mt-16" onclick="doForgotPassword()">Reset Password 🔐</button>
+       <button class="btn btn-primary btn-block mt-16" onclick="doForgotPassword()">Send Reset Link 🔐</button>
       <button class="btn btn-ghost btn-block mt-12" onclick="closeModal('forgotModal')">Cancel</button>
     </div>
   </div>
@@ -906,7 +890,7 @@
         <div class="badge badge-purple mt-12" id="successMode">📴 Offline Payment</div>
         <div class="success-proof">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-            <div class="proof-label" style="margin-bottom:0;">Cryptographic Proof (Nonce + Signature)</div>
+            <div class="proof-label" style="margin-bottom:0;">Payment Reference (Nonce + Signature)</div>
             <button onclick="copyProofCode()" style="flex-shrink:0;font-size:11px;padding:4px 12px;border-radius:8px;border:1.5px solid var(--primary);background:var(--primary-light);color:var(--primary);font-weight:700;cursor:pointer;margin-left:8px;">📋 Copy</button>
           </div>
           <div class="proof-code" id="proofCode">OmniPay:nonce=001:amt=100:vault=0xA4B2:sig=3045022100F8E3...</div>
@@ -1074,7 +1058,7 @@
       </div>
       <div style="background:linear-gradient(135deg,#FFF8E1,#FFF0C8); border-radius:14px; padding:13px 15px; margin-top:12px; border:1px solid #FFE066;">
         <div style="font-size:12px; color:#7A4500; font-weight:700;">🔐 Security Note</div>
-        <div style="font-size:12px; color:#9A5800; margin-top:4px; line-height:1.5; font-weight:500;">Private key stored in TEE (Trusted Execution Environment). Never leaves the device. Signing happens inside secure chip.</div>
+        <div style="font-size:12px; color:#9A5800; margin-top:4px; line-height:1.5; font-weight:500;">Private keys are encrypted before they are stored. Use a dedicated wallet such as Freighter for production funds.</div>
       </div>
       <button class="btn btn-ghost btn-block mt-16" onclick="closeModal('stellarModal')">Close</button>
     </div>
@@ -1300,6 +1284,7 @@
   </div>
 
 </div><script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/stellar-sdk/10.4.1/stellar-sdk.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>

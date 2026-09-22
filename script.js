@@ -10,6 +10,7 @@ var firebaseConfig = {
 
 var fbApp, auth, db;
 var USERS_COLLECTION = 'users';
+var USERNAME_LOOKUP_COLLECTION = 'usernames';
 try {
   fbApp = firebase.initializeApp(firebaseConfig);
   auth  = firebase.auth();
@@ -563,14 +564,10 @@ async function _updateXLMConversion(xlmAmt) {
 }
 
 async function doLogin() {
-  var email    = document.getElementById('loginUser').value.trim().toLowerCase();
+  var username = document.getElementById('loginUser').value.trim();
   var password = document.getElementById('loginPass').value;
-  if (!email || !password) { showAlert('red','⚠️ Enter email and password'); return; }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    showAlert('orange','📧 Enter a valid email address');
-    return;
-  }
-  if (!auth) { showAlert('red','❌ Authentication is unavailable. Refresh and try again.'); return; }
+  if (!username || !password) { showAlert('red','⚠️ Enter username and password'); return; }
+  if (!auth || !db) { showAlert('red','❌ Authentication is unavailable. Refresh and try again.'); return; }
 
   var btn = document.getElementById('loginBtn');
   if (btn) { btn.disabled = true; btn.textContent = 'Signing in…'; }
@@ -578,7 +575,11 @@ async function doLogin() {
 
   var account = null;
   var credential = null;
+  var loginError = null;
   try {
+    var lookupDoc = await db.collection(USERNAME_LOOKUP_COLLECTION).doc(username.toLowerCase()).get();
+    if (!lookupDoc.exists) throw { code: 'auth/user-not-found' };
+    var email = lookupDoc.data().email;
     credential = await auth.signInWithEmailAndPassword(email, password);
     account = await db.collection(USERS_COLLECTION).doc(credential.user.uid).get();
     if (!account.exists) throw new Error('Your account profile is incomplete. Contact support before using this account.');
@@ -591,6 +592,7 @@ async function doLogin() {
       password
     );
   } catch (e) {
+    loginError = e;
     try { if (credential && credential.user) await auth.signOut(); } catch (_) {}
     account = null;
   }
@@ -602,10 +604,10 @@ async function doLogin() {
     STATE.isLoggedIn = true;
     STATE.uid  = credential.user.uid;
     STATE.user = {
-      username: account.username || email.split('@')[0],
-      name:     account.name     || email.split('@')[0],
+      username: account.username || username,
+      name:     account.name     || username,
       phone:    account.phone    || '',
-      email:    credential.user.email || account.email || email,
+      email:    credential.user.email || account.email || '',
       type:     account.type     || 'personal',
       country:  account.country  || '\U0001f1f5\U0001f1ed Philippines'
     };
@@ -647,7 +649,11 @@ async function doLogin() {
     setFbStatus('connected','🟢 Signed in as ' + firstName);
     startInboxListener(); // begin real-time incoming-payment listener
   } else {
-    showAlert('red','❌ Invalid email or password');
+    if (loginError && loginError.code === 'permission-denied') {
+      showAlert('red','❌ Login is unavailable. Firestore rules need to allow reading the "usernames" collection.');
+    } else {
+      showAlert('red','❌ Invalid username or password');
+    }
     var passEl = document.getElementById('loginPass');
     passEl.classList.add('error');
     setTimeout(function(){ passEl.classList.remove('error'); }, 2000);
@@ -681,6 +687,7 @@ async function doRegister() {
   var phone = document.getElementById('regPhone').value.trim();
   var email = document.getElementById('regEmail').value.trim();
   var pass  = document.getElementById('regPass').value;
+  var pin   = document.getElementById('regPin').value.trim();
   var terms = document.getElementById('regTerms').checked;
   var type  = document.getElementById('regType').value;
 
@@ -690,7 +697,8 @@ async function doRegister() {
     { id:'regUser',  val:user,   label:'Username' },
     { id:'regPhone', val:phone,  label:'Mobile Number' },
     { id:'regEmail', val:email,  label:'Email Address' },
-    { id:'regPass',  val:pass,   label:'Password' }
+    { id:'regPass',  val:pass,   label:'Password' },
+    { id:'regPin',   val:pin,    label:'PIN' }
   ];
   var firstEmpty = null;
   requiredFields.forEach(function(f) {
@@ -711,6 +719,7 @@ async function doRegister() {
   if (pass.length < 6) { showAlert('orange','🔐 Password must be at least 6 characters'); return; }
   if (!/\d/.test(pass)) { showAlert('orange','🔢 Password must contain at least one number'); return; }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { showAlert('orange','📧 Enter a valid email address'); return; }
+  if (!/^\d{4,6}$/.test(pin)) { document.getElementById('regPin').classList.add('error'); showAlert('orange','🔢 PIN must be 4–6 digits'); return; }
 
   var btn = document.getElementById('registerBtn');
   if (btn) { btn.disabled = true; btn.textContent = 'Checking availability…'; }
@@ -736,6 +745,23 @@ async function doRegister() {
     showAlert('red', '❌ Could not protect the wallet key. Try again over HTTPS.');
     return;
   }
+  var pinRecord;
+  try {
+    pinRecord = await createSecretRecord(pin);
+  } catch (e) {
+    showAlert('red', '❌ Could not protect your PIN. Try again over HTTPS.');
+    return;
+  }
+  // Separate copy of the wallet secret, encrypted with the SMS PIN instead of
+  // the account password, so the SMS relay server can unlock it once it has
+  // verified the PIN texted in by the user — without ever knowing the password.
+  var pinWalletSecretRecord;
+  try {
+    pinWalletSecretRecord = await encryptWalletSecret(secKey, pin);
+  } catch (e) {
+    showAlert('red', '❌ Could not protect your wallet for SMS payments. Try again over HTTPS.');
+    return;
+  }
   var contract = generateContractAddress();
   var country  = (document.getElementById('regCountry') || {}).value || '\U0001f1f5\U0001f1ed Philippines';
   var now = new Date();
@@ -756,6 +782,11 @@ async function doRegister() {
     walletSecretEncrypted: walletSecretRecord.ciphertext,
     walletSecretSalt: walletSecretRecord.salt,
     walletSecretIv:   walletSecretRecord.iv,
+    smsPinHash:      pinRecord.hash,
+    smsPinSalt:      pinRecord.salt,
+    pinWalletSecretEncrypted: pinWalletSecretRecord.ciphertext,
+    pinWalletSecretSalt:      pinWalletSecretRecord.salt,
+    pinWalletSecretIv:        pinWalletSecretRecord.iv,
     contractAddress: contract,
     xlmBalance:      10000,
     balance:         2500,
@@ -851,9 +882,22 @@ async function finishWalletSetup() {
   } catch (authError) {
     showLoading(false);
     var authCode = authError && authError.code ? authError.code : '';
-    var authMessage = authCode === 'auth/email-already-in-use'
-      ? '❌ An account already exists for this email address.'
-      : '❌ Could not create the account. Check the email and try again.';
+    console.warn('OmniPay sign-up error:', authError);
+    var authMessages = {
+      'auth/email-already-in-use': '❌ An account already exists for this email address.',
+      'auth/invalid-email': '❌ That email address is not valid.',
+      'auth/weak-password': '❌ Password is too weak. Use at least 6 characters with a number.',
+      'auth/operation-not-allowed': '❌ Email/Password sign-in is turned off. Enable it in Firebase Console → Authentication → Sign-in method.',
+      'auth/admin-restricted-operation': '❌ Sign-ups are disabled for this project. Enable user sign-up in Firebase Console → Authentication → Settings.',
+      'auth/network-request-failed': '❌ Network error. Check your connection and try again.',
+      'auth/too-many-requests': '❌ Too many attempts. Please wait a moment and try again.',
+      'auth/unauthorized-domain': '❌ This domain is not authorized. Add it in Firebase Console → Authentication → Settings → Authorized domains.',
+      'auth/invalid-api-key': '❌ The Firebase API key is invalid. Check firebaseConfig.',
+      'auth/api-key-not-valid.-please-pass-a-valid-api-key.': '❌ The Firebase API key is invalid. Check firebaseConfig.',
+      'auth/requests-from-referer-blocked': '❌ This site is blocked by the API key restrictions. Allow this domain in Google Cloud Console → Credentials.'
+    };
+    var authMessage = authMessages[authCode]
+      || ('❌ Could not create the account' + (authCode ? ' (' + authCode + ')' : '') + '. Check the email and try again.');
     showAlert('red', authMessage);
     return;
   }
@@ -871,6 +915,11 @@ async function finishWalletSetup() {
     walletSecretEncrypted: PENDING_USER.walletSecretEncrypted,
     walletSecretSalt: PENDING_USER.walletSecretSalt,
     walletSecretIv:   PENDING_USER.walletSecretIv,
+    smsPinHash:      PENDING_USER.smsPinHash,
+    smsPinSalt:      PENDING_USER.smsPinSalt,
+    pinWalletSecretEncrypted: PENDING_USER.pinWalletSecretEncrypted,
+    pinWalletSecretSalt:      PENDING_USER.pinWalletSecretSalt,
+    pinWalletSecretIv:        PENDING_USER.pinWalletSecretIv,
     contractAddress: PENDING_USER.contractAddress,
     xlmBalance:      PENDING_USER.xlmBalance,
     balance:         PENDING_USER.balance,
@@ -884,6 +933,15 @@ async function finishWalletSetup() {
   };
 
   var saved = await saveUserProfile(authUser.uid, profileData);
+
+  if (saved) {
+    try {
+      await db.collection(USERNAME_LOOKUP_COLLECTION).doc(PENDING_USER.username.toLowerCase()).set({
+        uid: authUser.uid,
+        email: PENDING_USER.email
+      });
+    } catch (e) { console.warn('Username lookup save error:', e); }
+  }
 
   if (!saved) {
     try { await authUser.delete(); } catch (_) {}
@@ -951,7 +1009,7 @@ async function finishWalletSetup() {
   delete pendingCopy._password;
   PENDING_USER = null;
 
-  ['regFirst','regLast','regUser','regPhone','regEmail','regPass'].forEach(function(id){
+  ['regFirst','regLast','regUser','regPhone','regEmail','regPass','regPin'].forEach(function(id){
     var el = document.getElementById(id);
     if (el) el.value = '';
   });
@@ -1147,7 +1205,52 @@ function syncSpendableBalance() {
   if (sendBal) sendBal.textContent = STATE.balance.toFixed(6) + ' XLM';
 }
 
+function transactionKey(tx) {
+  if (!tx || typeof tx !== 'object') return '';
+  if (tx.txHash) return 'hash:' + String(tx.txHash);
+  if (tx.id) return 'id:' + String(tx.id);
+  return '';
+}
+
+function dedupeTransactions(list) {
+  var result = [];
+  var indexByKey = Object.create(null);
+
+  (Array.isArray(list) ? list : []).forEach(function(tx) {
+    if (!tx || typeof tx !== 'object') return;
+
+    var key = transactionKey(tx);
+    if (!key) {
+      result.push(tx);
+      return;
+    }
+
+    if (indexByKey[key] == null) {
+      indexByKey[key] = result.length;
+      result.push(tx);
+      return;
+    }
+
+    var existingIndex = indexByKey[key];
+    var existing = result[existingIndex];
+    if ((!existing.txHash && tx.txHash) || (!existing.note && tx.note)) {
+      result[existingIndex] = Object.assign({}, existing, tx);
+    }
+  });
+
+  result.sort(function(a, b) {
+    return (b.ts || 0) - (a.ts || 0);
+  });
+  return result;
+}
+
+function normalizeTransactionState() {
+  STATE.transactions = dedupeTransactions(STATE.transactions);
+  return STATE.transactions;
+}
+
 function renderHome() {
+  normalizeTransactionState();
   syncSpendableBalance();
   var t = getTrustTier(STATE.trustScore);
   var firstName = STATE.user.name ? STATE.user.name.split(' ')[0] : 'User';
@@ -1213,7 +1316,7 @@ function renderTxItem(tx) {
       + '<a href="https://stellar.expert/explorer/testnet/tx/'+encodeURIComponent(String(tx.txHash))+'" target="_blank" rel="noopener noreferrer" style="flex-shrink:0;font-size:10px;color:var(--primary);font-weight:600;text-decoration:none;white-space:nowrap;">⭐ Explorer ›</a>'
       + '</div>';
   }
-  return '<div class="tx-item"><div class="tx-icon" style="background:'+iconBg+';">'+safeText(tx.icon)+'</div><div class="tx-info"><div class="tx-name">'+safeText(tx.name)+'</div><div class="tx-sub">'+safeText(tx.note)+' · '+fmtTime(tx.ts)+'</div><span class="tx-status '+safeText(tx.status)+'">'+statusText+'</span>'+hashLine+'</div><div style="text-align:right;"><div class="tx-amount '+(isCredit?'credit':'debit')+'">'+(isCredit?'+':'-')+fmtTxAmt(tx)+'</div></div></div>';
+  return '<div class="tx-item"><div class="tx-icon" style="background:'+iconBg+';">'+safeText(tx.icon)+'</div><div class="tx-info tx-content"><div class="tx-name">'+safeText(tx.name)+'</div><div class="tx-sub">'+safeText(tx.note)+' · '+fmtTime(tx.ts)+'</div><span class="tx-status '+safeText(tx.status)+'">'+statusText+'</span>'+hashLine+'</div><div class="tx-amount-wrap"><div class="tx-amount '+(isCredit?'credit':'debit')+'">'+(isCredit?'+':'-')+fmtTxAmt(tx)+'</div></div></div>';
 }
 
 function copyTxHash(hash) {
@@ -1230,6 +1333,7 @@ function copyTxHash(hash) {
 }
 
 function renderVault() {
+  normalizeTransactionState();
   syncSpendableBalance();
   var t = getTrustTier(STATE.trustScore);
   var vaultMax = Math.floor(STATE.balance * t.pct / 100);
@@ -1288,7 +1392,8 @@ function updateOfflinePayUI() {
 }
 
 function renderHistory(filter) {
-  var txs = filter === 'all' ? STATE.transactions : STATE.transactions.filter(function(tx){
+  var allTxs = normalizeTransactionState();
+  var txs = filter === 'all' ? allTxs : allTxs.filter(function(tx){
     return tx.status === filter || (filter === 'offline' && tx.mode === 'offline');
   });
   var el = document.getElementById('fullTxList');
@@ -1307,6 +1412,7 @@ function filterTx(filter, el) {
 }
 
 function renderProfile() {
+  normalizeTransactionState();
   syncSpendableBalance();
   var t = getTrustTier(STATE.trustScore);
   document.getElementById('profileName').textContent        = STATE.user.name || 'User';
@@ -2039,6 +2145,7 @@ function startInboxListener() {
   if (!db || !STATE.uid || !STATE.isLoggedIn) return;
   stopInboxListener(); // tear down any previous listener first
 
+  normalizeTransactionState();
   _knownTxIds = new Set(STATE.transactions.map(function(tx){ return tx.id; }));
 
   try {
@@ -2047,15 +2154,14 @@ function startInboxListener() {
       .onSnapshot(function(doc) {
         if (!doc.exists || !STATE.isLoggedIn) return;
         var data      = doc.data();
-        var remoteTxs = Array.isArray(data.transactions) ? data.transactions : [];
+        var remoteTxs = dedupeTransactions(data.transactions);
 
         var incoming = remoteTxs.filter(function(tx){ return tx.id && !_knownTxIds.has(tx.id); });
         if (incoming.length === 0) return;
 
         incoming.forEach(function(tx){ _knownTxIds.add(tx.id); });
 
-        STATE.transactions = incoming.concat(STATE.transactions);
-        STATE.transactions.sort(function(a, b){ return (b.ts || 0) - (a.ts || 0); });
+        STATE.transactions = dedupeTransactions(incoming.concat(STATE.transactions));
         saveSession();
 
         var histEl = document.getElementById('history');
@@ -2089,7 +2195,7 @@ function stopInboxListener() {
 async function syncSenderTxsToFirestore() {
   if (!db || !STATE.uid) return;
   try {
-    var txs = (STATE.transactions || []).slice(0, 200); // cap at 200
+    var txs = dedupeTransactions(STATE.transactions).slice(0, 200); // cap at 200
     await db.collection(USERS_COLLECTION).doc(STATE.uid).update({
       transactions: txs
     });
@@ -2869,7 +2975,7 @@ function saveSession() {
       wallet:             walletSession,
       wallets:            STATE.wallets,
       activeWalletIndex:  STATE.activeWalletIndex,
-      transactions:       STATE.transactions,
+      transactions:       dedupeTransactions(STATE.transactions),
       noncePool:          STATE.noncePool,
       usedNonces:         STATE.usedNonces
     };
@@ -2901,7 +3007,7 @@ function restoreSession() {
     STATE.wallet.secretKey   = '';
     STATE.wallets            = Array.isArray(d.wallets)       ? d.wallets       : [];
     STATE.activeWalletIndex  = d.activeWalletIndex  != null   ? d.activeWalletIndex : 0;
-    STATE.transactions       = Array.isArray(d.transactions) ? d.transactions : [];
+    STATE.transactions       = dedupeTransactions(d.transactions);
     STATE.noncePool          = Array.isArray(d.noncePool)    ? d.noncePool    : [1,2,3,4,5,6,7,8,9,10];
     STATE.usedNonces         = Array.isArray(d.usedNonces)   ? d.usedNonces   : [];
     setTimeout(startInboxListener, 0);

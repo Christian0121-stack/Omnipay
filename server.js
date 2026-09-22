@@ -122,30 +122,55 @@ const PIN_LOCKOUT_MS = 15 * 60 * 1000;
 const pinAttempts = new Map();
 
 function isPinLocked(phone) {
-  const rec = pinAttempts.get(phone);
+  const key = normalizePhone(phone);
+  const rec = pinAttempts.get(key);
   if (!rec) return false;
   if (rec.lockedUntil && Date.now() < rec.lockedUntil) return true;
   if (rec.lockedUntil && Date.now() >= rec.lockedUntil) {
-    pinAttempts.delete(phone);
+    pinAttempts.delete(key);
   }
   return false;
 }
 
 function registerPinFailure(phone) {
-  const rec = pinAttempts.get(phone) || { count: 0, lockedUntil: 0 };
+  const key = normalizePhone(phone);
+  const rec = pinAttempts.get(key) || { count: 0, lockedUntil: 0 };
   rec.count += 1;
   if (rec.count >= PIN_MAX_ATTEMPTS) {
     rec.lockedUntil = Date.now() + PIN_LOCKOUT_MS;
   }
-  pinAttempts.set(phone, rec);
+  pinAttempts.set(key, rec);
 }
 
 function clearPinFailures(phone) {
-  pinAttempts.delete(phone);
+  pinAttempts.delete(normalizePhone(phone));
 }
 function normalizePhone(raw) {
   if (!raw) return '';
   return raw.trim();
+}
+
+const SMS_RATE_LIMIT_MAX = 10;
+const SMS_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const smsRateLimits = new Map();
+
+function consumeSmsRateLimit(phone) {
+  const key = normalizePhone(phone);
+  const now = Date.now();
+  const rec = smsRateLimits.get(key);
+
+  if (!rec || now - rec.windowStartedAt >= SMS_RATE_LIMIT_WINDOW_MS) {
+    smsRateLimits.set(key, { count: 1, windowStartedAt: now });
+    return true;
+  }
+
+  if (rec.count >= SMS_RATE_LIMIT_MAX) {
+    return false;
+  }
+
+  rec.count += 1;
+  smsRateLimits.set(key, rec);
+  return true;
 }
 
 async function findUserByPhone(phone) {
@@ -335,12 +360,21 @@ function parseCommand(text) {
       return { type: 'SEND', amount, recipient, pin };
     }
   }
-  if (cmd === 'BAL' || cmd === 'BALANCE') {
-    return { type: 'BALANCE' };
+  if (
+    (cmd === 'BAL' || cmd === 'BALANCE') &&
+    parts.length === 2 &&
+    /^\d{4,6}$/.test(parts[1])
+  ) {
+    return { type: 'BALANCE', pin: parts[1] };
   }
   return { type: 'UNKNOWN' };
 }
 async function handleIncomingSms(senderPhone, messageText, eventKey) {
+  if (!consumeSmsRateLimit(senderPhone)) {
+    console.warn('[sms] Rate limit exceeded for sender:', normalizePhone(senderPhone));
+    return;
+  }
+
   const claimed = await claimSmsEvent(eventKey, senderPhone, messageText);
   if (!claimed) return;
 
@@ -357,6 +391,47 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
     }
 
     if (command.type === 'BALANCE') {
+      if (isPinLocked(senderPhone)) {
+        await sendSms(
+          senderPhone,
+          'OmniPay: Too many wrong PIN attempts. Try again in a bit, or use the app.'
+        );
+        return;
+      }
+
+      if (
+        !sender.pinWalletSecretEncrypted ||
+        !sender.pinWalletSecretSalt ||
+        !sender.pinWalletSecretIv ||
+        !sender.walletPublic
+      ) {
+        console.warn(
+          '[sms] Sender doc',
+          sender.id,
+          'has no encrypted wallet PIN data for BALANCE.'
+        );
+        await sendSms(
+          senderPhone,
+          'OmniPay: Balance PIN is not enabled yet. Log in to the app to set up your wallet.'
+        );
+        return;
+      }
+
+      const balancePinCheck = decryptWalletSecretByPin(
+        sender.pinWalletSecretEncrypted,
+        sender.pinWalletSecretSalt,
+        sender.pinWalletSecretIv,
+        command.pin
+      );
+
+      if (!balancePinCheck) {
+        registerPinFailure(senderPhone);
+        await logEvent(sender.id, '❌', 'SMS balance blocked: incorrect PIN', 'error');
+        await sendSms(senderPhone, 'OmniPay: Incorrect PIN. Balance not sent.');
+        return;
+      }
+
+      clearPinFailures(senderPhone);
       await sendSms(
         senderPhone,
         `OmniPay: Your balance is ${(sender.xlmBalance || 0).toFixed(4)} ${ASSET_LABEL}.`
@@ -442,7 +517,7 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
     }
     await sendSms(
       senderPhone,
-      'OmniPay commands: "SEND <amount> <username|number> <pin>" or "BAL" to check your balance.'
+      'OmniPay commands: "SEND <amount> <username|number> <pin>" or "BAL <pin>" to check your balance.'
     );
   } finally {
     await finishSmsEvent(eventKey, 'processed');

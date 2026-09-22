@@ -10,10 +10,19 @@ const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const StellarSdk = require('stellar-sdk');
 const PORT = process.env.PORT || 3000;
 
-const GATEWAY_BASE_URL =
-  (process.env.SMS_GATEWAY_USE || 'local').toLowerCase() === 'public'
-    ? process.env.SMS_GATEWAY_PUBLIC_URL
-    : process.env.SMS_GATEWAY_LOCAL_URL;
+const GATEWAY_MODE = (process.env.SMS_GATEWAY_USE || 'local').toLowerCase();
+const USE_CLOUD_GATEWAY = GATEWAY_MODE === 'cloud' || GATEWAY_MODE === 'public';
+
+const DEFAULT_CLOUD_GATEWAY_URL = 'https://api.sms-gate.app/3rdparty/v1';
+const configuredGatewayUrl = USE_CLOUD_GATEWAY
+  ? process.env.SMS_GATEWAY_PUBLIC_URL || DEFAULT_CLOUD_GATEWAY_URL
+  : process.env.SMS_GATEWAY_LOCAL_URL;
+
+const GATEWAY_BASE_URL = configuredGatewayUrl
+  ? configuredGatewayUrl.trim().replace(/\/+$/, '')
+  : '';
+
+const GATEWAY_MESSAGE_PATH = USE_CLOUD_GATEWAY ? '/messages' : '/message';
 const GATEWAY_USER = process.env.SMS_GATEWAY_USERNAME;
 const GATEWAY_PASS = process.env.SMS_GATEWAY_PASSWORD;
 const GATEWAY_WEBHOOK_SECRET = process.env.SMS_GATEWAY_WEBHOOK_SECRET || '';
@@ -193,7 +202,7 @@ async function sendSms(toNumber, text) {
   }
   try {
     await axios.post(
-      `${GATEWAY_BASE_URL}/message`,
+      `${GATEWAY_BASE_URL}${GATEWAY_MESSAGE_PATH}`,
       { textMessage: { text }, phoneNumbers: [toNumber] },
       {
         auth: { username: GATEWAY_USER, password: GATEWAY_PASS },
@@ -449,6 +458,7 @@ app.use(
 );
 app.use(express.static(path.join(__dirname)));
 app.get('/health', (_req, res) => res.json({ ok: true }));
+
 app.post('/webhook/sms-received', async (req, res) => {
   if (!verifyWebhookSignature(req.rawBody, req.headers)) {
     console.warn('[webhook] Rejected: bad or missing signature');
@@ -490,5 +500,7 @@ app.post('/dev/simulate-sms', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`OmniPay SMS relay listening on port ${PORT}`);
+  console.log(`Gateway mode: ${USE_CLOUD_GATEWAY ? 'cloud' : 'local'}`);
   console.log(`Gateway target: ${GATEWAY_BASE_URL || '(not configured)'}`);
+  console.log(`Gateway message path: ${GATEWAY_MESSAGE_PATH}`);
 });

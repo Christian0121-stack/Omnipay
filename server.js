@@ -9,7 +9,6 @@ const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const StellarSdk = require('stellar-sdk');
 const PORT = process.env.PORT || 3000;
-
 const GATEWAY_MODE = (process.env.SMS_GATEWAY_USE || 'local').toLowerCase();
 const USE_CLOUD_GATEWAY = GATEWAY_MODE === 'cloud' || GATEWAY_MODE === 'public';
 
@@ -17,11 +16,9 @@ const DEFAULT_CLOUD_GATEWAY_URL = 'https://api.sms-gate.app/3rdparty/v1';
 const configuredGatewayUrl = USE_CLOUD_GATEWAY
   ? process.env.SMS_GATEWAY_PUBLIC_URL || DEFAULT_CLOUD_GATEWAY_URL
   : process.env.SMS_GATEWAY_LOCAL_URL;
-
 const GATEWAY_BASE_URL = configuredGatewayUrl
   ? configuredGatewayUrl.trim().replace(/\/+$/, '')
   : '';
-
 const GATEWAY_MESSAGE_PATH = USE_CLOUD_GATEWAY ? '/messages' : '/message';
 const GATEWAY_USER = process.env.SMS_GATEWAY_USERNAME;
 const GATEWAY_PASS = process.env.SMS_GATEWAY_PASSWORD;
@@ -32,23 +29,19 @@ const NETWORK_PASSPHRASE =
   process.env.STELLAR_NETWORK_PASSPHRASE || StellarSdk.Networks.TESTNET;
 const ASSET_LABEL = process.env.SMS_ASSET_LABEL || 'XLM';
 const SECRET_HASH_ITERATIONS = 150000;
-
 const REQUIRE_SIGNED_SMS = String(process.env.REQUIRE_SIGNED_SMS || 'false').toLowerCase() === 'true';
-
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY || '';
 let db;
 try {
   const serviceAccountPath = path.resolve(
     process.env.FIREBASE_SERVICE_ACCOUNT_PATH || './serviceAccountKey.json'
   );
-  console.log('[debug] Resolved service account path:', serviceAccountPath);
-  console.log('[debug] File exists at that path:', fs.existsSync(serviceAccountPath));
 
   if (!fs.existsSync(serviceAccountPath)) {
     throw new Error(`Service account file not found at: ${serviceAccountPath}`);
   }
 
   const serviceAccount = require(serviceAccountPath);
-  console.log('[debug] Service account project_id:', serviceAccount.project_id);
 
   if (!serviceAccount.private_key || !serviceAccount.client_email) {
     throw new Error(
@@ -77,7 +70,6 @@ const usersCol = () => db.collection('users');
 const eventsCol = () => db.collection('omnipay_events');
 const smsEventsCol = () => db.collection('omnipay_sms_events');
 const relayTransactionsCol = () => db.collection('omnipay_relay_transactions');
-
 const horizon = new StellarSdk.Horizon.Server(HORIZON_URL);
 
 async function sendStellarPayment(senderSecret, destinationPublicKey, amount) {
@@ -102,7 +94,6 @@ async function sendStellarPayment(senderSecret, destinationPublicKey, amount) {
   const result = await horizon.submitTransaction(tx);
   return result.hash;
 }
-
 async function getStellarNativeBalance(publicKey) {
   if (!publicKey) return null;
   try {
@@ -114,13 +105,11 @@ async function getStellarNativeBalance(publicKey) {
     return null;
   }
 }
-
 const OmniPayBackend = {
   async settlePayment(walletSecret, destinationPublicKey, amount) {
     return sendStellarPayment(walletSecret, destinationPublicKey, amount);
   },
 };
-
 const SIGNATURE_MAX_SKEW_MS = 5 * 60 * 1000;
 
 function buildSignedPayloadString({ senderId, recipientId, amount, timestamp, nonce, requestId }) {
@@ -164,7 +153,6 @@ function verifySignature({ senderId, recipientId, amount, timestamp, nonce, requ
   }
   return valid ? { ok: true } : { ok: false, reason: 'signature-mismatch' };
 }
-
 const signedRequestsCol = () => db.collection('omnipay_signed_requests');
 const usedNoncesCol = () => db.collection('omnipay_used_nonces');
 
@@ -216,7 +204,6 @@ async function finishSignedRequest(requestId, status) {
     console.error('[signed-request] finalize failed:', err.message);
   }
 }
-
 function verifyPinHash(pin, hash, saltHex) {
   if (!pin || !hash || !saltHex) return false;
   const PREFIX = 'pbkdf2-sha256$';
@@ -289,7 +276,6 @@ function normalizePhone(raw) {
   if (!raw) return '';
   return raw.trim();
 }
-
 const SMS_RATE_LIMIT_MAX = 10;
 const SMS_RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const smsRateLimits = new Map();
@@ -316,58 +302,35 @@ function consumeSmsRateLimit(phone) {
 async function findUserByPhone(phone) {
   const clean = normalizePhone(phone);
   if (!clean) return null;
-  console.log('[debug] findUserByPhone: incoming raw =', JSON.stringify(phone), '-> clean =', JSON.stringify(clean));
 
   const snap = await usersCol().where('phone', '==', clean).limit(1).get();
   if (!snap.empty) {
-    console.log('[debug] findUserByPhone: exact match on doc', snap.docs[0].id);
     return { id: snap.docs[0].id, ...snap.docs[0].data() };
   }
   const last9 = clean.replace(/\D/g, '').slice(-9);
-  console.log('[debug] findUserByPhone: no exact match, falling back. last9 =', last9);
   if (!last9) return null;
 
   const all = await usersCol().get();
-  console.log('[debug] findUserByPhone: total docs in users collection =', all.size);
-  all.docs.forEach((d) => {
-    const rawPhone = d.data().phone;
-    const p = (rawPhone || '').replace(/\D/g, '').slice(-9);
-    console.log(
-      '[debug]   doc', d.id,
-      'phone=', JSON.stringify(rawPhone),
-      '-> last9=', JSON.stringify(p),
-      p === last9 ? '<-- MATCH' : ''
-    );
-  });
-
   const match = all.docs.find((d) => {
     const p = (d.data().phone || '').replace(/\D/g, '').slice(-9);
     return p === last9;
   });
-  if (match) {
-    console.log('[debug] findUserByPhone: matched via last9 on doc', match.id);
-  } else {
-    console.log('[debug] findUserByPhone: NO MATCH FOUND for last9 =', last9);
-  }
   return match ? { id: match.id, ...match.data() } : null;
 }
 
 async function findRecipient(identifier) {
   const raw = identifier.trim().replace(/^@/, '');
-
   try {
     const byId = await usersCol().doc(raw).get();
     if (byId.exists) return { id: byId.id, ...byId.data() };
   } catch (err) {
   }
-
   for (const candidate of [...new Set([raw, raw.toLowerCase()])]) {
     const snap = await usersCol().where('username', '==', candidate).limit(1).get();
     if (!snap.empty) return { id: snap.docs[0].id, ...snap.docs[0].data() };
   }
   return findUserByPhone(raw);
 }
-
 async function sendSms(toNumber, text) {
   if (!GATEWAY_BASE_URL) {
     console.warn('[sms] No gateway URL configured, skipping send:', text);
@@ -387,7 +350,10 @@ async function sendSms(toNumber, text) {
   }
 }
 function verifyWebhookSignature(rawBody, headers) {
-  if (!GATEWAY_WEBHOOK_SECRET) return true;
+  if (!GATEWAY_WEBHOOK_SECRET) {
+    console.error('[webhook] SMS_GATEWAY_WEBHOOK_SECRET is not set — rejecting all webhook calls until it is configured.');
+    return false;
+  }
   const signature = headers['x-signature'];
   const timestamp = headers['x-timestamp'];
   if (!signature || !timestamp) return false;
@@ -428,7 +394,6 @@ async function recordTransaction(userDocId, txRecord) {
     console.error('[firestore] recordTransaction failed:', err.message);
   }
 }
-
 const RELAY_STATUS = {
   RECEIVED: 'received',
   VALIDATION_FAILED: 'validation_failed',
@@ -438,7 +403,6 @@ const RELAY_STATUS = {
   SETTLED: 'settled',
   FAILED: 'failed',
 };
-
 async function createRelayRecord({ channel, senderPhone, senderId, recipient, amount }) {
   const ref = relayTransactionsCol().doc();
   const now = Date.now();
@@ -460,7 +424,6 @@ async function createRelayRecord({ channel, senderPhone, senderId, recipient, am
   }
   return ref.id;
 }
-
 async function updateRelayStatus(relayId, status, fields = {}) {
   if (!relayId) return;
   const { detail, ...rest } = fields;
@@ -481,7 +444,6 @@ async function updateRelayStatus(relayId, status, fields = {}) {
     console.error('[relay] failed to update status:', relayId, status, err.message);
   }
 }
-
 function buildSmsEventKey(senderPhone, messageText, payload) {
   const providerId =
     payload &&
@@ -550,7 +512,6 @@ async function finishSmsEvent(eventKey, status) {
     console.error('[webhook] Could not finalize SMS event:', err.message);
   }
 }
-
 function parseCommand(text) {
   const parts = text.trim().split(/\s+/);
   const cmd = (parts[0] || '').toUpperCase();
@@ -583,7 +544,6 @@ function parseCommand(text) {
   }
   return { type: 'UNKNOWN' };
 }
-
 async function executeSend({ sender, recipient, amount, walletSecret, mode, relayId }) {
   if ((sender.xlmBalance || 0) < amount) {
     await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'insufficient-balance' });
@@ -605,7 +565,6 @@ async function executeSend({ sender, recipient, amount, walletSecret, mode, rela
     await updateRelayStatus(relayId, RELAY_STATUS.SUBMITTED);
     const txHash = await OmniPayBackend.settlePayment(walletSecret, recipient.walletPublic, amount);
     await updateRelayStatus(relayId, RELAY_STATUS.CONFIRMED, { txHash });
-
     const senderPublicKey = StellarSdk.Keypair.fromSecret(walletSecret).publicKey();
     const [chainSenderBal, chainRecipientBal] = await Promise.all([
       getStellarNativeBalance(senderPublicKey),
@@ -633,7 +592,6 @@ async function executeSend({ sender, recipient, amount, walletSecret, mode, rela
     return { ok: false, code: 'stellar-failed', detail, relayId };
   }
 }
-
 async function handleIncomingSms(senderPhone, messageText, eventKey) {
   if (!consumeSmsRateLimit(senderPhone)) {
     console.warn('[sms] Rate limit exceeded for sender:', normalizePhone(senderPhone));
@@ -676,7 +634,6 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
         );
         return;
       }
-
       const balancePinCheck = verifyPinHash(command.pin, sender.smsPinHash, sender.smsPinSalt);
 
       if (!balancePinCheck) {
@@ -821,9 +778,32 @@ app.use(
     },
   })
 );
-app.use(express.static(path.join(__dirname)));
+const PUBLIC_DIR = path.join(__dirname, 'public');
+if (fs.existsSync(PUBLIC_DIR)) {
+  app.use(express.static(PUBLIC_DIR, { index: 'index.html', dotfiles: 'ignore' }));
+} else {
+  const FRONTEND_FILES = ['index.html', 'styles.css', 'script.js'];
+  FRONTEND_FILES.forEach((name) => {
+    const filePath = path.join(__dirname, name);
+    app.get('/' + (name === 'index.html' ? '' : name), (_req, res) => {
+      if (!fs.existsSync(filePath)) return res.status(404).end();
+      res.sendFile(filePath);
+    });
+  });
+}
 app.get('/health', (_req, res) => res.json({ ok: true }));
-
+function requireAdminKey(req, res, next) {
+  if (!ADMIN_API_KEY) {
+    return res.status(503).json({ error: 'admin endpoints disabled — set ADMIN_API_KEY' });
+  }
+  const provided = req.headers['x-admin-key'];
+  const expected = Buffer.from(ADMIN_API_KEY);
+  const got = Buffer.from(String(provided || ''));
+  if (got.length !== expected.length || !crypto.timingSafeEqual(got, expected)) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  next();
+}
 app.post('/webhook/sms-received', async (req, res) => {
   if (!verifyWebhookSignature(req.rawBody, req.headers)) {
     console.warn('[webhook] Rejected: bad or missing signature');
@@ -847,7 +827,6 @@ app.post('/webhook/sms-received', async (req, res) => {
     console.error('[handleIncomingSms] unhandled error:', err);
   });
 });
-
 app.post('/api/send', async (req, res) => {
   const { senderId, recipientId, amount, timestamp, nonce, requestId, signature, pin } = req.body || {};
 
@@ -923,7 +902,6 @@ app.post('/api/send', async (req, res) => {
       return res.status(401).json({ error: 'incorrect pin', relayId });
     }
     clearPinFailures(lockKey);
-
     const recipient = await findRecipient(String(recipientId));
     if (!recipient || !recipient.walletPublic) {
       await finishSignedRequest(requestId, 'rejected');
@@ -951,7 +929,6 @@ app.post('/api/send', async (req, res) => {
     return res.status(500).json({ error: 'internal error', relayId });
   }
 });
-
 app.post('/dev/simulate-sms', async (req, res) => {
   const ip = req.socket.remoteAddress || '';
   if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(ip)) {
@@ -967,8 +944,7 @@ app.post('/dev/simulate-sms', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-app.get('/api/relay-transactions/:id', async (req, res) => {
+app.get('/api/relay-transactions/:id', requireAdminKey, async (req, res) => {
   try {
     const doc = await relayTransactionsCol().doc(req.params.id).get();
     if (!doc.exists) return res.status(404).json({ error: 'not found' });
@@ -978,8 +954,7 @@ app.get('/api/relay-transactions/:id', async (req, res) => {
     res.status(500).json({ error: 'internal error' });
   }
 });
-
-app.get('/api/relay-transactions', async (req, res) => {
+app.get('/api/relay-transactions', requireAdminKey, async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
     let query = relayTransactionsCol().orderBy('createdAt', 'desc');
@@ -991,8 +966,7 @@ app.get('/api/relay-transactions', async (req, res) => {
     res.status(500).json({ error: 'internal error' });
   }
 });
-
-app.post('/api/reconcile-balance/:userId', async (req, res) => {
+app.post('/api/reconcile-balance/:userId', requireAdminKey, async (req, res) => {
   try {
     const userDoc = await usersCol().doc(req.params.userId).get();
     if (!userDoc.exists) return res.status(404).json({ error: 'user not found' });
@@ -1017,6 +991,12 @@ app.listen(PORT, () => {
   console.log(`Gateway mode: ${USE_CLOUD_GATEWAY ? 'cloud' : 'local'}`);
   console.log(`Gateway target: ${GATEWAY_BASE_URL || '(not configured)'}`);
   console.log(`Gateway message path: ${GATEWAY_MESSAGE_PATH}`);
+  if (!GATEWAY_WEBHOOK_SECRET) {
+    console.warn('[auth] SMS_GATEWAY_WEBHOOK_SECRET is not set — /webhook/sms-received will reject all requests until it is configured.');
+  }
+  if (!ADMIN_API_KEY) {
+    console.warn('[auth] ADMIN_API_KEY is not set — /api/relay-transactions* and /api/reconcile-balance are disabled until it is configured.');
+  }
   if (REQUIRE_SIGNED_SMS) {
     console.log('[auth] REQUIRE_SIGNED_SMS=true  -> plain unsigned "SEND" SMS commands are REJECTED. Only signed SMS (SIG <ts> <nonce> <reqId> <sig>) is accepted.');
   } else {

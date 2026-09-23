@@ -2234,3 +2234,47 @@
       animation: none;
     }
   }
+  /* ---------------------------------------------------------------------
+     Polish pass: subtle refinements layered on top of the existing design.
+     Additive only — nothing above is overridden or removed.
+     --------------------------------------------------------------------- */
+
+  html { scroll-behavior: smooth; }
+
+  /* Slightly stronger, more visible focus ring on form fields for easier
+     keyboard/accessibility use, on top of the existing focus-visible rules. */
+  .input-group input:focus,
+  .input-group select:focus,
+  .input-group textarea:focus {
+    box-shadow: 0 0 0 3px var(--primary-glow);
+  }
+
+  /* Gentle lift + shadow on hover for tappable list rows (transactions,
+     settings items, wallet rows) so the UI feels more responsive on
+     desktop/trackpad use without affecting touch devices. */
+  @media (hover: hover) and (pointer: fine) {
+    .tx-item:hover,
+    .settings-item:hover,
+    .wallet-row:hover {
+      transform: translateY(-1px);
+      box-shadow: var(--shadow);
+    }
+  }
+
+  /* Smoother, consistent transitions on interactive surfaces that didn't
+     already declare one. */
+  .card, .tx-item, .settings-item, .wallet-row, .btn, .pay-tab {
+    transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease), background 0.18s var(--ease);
+  }
+
+  /* Comfortable reading width on larger screens: the app card already caps
+     at 430px and stays centered, so widen the ambient background slightly
+     so the phone-frame presentation feels intentional rather than empty. */
+  @media (min-width: 900px) {
+    body { padding: 32px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .card, .tx-item, .settings-item, .wallet-row, .btn, .pay-tab { transition: none; }
+  }

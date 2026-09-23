@@ -1001,4 +1001,9 @@ app.listen(PORT, () => {
   console.log(`Gateway mode: ${USE_CLOUD_GATEWAY ? 'cloud' : 'local'}`);
   console.log(`Gateway target: ${GATEWAY_BASE_URL || '(not configured)'}`);
   console.log(`Gateway message path: ${GATEWAY_MESSAGE_PATH}`);
+  if (REQUIRE_SIGNED_SMS) {
+    console.log('[auth] REQUIRE_SIGNED_SMS=true  -> plain unsigned "SEND" SMS commands are REJECTED. Only signed SMS (SIG <ts> <nonce> <reqId> <sig>) is accepted.');
+  } else {
+    console.warn('[auth] REQUIRE_SIGNED_SMS=false -> plain unsigned "SEND <amount> <recipient> <pin>" SMS is still ACCEPTED (PIN-only auth). Set REQUIRE_SIGNED_SMS=true in .env once the signing app has rolled out, to enforce digital-signature authentication on every SMS request.');
+  }
 });

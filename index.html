@@ -433,20 +433,15 @@
     </div>
 
     <div class="section" style="padding-top:0;">
-      <div class="card vault-card">
-        <div class="vault-top">
-          <div>
-            <div class="vault-lbl">Daily Limit</div>
-            <div class="vault-amount" id="vaultDisplay">₱450.00</div>
-          </div>
-          <div style="font-size:30px;">🔐</div>
-        </div>
-        <div class="vault-bar"><div class="vault-fill" id="vaultBar" style="width:30%;"></div></div>
-        <div class="vault-meta">
-          <span id="vaultPctLabel">30% of balance locked</span>
-          <span id="vaultUsesLeft">4 uses remaining</span>
-        </div>
-      </div>
+      <button class="home-omnicard-card" onclick="navTo('vault')" aria-label="Open OmniCard authentication prototype">
+        <span class="home-omnicard-glow"></span>
+        <span class="home-omnicard-copy">
+          <span class="home-omnicard-kicker">OmniCard prototype</span>
+          <span class="home-omnicard-title">Authenticate with your card</span>
+          <span class="home-omnicard-status"><span class="status-dot online"></span><span id="homeOmniCardStatus">Not paired</span></span>
+        </span>
+        <span class="home-omnicard-arrow">→</span>
+      </button>
     </div>
 
     <div class="section" style="padding-top:0;">
@@ -539,65 +534,116 @@
   </div>
 
   <div class="screen" id="vault">
-    <div class="vault-hero">
-      <h2>Offline Vault</h2>
-      <p>Locked funds for disaster-resilient payments</p>
-      <div class="vault-balance-big" id="vaultBig">₱450.00</div>
-      <div class="vault-uses-row" id="vaultUsesRow"></div>
-      <div style="margin-top:12px; font-size:12px; color:rgba(255,255,255,0.7); position:relative; z-index:1;" id="vaultPctInfo">30% of ₱1,500.00 locked (Trust: 51-75 tier allows 65%)</div>
-    </div>
-
-    <div class="section">
-      <div class="section-title">Trust-Based Limits</div>
-      <div class="card" id="trustLimitsCard"></div>
-    </div>
-
-    <div class="section" style="padding-top:0;">
-      <div class="section-title">Vault Actions</div>
-      <div class="grid-2">
-        <button class="btn btn-primary" onclick="showLockModal()">🔒 Lock Funds</button>
-        <button class="btn btn-outline" onclick="showUnlockModal()">🔓 Unlock Funds</button>
+    <div class="omnicard-page-header">
+      <div class="omnicard-header-orbit"></div>
+     
+      <h2>OmniCard Authentication</h2>
+      <p>Pair a card device and verify a payment request with a signed challenge.</p>
+      <div class="omnicard-header-meta">
+        <span class="prototype-pill">Prototype only</span>
+        <span class="omnilink-mini">OmniLink-ready flow</span>
       </div>
     </div>
 
-    <div class="section" style="padding-top:0;">
-      <div class="section-title">Security Model</div>
-      <div class="card">
-        <div class="info-row">
-          <span class="info-label">Double-spend Prevention</span>
-          <span class="info-val"><span class="badge badge-yellow">Bounded Risk</span></span>
+    <div class="section omnicard-section">
+      <div class="omnicard-status-card" id="omniCardStatusCard" data-status="not-paired">
+        <div class="omnicard-status-top">
+          <div class="omnicard-device-mark"><span class="device-chip"></span><span class="device-signal"></span></div>
+          <div class="omnicard-status-copy">
+            <div class="section-title">Card / device status</div>
+            <div class="omnicard-status-value" id="omniCardStatus">Not paired</div>
+            <div class="omnicard-status-helper" id="omniCardStatusHelper">Pair an OmniCard to enable authentication.</div>
+          </div>
+          <span class="status-label status-label-neutral" id="omniCardStatusLabel">Not paired</span>
         </div>
-        <div class="info-row">
-          <span class="info-label">Nonce Strategy</span>
-          <span class="info-val">Monotonic Counter</span>
+        <div class="omnicard-status-line"><span id="omniCardStatusLine"></span></div>
+        <button class="btn btn-primary btn-block" id="pairOmniCardBtn" onclick="pairOmniCard()">Pair OmniCard</button>
+      </div>
+    </div>
+
+    <div class="section omnicard-section omnicard-grid">
+      <div class="card omnicard-detail-card">
+        <div class="detail-card-heading"><span class="detail-icon blue">◈</span><span>Card identity</span></div>
+        <div class="omnicard-detail-row">
+          <span>Card ID</span>
+          <strong id="omniCardId">—</strong>
         </div>
-        <div class="info-row">
-          <span class="info-label">Signing Method</span>
-          <span class="info-val">TEE-backed</span>
+        <div class="omnicard-detail-row">
+          <span>Public key</span>
+          <strong id="omniCardPublicKey">—</strong>
         </div>
-        <div class="info-row">
-          <span class="info-label">Settlement Layer</span>
-          <span class="info-val"><span class="badge badge-purple">Stellar Soroban</span></span>
+        <button class="text-action" id="copyOmniCardKeyBtn" onclick="copyOmniCardKey()" disabled>Copy public key</button>
+      </div>
+      <div class="card omnicard-detail-card">
+        <div class="detail-card-heading"><span class="detail-icon violet">◷</span><span>Last authentication</span></div>
+        <div class="omnicard-last-auth" id="omniCardLastAuth">No authentication yet</div>
+        <div class="omnicard-detail-row compact">
+          <span>Nonce</span>
+          <strong id="omniCardNonce">—</strong>
         </div>
-        <div class="info-row">
-          <span class="info-label">Max Offline Exposure</span>
-          <span class="info-val" id="maxExposure">₱975.00</span>
-        </div>
-        <div class="info-row">
-          <span class="info-label">Fraud On-Sync</span>
-          <span class="info-val" style="color:var(--success);">Detect + Penalize</span>
+        <div class="omnicard-detail-row compact">
+          <span>Signature</span>
+          <strong class="verification-pending" id="omniCardVerification">Pending</strong>
         </div>
       </div>
     </div>
 
-    <div class="section" style="padding-top:0;">
-      <div class="section-title">Pending Offline Transactions</div>
-      <div id="pendingTxList"></div>
+    <div class="section omnicard-section">
+      <div class="section-heading-row">
+        <div>
+          <div class="section-title">Authentication demo</div>
+          <div class="section-heading">Verify a payment challenge</div>
+        </div>
+        <span class="demo-badge">Demo</span>
+      </div>
+      <div class="card auth-demo-card">
+        <div class="challenge-preview">
+          <div class="challenge-icon">✓</div>
+          <div>
+            <div class="challenge-label">Signed challenge</div>
+            <div class="challenge-value" id="omniChallengePreview">Pair your card to generate a challenge</div>
+          </div>
+        </div>
+        <div class="omnicard-form-grid">
+          <div class="input-group">
+            <label for="omniMerchant">Merchant</label>
+            <input type="text" id="omniMerchant" value="Omni Market" maxlength="40">
+          </div>
+          <div class="input-group">
+            <label for="omniAmount">Amount</label>
+            <input type="number" id="omniAmount" value="250.00" min="0.01" step="0.01" inputmode="decimal">
+          </div>
+        </div>
+        <button class="btn btn-accent btn-block" id="authenticatePaymentBtn" onclick="authenticateOmniCardPayment()" disabled>Authenticate payment</button>
+        <div class="verification-result" id="omniVerificationResult" data-state="pending">
+          <span class="verification-result-icon">○</span>
+          <span id="omniVerificationText">Pair your OmniCard before running the authentication demo.</span>
+        </div>
+      </div>
     </div>
 
-    <div class="section" style="padding-top:0;">
-      <button class="btn btn-accent btn-block" onclick="doSync()">🔄 Sync to Stellar Now</button>
-      <div style="text-align:center; margin-top:10px; font-size:12px; color:var(--text-muted); font-weight:500;">Syncing submits pending proofs to Stellar Soroban contract for settlement</div>
+    <div class="section omnicard-section">
+      <div class="omnilink-card">
+        <div class="omnilink-card-top">
+          <div>
+            <div class="section-title">Proposed architecture</div>
+            <div class="section-heading">OmniLink</div>
+          </div>
+          <span class="architecture-badge">Next layer</span>
+        </div>
+        <p>OmniLink is the proposed bridge between the OmniCard device, the merchant challenge, and the verification service.</p>
+        <div class="architecture-flow">
+          <span>OmniCard</span><i>→</i><span>OmniLink</span><i>→</i><span>Verifier</span>
+        </div>
+        <button class="text-action omnilink-action" onclick="showOmniLinkDetails()">View OmniLink architecture <span>→</span></button>
+      </div>
+    </div>
+
+    <div class="section omnicard-section">
+      <div class="prototype-note">
+        <span class="prototype-note-icon">ⓘ</span>
+        <div><strong>Prototype only</strong><p>This screen demonstrates the intended authentication flow. Card pairing, signatures, and verification are simulated locally for evaluation.</p></div>
+      </div>
     </div>
     <div style="height:20px;"></div>
   </div>
@@ -861,9 +907,9 @@
     </div>
     <div class="nav-item" id="nav-vault" onclick="navTo('vault')">
       <div class="nav-icon">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="color:#8A8FA8"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="color:#8A8FA8"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 9h8M8 13h5M8 17h3"/><circle cx="17" cy="16" r="2" fill="currentColor" stroke="none"/></svg>
       </div>
-      <span class="nav-label">Vault</span>
+      <span class="nav-label">OmniCard</span>
     </div>
     <div class="nav-item" id="nav-profile" onclick="navTo('profile')">
       <div class="nav-icon">

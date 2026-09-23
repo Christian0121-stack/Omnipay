@@ -1275,11 +1275,10 @@ function renderHome() {
   document.getElementById('tsGoodTx').textContent             = STATE.goodTxCount;
   document.getElementById('tsLastSync').textContent           = '2h ago';
 
-  var vaultPct = STATE.balance > 0 ? (STATE.vaultLocked / STATE.balance) * 100 : 0;
-  document.getElementById('vaultDisplay').textContent  = fmtAmt(STATE.vaultLocked);
-  document.getElementById('vaultBar').style.width      = vaultPct+'%';
-  document.getElementById('vaultPctLabel').textContent = Math.round(vaultPct)+'% of balance locked';
-  document.getElementById('vaultUsesLeft').textContent = (STATE.vaultUsesRemaining===99?'∞':STATE.vaultUsesRemaining)+' uses remaining';
+  var homeCardStatus = document.getElementById('homeOmniCardStatus');
+  if (homeCardStatus) {
+    homeCardStatus.textContent = getOmniCardState().label;
+  }
 
   var container = document.getElementById('recentTxList');
   var recent = STATE.transactions.slice(0,4);
@@ -3215,3 +3214,160 @@ window.addEventListener('DOMContentLoaded', function(){
 setTimeout(function(){
   if (!SESSION_RESTORED) { goTo('login'); }
 }, 3600);
+
+/* OmniCard authentication prototype */
+var OMNICARD_STATE = {
+  status: 'not-paired',
+  cardId: '',
+  publicKey: '',
+  lastAuth: '',
+  nonce: '',
+  signature: '',
+  verified: false
+};
+
+function getOmniCardState() {
+  if (OMNICARD_STATE.status === 'ready') return { label: 'Ready', helper: 'Your card is ready to authenticate a payment.', className: 'ready' };
+  if (OMNICARD_STATE.status === 'paired') return { label: 'Paired', helper: 'Card paired successfully. Run the demo when ready.', className: 'paired' };
+  return { label: 'Not paired', helper: 'Pair an OmniCard to enable authentication.', className: 'not-paired' };
+}
+
+function setOmniCardText(id, value) {
+  var el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
+function shortOmniValue(value, start, end) {
+  var text = String(value || '');
+  return text.length > (start + end + 1) ? text.slice(0, start) + '…' + text.slice(-end) : text;
+}
+
+function randomOmniHex(length) {
+  var output = '';
+  var bytes = new Uint8Array(Math.ceil(length / 2));
+  if (window.crypto && window.crypto.getRandomValues) {
+    window.crypto.getRandomValues(bytes);
+  } else {
+    for (var i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  for (var j = 0; j < bytes.length; j++) output += bytes[j].toString(16).padStart(2, '0');
+  return output.slice(0, length).toUpperCase();
+}
+
+function updateOmniCardUI() {
+  var state = getOmniCardState();
+  var card = document.getElementById('omniCardStatusCard');
+  if (card) card.setAttribute('data-status', state.className);
+  setOmniCardText('omniCardStatus', state.label);
+  setOmniCardText('omniCardStatusLabel', state.label);
+  setOmniCardText('omniCardStatusHelper', state.helper);
+  setOmniCardText('homeOmniCardStatus', state.label);
+  setOmniCardText('omniCardId', OMNICARD_STATE.cardId ? OMNICARD_STATE.cardId : '—');
+  setOmniCardText('omniCardPublicKey', OMNICARD_STATE.publicKey ? shortOmniValue(OMNICARD_STATE.publicKey, 10, 8) : '—');
+  setOmniCardText('omniCardLastAuth', OMNICARD_STATE.lastAuth || 'No authentication yet');
+  setOmniCardText('omniCardNonce', OMNICARD_STATE.nonce || '—');
+  setOmniCardText('omniCardVerification', OMNICARD_STATE.verified ? 'Verified' : 'Pending');
+  setOmniCardText('omniChallengePreview', OMNICARD_STATE.cardId ? 'OMNI-' + OMNICARD_STATE.cardId.slice(-6) + ' · payment challenge' : 'Pair your card to generate a challenge');
+
+  var verification = document.getElementById('omniCardVerification');
+  if (verification) verification.className = OMNICARD_STATE.verified ? 'verification-success' : 'verification-pending';
+  var result = document.getElementById('omniVerificationResult');
+  if (result) result.setAttribute('data-state', OMNICARD_STATE.verified ? 'success' : 'pending');
+  var pairButton = document.getElementById('pairOmniCardBtn');
+  if (pairButton) {
+    pairButton.textContent = state.className === 'not-paired' ? 'Pair OmniCard' : 'Reset pairing';
+    pairButton.className = state.className === 'ready' ? 'btn btn-outline btn-block' : 'btn btn-primary btn-block';
+  }
+  var authenticateButton = document.getElementById('authenticatePaymentBtn');
+  if (authenticateButton) authenticateButton.disabled = state.className === 'not-paired';
+  var copyButton = document.getElementById('copyOmniCardKeyBtn');
+  if (copyButton) copyButton.disabled = !OMNICARD_STATE.publicKey;
+}
+
+function pairOmniCard() {
+  if (OMNICARD_STATE.status !== 'not-paired') {
+    OMNICARD_STATE = { status: 'not-paired', cardId: '', publicKey: '', lastAuth: '', nonce: '', signature: '', verified: false };
+    updateOmniCardUI();
+    showAlert('yellow', 'OmniCard pairing reset.');
+    return;
+  }
+
+  var button = document.getElementById('pairOmniCardBtn');
+  if (button) { button.disabled = true; button.textContent = 'Pairing OmniCard…'; }
+  var card = document.getElementById('omniCardStatusCard');
+  if (card) card.setAttribute('data-status', 'pairing');
+
+  setTimeout(function() {
+    OMNICARD_STATE.status = 'paired';
+    OMNICARD_STATE.cardId = 'OC-' + randomOmniHex(8);
+    OMNICARD_STATE.publicKey = 'pk_omnicard_' + randomOmniHex(40).toLowerCase();
+    OMNICARD_STATE.verified = false;
+    updateOmniCardUI();
+    showAlert('success', 'OmniCard paired successfully.');
+  }, 850);
+}
+
+async function createOmniSignature(payload) {
+  var input = String(payload);
+  if (window.crypto && window.crypto.subtle && window.TextEncoder) {
+    var digest = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
+    return Array.from(new Uint8Array(digest)).map(function(byte) {
+      return byte.toString(16).padStart(2, '0');
+    }).join('').toUpperCase();
+  }
+  return randomOmniHex(32);
+}
+
+async function authenticateOmniCardPayment() {
+  if (OMNICARD_STATE.status === 'not-paired') {
+    showAlert('orange', 'Pair your OmniCard first.');
+    return;
+  }
+  var merchant = (document.getElementById('omniMerchant').value || '').trim() || 'Omni Market';
+  var amount = parseFloat(document.getElementById('omniAmount').value);
+  if (!isFinite(amount) || amount <= 0) {
+    showAlert('orange', 'Enter a valid payment amount.');
+    return;
+  }
+
+  var button = document.getElementById('authenticatePaymentBtn');
+  var result = document.getElementById('omniVerificationResult');
+  if (button) { button.disabled = true; button.textContent = 'Verifying challenge…'; }
+  if (result) result.setAttribute('data-state', 'checking');
+  setOmniCardText('omniVerificationText', 'Checking nonce and signature…');
+  OMNICARD_STATE.status = 'paired';
+  updateOmniCardUI();
+
+  var nonce = 'N-' + Date.now().toString(36).toUpperCase() + '-' + randomOmniHex(4);
+  var signature = await createOmniSignature([OMNICARD_STATE.cardId, merchant, amount.toFixed(2), nonce].join('|'));
+  OMNICARD_STATE.nonce = nonce;
+  OMNICARD_STATE.signature = signature;
+  OMNICARD_STATE.lastAuth = new Date().toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+  OMNICARD_STATE.verified = true;
+  OMNICARD_STATE.status = 'ready';
+  updateOmniCardUI();
+  setOmniCardText('omniVerificationText', 'Payment challenge verified for ' + merchant + ' · ₱' + amount.toFixed(2));
+  var resultIcon = document.querySelector('.verification-result-icon');
+  if (resultIcon) resultIcon.textContent = '✓';
+  if (button) { button.disabled = false; button.textContent = 'Authenticate payment'; }
+  showAlert('success', 'Payment authenticated. Nonce and signature verified.');
+}
+
+function copyOmniCardKey() {
+  if (!OMNICARD_STATE.publicKey) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(OMNICARD_STATE.publicKey).then(function() {
+      showAlert('success', 'Public key copied.');
+    }).catch(function() {
+      showAlert('yellow', 'Copy the public key manually.');
+    });
+  }
+}
+
+function showOmniLinkDetails() {
+  showAlert('yellow', 'OmniLink connects the card device, merchant challenge, and verification service.');
+}
+
+function renderVault() {
+  updateOmniCardUI();
+}

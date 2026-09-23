@@ -1453,6 +1453,7 @@
     .home-hero,
     .vault-hero,
     .profile-hero,
+    .omnicard-page-header,
     .page-header {
       padding-top: max(42px, calc(env(safe-area-inset-top) + 28px));
     }
@@ -1523,5 +1524,713 @@
 
     .tx-amount {
       font-size: 13px;
+    }
+  }
+
+  /* OmniCard authentication prototype */
+  .home-omnicard-card {
+    width: 100%;
+    border: 0;
+    border-radius: 22px;
+    padding: 20px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    position: relative;
+    overflow: hidden;
+    text-align: left;
+    cursor: pointer;
+    color: #fff;
+    background: linear-gradient(135deg, #13264f 0%, #1b3d79 56%, #0e7490 100%);
+    box-shadow: 0 14px 30px rgba(21, 58, 116, .22);
+    transition: transform .2s ease, box-shadow .2s ease;
+    font-family: inherit;
+  }
+
+  .home-omnicard-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 18px 36px rgba(21, 58, 116, .28);
+  }
+
+  .home-omnicard-card:active {
+    transform: scale(.985);
+  }
+
+  .home-omnicard-glow {
+    position: absolute;
+    width: 170px;
+    height: 170px;
+    right: -48px;
+    top: -82px;
+    border: 1px solid rgba(255, 255, 255, .18);
+    border-radius: 50%;
+    box-shadow: 0 0 0 18px rgba(255, 255, 255, .035), 0 0 0 36px rgba(255, 255, 255, .025);
+  }
+
+  .home-omnicard-copy {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    flex-direction: column;
+    gap: 4px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .home-omnicard-kicker {
+    color: #8dd9ff;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: .9px;
+    text-transform: uppercase;
+  }
+
+  .home-omnicard-title {
+    font-size: 16px;
+    font-weight: 800;
+    letter-spacing: -.2px;
+  }
+
+  .home-omnicard-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: rgba(255,255,255,.68);
+    font-size: 12px;
+    font-weight: 600;
+    margin-top: 4px;
+  }
+
+  .home-omnicard-status .status-dot {
+    width: 7px;
+    height: 7px;
+    background: #8dd9ff;
+  }
+
+  .home-omnicard-arrow {
+    position: relative;
+    z-index: 1;
+    color: #fff;
+    font-size: 25px;
+    font-weight: 400;
+  }
+
+  .omnicard-page-header {
+    padding: 54px 24px 25px;
+    position: relative;
+    overflow: hidden;
+    color: #fff;
+    background:
+      radial-gradient(circle at 86% 10%, rgba(119, 225, 255, .27), transparent 28%),
+      linear-gradient(150deg, #152c60 0%, #1e4f9b 57%, #087e9d 100%);
+  }
+
+  .omnicard-page-header::before {
+    content: '';
+    position: absolute;
+    width: 240px;
+    height: 240px;
+    right: -120px;
+    bottom: -154px;
+    border: 1px solid rgba(255,255,255,.18);
+    border-radius: 50%;
+    box-shadow: 0 0 0 18px rgba(255,255,255,.04), 0 0 0 38px rgba(255,255,255,.03);
+  }
+
+  .omnicard-header-orbit {
+    position: absolute;
+    width: 105px;
+    height: 105px;
+    right: 26px;
+    top: 52px;
+    border: 1px solid rgba(255,255,255,.2);
+    border-radius: 50%;
+    transform: rotate(32deg) skewX(-16deg);
+  }
+
+  .omnicard-header-orbit::after {
+    content: '';
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    right: 8px;
+    top: 14px;
+    border-radius: 50%;
+    background: #8dd9ff;
+    box-shadow: 0 0 16px #8dd9ff;
+  }
+
+  .omnicard-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    position: relative;
+    z-index: 1;
+    color: rgba(255,255,255,.72);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  .eyebrow-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #85e8bd;
+    box-shadow: 0 0 12px rgba(133,232,189,.8);
+  }
+
+  .omnicard-page-header h2 {
+    position: relative;
+    z-index: 1;
+    margin-top: 11px;
+    color: #fff;
+    font-size: 25px;
+    font-weight: 850;
+    letter-spacing: -.7px;
+  }
+
+  .omnicard-page-header p {
+    position: relative;
+    z-index: 1;
+    max-width: 315px;
+    margin-top: 8px;
+    color: rgba(255,255,255,.68);
+    font-size: 13px;
+    line-height: 1.55;
+    font-weight: 500;
+  }
+
+  .omnicard-header-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    position: relative;
+    z-index: 1;
+    margin-top: 17px;
+  }
+
+  .prototype-pill,
+  .omnilink-mini,
+  .demo-badge,
+  .architecture-badge {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 99px;
+    padding: 6px 10px;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: .2px;
+  }
+
+  .prototype-pill {
+    color: #103b70;
+    background: #c9f5ff;
+  }
+
+  .omnilink-mini {
+    color: rgba(255,255,255,.83);
+    border: 1px solid rgba(255,255,255,.26);
+    background: rgba(255,255,255,.1);
+  }
+
+  .omnicard-section {
+    padding-top: 18px;
+    padding-bottom: 0;
+  }
+
+  .omnicard-status-card {
+    padding: 19px;
+    overflow: hidden;
+    position: relative;
+    border: 1px solid var(--border);
+    border-radius: 22px;
+    background: var(--card);
+    box-shadow: var(--shadow);
+  }
+
+  .omnicard-status-card::after {
+    content: '';
+    position: absolute;
+    width: 145px;
+    height: 145px;
+    right: -86px;
+    top: -85px;
+    border: 1px solid rgba(37,99,235,.1);
+    border-radius: 50%;
+    box-shadow: 0 0 0 15px rgba(37,99,235,.035), 0 0 0 30px rgba(37,99,235,.025);
+  }
+
+  .omnicard-status-top {
+    display: flex;
+    align-items: center;
+    gap: 13px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .omnicard-device-mark {
+    width: 49px;
+    height: 58px;
+    flex: 0 0 49px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    border: 1px solid rgba(37,99,235,.16);
+    border-radius: 15px;
+    background: linear-gradient(145deg, var(--primary-light), var(--accent-light));
+  }
+
+  .device-chip {
+    width: 23px;
+    height: 18px;
+    display: block;
+    position: relative;
+    border: 2px solid var(--primary);
+    border-radius: 5px;
+    background: linear-gradient(90deg, transparent 43%, var(--primary) 44% 56%, transparent 57%), linear-gradient(0deg, transparent 43%, var(--primary) 44% 56%, transparent 57%);
+  }
+
+  .device-signal {
+    width: 7px;
+    height: 7px;
+    position: absolute;
+    right: 8px;
+    top: 8px;
+    border-radius: 50%;
+    background: var(--success);
+    box-shadow: 0 0 0 4px rgba(16,185,129,.12);
+  }
+
+  .omnicard-status-copy {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .omnicard-status-copy .section-title {
+    margin-bottom: 4px;
+  }
+
+  .omnicard-status-value {
+    color: var(--text);
+    font-size: 18px;
+    font-weight: 850;
+    letter-spacing: -.3px;
+  }
+
+  .omnicard-status-helper {
+    margin-top: 3px;
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.35;
+    font-weight: 500;
+  }
+
+  .status-label {
+    flex: 0 0 auto;
+    align-self: flex-start;
+    border-radius: 99px;
+    padding: 6px 9px;
+    font-size: 10px;
+    font-weight: 800;
+  }
+
+  .status-label-neutral {
+    color: var(--text-muted);
+    background: var(--bg);
+  }
+
+  .omnicard-status-card[data-status="paired"] .status-label {
+    color: var(--primary);
+    background: var(--primary-light);
+  }
+
+  .omnicard-status-card[data-status="ready"] .status-label {
+    color: #087a60;
+    background: #d8faee;
+  }
+
+  .omnicard-status-card[data-status="ready"] .device-signal {
+    background: var(--success);
+    box-shadow: 0 0 0 4px rgba(16,185,129,.16), 0 0 16px rgba(16,185,129,.5);
+  }
+
+  .omnicard-status-line {
+    height: 4px;
+    margin: 17px 0 16px;
+    overflow: hidden;
+    border-radius: 99px;
+    background: var(--bg);
+  }
+
+  .omnicard-status-line span {
+    display: block;
+    width: 18%;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, var(--primary), var(--accent));
+    transition: width .45s ease;
+  }
+
+  .omnicard-status-card[data-status="paired"] .omnicard-status-line span { width: 58%; }
+  .omnicard-status-card[data-status="ready"] .omnicard-status-line span { width: 100%; background: linear-gradient(90deg, var(--success), #5eead4); }
+
+  .omnicard-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .omnicard-detail-card {
+    min-width: 0;
+    padding: 16px;
+  }
+
+  .detail-card-heading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 800;
+  }
+
+  .detail-icon {
+    width: 27px;
+    height: 27px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 9px;
+    font-size: 16px;
+  }
+
+  .detail-icon.blue { color: var(--primary); background: var(--primary-light); }
+  .detail-icon.violet { color: #7c3aed; background: #f0eaff; }
+
+  .omnicard-detail-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 17px;
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 600;
+  }
+
+  .omnicard-detail-row strong {
+    max-width: 62%;
+    overflow: hidden;
+    color: var(--text);
+    font-family: 'Courier New', monospace;
+    font-size: 10px;
+    font-weight: 800;
+    text-align: right;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .omnicard-detail-row.compact {
+    margin-top: 11px;
+  }
+
+  .omnicard-last-auth {
+    min-height: 29px;
+    margin-top: 15px;
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.35;
+    font-weight: 750;
+  }
+
+  .verification-pending { color: var(--warning) !important; font-family: inherit !important; }
+  .verification-success { color: var(--success) !important; font-family: inherit !important; }
+
+  .text-action {
+    padding: 0;
+    border: 0;
+    color: var(--primary);
+    background: transparent;
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 800;
+  }
+
+  .text-action:disabled {
+    color: var(--text-muted);
+    cursor: not-allowed;
+    opacity: .55;
+  }
+
+  .omnicard-detail-card .text-action {
+    margin-top: 15px;
+  }
+
+  .section-heading-row,
+  .omnilink-card-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .section-heading {
+    color: var(--text);
+    font-size: 16px;
+    font-weight: 850;
+    letter-spacing: -.2px;
+  }
+
+  .demo-badge {
+    color: #7c3aed;
+    background: #f0eaff;
+  }
+
+  .auth-demo-card {
+    margin-top: 12px;
+    padding: 16px;
+  }
+
+  .challenge-preview {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    margin-bottom: 17px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--bg);
+  }
+
+  .challenge-icon {
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 32px;
+    border-radius: 10px;
+    color: var(--primary);
+    background: var(--primary-light);
+    font-size: 18px;
+    font-weight: 900;
+  }
+
+  .challenge-label {
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: .6px;
+    text-transform: uppercase;
+  }
+
+  .challenge-value {
+    margin-top: 3px;
+    overflow: hidden;
+    color: var(--text);
+    font-family: 'Courier New', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .omnicard-form-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, .8fr);
+    gap: 11px;
+  }
+
+  .auth-demo-card .input-group {
+    gap: 6px;
+    margin-bottom: 16px;
+  }
+
+  .auth-demo-card .input-group label {
+    font-size: 10px;
+  }
+
+  .auth-demo-card .input-group input {
+    padding: 12px 12px;
+    border-radius: 12px;
+    font-size: 13px;
+  }
+
+  .verification-result {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-top: 12px;
+    padding: 10px 11px;
+    border-radius: 12px;
+    color: var(--text-muted);
+    background: var(--bg);
+    font-size: 11px;
+    line-height: 1.4;
+    font-weight: 600;
+  }
+
+  .verification-result-icon {
+    flex: 0 0 auto;
+    color: var(--warning);
+    font-size: 16px;
+    line-height: 14px;
+  }
+
+  .verification-result[data-state="checking"] {
+    color: var(--primary);
+    background: var(--primary-light);
+  }
+
+  .verification-result[data-state="checking"] .verification-result-icon {
+    color: var(--primary);
+    animation: pulse 1s infinite;
+  }
+
+  .verification-result[data-state="success"] {
+    color: #087a60;
+    background: #e5fbf2;
+  }
+
+  .verification-result[data-state="success"] .verification-result-icon {
+    color: var(--success);
+    font-weight: 900;
+  }
+
+  .omnilink-card {
+    padding: 18px;
+    border: 1px solid #cfe0ff;
+    border-radius: 20px;
+    background: linear-gradient(135deg, var(--primary-light), #f1fbff);
+  }
+
+  #app.dark .omnilink-card {
+    border-color: #25477e;
+    background: linear-gradient(135deg, rgba(37,99,235,.18), rgba(14,165,233,.11));
+  }
+
+  .architecture-badge {
+    color: var(--primary);
+    background: rgba(255,255,255,.75);
+  }
+
+  .omnilink-card p {
+    margin-top: 11px;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.55;
+    font-weight: 500;
+  }
+
+  .architecture-flow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 5px;
+    margin: 15px 0;
+  }
+
+  .architecture-flow span {
+    flex: 1;
+    padding: 8px 5px;
+    border: 1px solid rgba(37,99,235,.16);
+    border-radius: 10px;
+    color: var(--primary);
+    background: rgba(255,255,255,.74);
+    font-size: 10px;
+    font-weight: 800;
+    text-align: center;
+  }
+
+  #app.dark .architecture-flow span {
+    border-color: rgba(125,211,252,.2);
+    background: rgba(7,21,48,.45);
+  }
+
+  .architecture-flow i {
+    color: var(--accent-dark);
+    font-size: 14px;
+    font-style: normal;
+    font-weight: 800;
+  }
+
+  .omnilink-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .prototype-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 13px 14px;
+    border: 1px solid #f1d998;
+    border-radius: 15px;
+    color: #805b13;
+    background: #fff9e9;
+  }
+
+  #app.dark .prototype-note {
+    border-color: #765d28;
+    color: #f3cf7a;
+    background: rgba(107,75,13,.18);
+  }
+
+  .prototype-note-icon {
+    flex: 0 0 auto;
+    font-size: 18px;
+    line-height: 19px;
+  }
+
+  .prototype-note strong {
+    display: block;
+    font-size: 12px;
+    font-weight: 850;
+  }
+
+  .prototype-note p {
+    margin-top: 3px;
+    font-size: 11px;
+    line-height: 1.45;
+    font-weight: 500;
+  }
+
+  @media (max-width: 380px) {
+    .omnicard-page-header {
+      padding-left: 20px;
+      padding-right: 20px;
+    }
+
+    .omnicard-section {
+      padding-left: 20px;
+      padding-right: 20px;
+    }
+
+    .omnicard-status-top {
+      gap: 9px;
+    }
+
+    .omnicard-device-mark {
+      width: 43px;
+      flex-basis: 43px;
+    }
+
+    .status-label {
+      padding-left: 7px;
+      padding-right: 7px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .home-omnicard-card,
+    .omnicard-status-line span,
+    .verification-result[data-state="checking"] .verification-result-icon {
+      transition: none;
+      animation: none;
     }
   }

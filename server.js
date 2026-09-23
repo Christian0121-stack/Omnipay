@@ -115,6 +115,12 @@ async function getStellarNativeBalance(publicKey) {
   }
 }
 
+const OmniPayBackend = {
+  async settlePayment(walletSecret, destinationPublicKey, amount) {
+    return sendStellarPayment(walletSecret, destinationPublicKey, amount);
+  },
+};
+
 const SIGNATURE_MAX_SKEW_MS = 5 * 60 * 1000;
 
 function buildSignedPayloadString({ senderId, recipientId, amount, timestamp, nonce, requestId }) {
@@ -208,6 +214,26 @@ async function finishSignedRequest(requestId, status) {
       .update({ status: status || 'processed', updatedAt: FieldValue.serverTimestamp() });
   } catch (err) {
     console.error('[signed-request] finalize failed:', err.message);
+  }
+}
+
+function verifyPinHash(pin, hash, saltHex) {
+  if (!pin || !hash || !saltHex) return false;
+  const PREFIX = 'pbkdf2-sha256$';
+  if (String(hash).indexOf(PREFIX) !== 0) return false;
+  const parts = String(hash).slice(PREFIX.length).split('$');
+  const iterations = parseInt(parts[0], 10);
+  const expectedHex = parts[1] || '';
+  if (!iterations || !expectedHex || !/^[0-9a-f]+$/i.test(expectedHex)) return false;
+  try {
+    const salt = Buffer.from(saltHex, 'hex');
+    const derived = crypto.pbkdf2Sync(String(pin), salt, iterations, 32, 'sha256');
+    const actual = crypto.createHmac('sha256', derived).update('OmniPay secret record').digest('hex');
+    const actualBuf = Buffer.from(actual, 'hex');
+    const expectedBuf = Buffer.from(expectedHex, 'hex');
+    return actualBuf.length === expectedBuf.length && crypto.timingSafeEqual(actualBuf, expectedBuf);
+  } catch (err) {
+    return false;
   }
 }
 
@@ -577,7 +603,7 @@ async function executeSend({ sender, recipient, amount, walletSecret, mode, rela
 
   try {
     await updateRelayStatus(relayId, RELAY_STATUS.SUBMITTED);
-    const txHash = await sendStellarPayment(walletSecret, recipient.walletPublic, amount);
+    const txHash = await OmniPayBackend.settlePayment(walletSecret, recipient.walletPublic, amount);
     await updateRelayStatus(relayId, RELAY_STATUS.CONFIRMED, { txHash });
 
     const senderPublicKey = StellarSdk.Keypair.fromSecret(walletSecret).publicKey();
@@ -638,16 +664,11 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
         return;
       }
 
-      if (
-        !sender.pinWalletSecretEncrypted ||
-        !sender.pinWalletSecretSalt ||
-        !sender.pinWalletSecretIv ||
-        !sender.walletPublic
-      ) {
+      if (!sender.smsPinHash || !sender.smsPinSalt) {
         console.warn(
           '[sms] Sender doc',
           sender.id,
-          'has no encrypted wallet PIN data for BALANCE.'
+          'has no smsPinHash for BALANCE.'
         );
         await sendSms(
           senderPhone,
@@ -656,12 +677,7 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
         return;
       }
 
-      const balancePinCheck = decryptWalletSecretByPin(
-        sender.pinWalletSecretEncrypted,
-        sender.pinWalletSecretSalt,
-        sender.pinWalletSecretIv,
-        command.pin
-      );
+      const balancePinCheck = verifyPinHash(command.pin, sender.smsPinHash, sender.smsPinSalt);
 
       if (!balancePinCheck) {
         registerPinFailure(senderPhone);

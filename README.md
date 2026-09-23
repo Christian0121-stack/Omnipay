@@ -168,10 +168,11 @@ The frontend dashboard listens to this collection in real time.
 | `users` | User profiles, wallet public keys, encrypted PIN-wallet secrets, XLM balances. |
 | `omnipay_relay_transactions` | Monitoring-dashboard feed — one doc per payment attempt, full status history. |
 | `omnipay_sms_events` | Inbound-SMS idempotency log (dedupe gateway retries). |
+| `omnipay_signed_requests` | Anti-replay: claimed `requestId`s for signed requests. |
 | `omnipay_used_nonces` | Anti-replay: claimed `(senderId, nonce)` pairs for signed requests. |
 | `omnipay_events` | General activity log (used by the existing dashboard UI). |
 
-> Set a Firestore TTL policy on `omnipay_sms_events` and
+> Set a Firestore TTL policy on `omnipay_signed_requests` and
 > `omnipay_used_nonces`' `createdAt` field (Console → Firestore → Indexes →
 > TTL) so old idempotency records don't accumulate forever.
 

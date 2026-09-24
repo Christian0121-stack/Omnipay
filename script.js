@@ -1259,7 +1259,6 @@ function renderHome() {
   document.getElementById('heroBalance').textContent = _xlmBal.toLocaleString('en',{minimumFractionDigits:4,maximumFractionDigits:4});
   _updateXLMConversion(_xlmBal);
   fetchLiveXLMBalance();
-  var vaultMax = Math.floor(STATE.balance * t.pct / 100);
   document.getElementById('heroVault').textContent   = t.icon+' '+t.tier;
   document.getElementById('heroTrust').textContent   = STATE.trustScore;
   document.getElementById('heroPending').textContent = STATE.isOnline ? 'Online' : 'Offline';
@@ -1269,9 +1268,6 @@ function renderHome() {
   document.getElementById('trustTierBadge').textContent       = t.icon+' '+t.tier;
   document.getElementById('trustTierBadge').style.background  = t.bg;
   document.getElementById('trustTierBadge').style.color       = t.color;
-  document.getElementById('trustPct').textContent             = t.pct+'%';
-  document.getElementById('tsOffLimit').textContent           = fmtAmt(vaultMax);
-  document.getElementById('tsMaxUse').textContent             = t.uses===99?'∞':t.uses+'×';
   document.getElementById('tsGoodTx').textContent             = STATE.goodTxCount;
   document.getElementById('tsLastSync').textContent           = '2h ago';
 

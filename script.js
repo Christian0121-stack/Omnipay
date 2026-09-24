@@ -555,9 +555,8 @@ async function _updateXLMConversion(xlmAmt) {
   if (rate !== null) {
     var total    = xlmAmt * rate;
     var decimals = (cfg.cur === 'jpy' || cfg.cur === 'krw' || cfg.cur === 'vnd' || cfg.cur === 'idr') ? 0 : 2;
-    var rateStr  = cfg.sym + rate.toLocaleString('en',{minimumFractionDigits:decimals,maximumFractionDigits:decimals});
     var totalStr = cfg.sym + total.toLocaleString('en',{minimumFractionDigits:decimals,maximumFractionDigits:decimals});
-    convEl.textContent = '\u2248 ' + totalStr + ' ' + cfg.coin + ' (1 XLM = ' + rateStr + ')';
+    convEl.textContent = '\u2248 ' + totalStr;
   } else {
     convEl.textContent = 'Rate unavailable';
   }
@@ -841,7 +840,7 @@ function runWalletSetup(pubKey) {
         document.getElementById('wsXLMBal').textContent    = '10,000.0000 XLM';
         if (PENDING_USER) { PENDING_USER.xlmBalance = _friendbotXLM; }
         var _cfg = _getCountryConfig(PENDING_USER && PENDING_USER.country);
-        document.getElementById('wsPHPBal').textContent    = '~ ' + _cfg.sym + '...' + ' ' + _cfg.coin + ' (loading)';
+        document.getElementById('wsPHPBal').textContent    = '\u2248 ' + _cfg.sym + '\u2026';
         document.getElementById('wsPHPBal').nextElementSibling && (document.getElementById('wsPHPBal').nextElementSibling.textContent = 'Local Currency Equivalent');
         document.getElementById('wsWalletCard').classList.add('show');
         document.getElementById('wsContinueBtn').classList.add('show');
@@ -1601,19 +1600,23 @@ async function doSendMoney() {
       txXdr = tx.toEnvelope().toXDR('base64');
     }
 
-    var submitResp = await fetch('https://horizon-testnet.stellar.org/transactions', {
+    var submitResp = await fetch('/api/submit-payment', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body:    'tx=' + encodeURIComponent(txXdr)
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        senderId:    STATE.uid,
+        recipientId: recipient,
+        amount:      amtStr,
+        signedXdr:   txXdr
+      })
     });
     var submitData = await submitResp.json();
 
-    if (!submitResp.ok || submitData.status === 400) {
-      var extras = (submitData.extras && submitData.extras.result_codes) || {};
-      throw new Error('Transaction failed: ' + (extras.transaction || submitData.title || 'Unknown Horizon error'));
+    if (!submitResp.ok || !submitData.ok) {
+      throw new Error('Transaction failed: ' + (submitData.detail || submitData.error || 'Unknown relay error'));
     }
 
-    var txHash = submitData.hash;
+    var txHash = submitData.txHash;
     STATE._balanceGraceUntil = Date.now() + 20000;
 
     var signingWalletIdx = -1;
@@ -1990,9 +1993,9 @@ async function _renderReceiveConversion() {
   var total     = amt * rate;
   var formatted = total >= 1000 ? total.toLocaleString('en', {maximumFractionDigits:2}) : total.toFixed(2);
   var tag       = usedFallback ? 'approx., offline' : 'live rate';
-  el.innerHTML = '<span style="color:var(--success);">≈ ' + cfg.sym + formatted + ' ' + cfg.coin + '</span>'
+  el.innerHTML = '<span style="color:var(--success);">≈ ' + cfg.sym + formatted + '</span>'
     + ' <span style="opacity:0.6;font-size:11px;">(' + tag + ')</span>';
-  el.dataset.equiv  = cfg.sym + formatted + ' ' + cfg.coin;
+  el.dataset.equiv  = cfg.sym + formatted;
   el.dataset.cur    = cfg.cur.toUpperCase();
   el.dataset.rate   = rate;
 }
@@ -2237,7 +2240,7 @@ function applyTheme(dark) {
     body.classList.remove('dark-body');
     if (btn) btn.textContent = '🌙';
   }
-  try { localStorage.setItem('omnipay_theme', dark ? 'dark' : 'light'); } catch(e) {}
+  try { localStorage.setItem('omnipay_theme_v2', dark ? 'dark' : 'light'); } catch(e) {}
 }
 
 function toggleTheme() {
@@ -2245,8 +2248,8 @@ function toggleTheme() {
 }
 
 function initTheme() {
-  var saved = 'light';
-  try { saved = localStorage.getItem('omnipay_theme') || 'light'; } catch(e) {}
+  var saved = 'dark';
+  try { saved = localStorage.getItem('omnipay_theme_v2') || 'dark'; } catch(e) {}
   applyTheme(saved === 'dark');
 }
 

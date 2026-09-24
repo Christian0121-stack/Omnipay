@@ -2,12 +2,41 @@ const path = require('path');
 const fs = require('fs');
 require('dotenv').config();
 
+const REQUIRED_ENV_VARS = ['FIREBASE_PROJECT_ID', 'STELLAR_HORIZON_URL'];
+const missingEnvVars = REQUIRED_ENV_VARS.filter((key) => !process.env[key] || !String(process.env[key]).trim());
+if (missingEnvVars.length > 0) {
+  console.error(
+    `[startup] Missing required environment variable(s): ${missingEnvVars.join(', ')}. ` +
+      'Copy .env.example to .env and fill in the missing value(s) before starting the server.'
+  );
+  process.exit(1);
+}
+
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
 const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const StellarSdk = require('stellar-sdk');
+
+const COLOR_ENABLED = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
+const paint = (code, text) => (COLOR_ENABLED ? `\x1b[${code}m${text}\x1b[0m` : text);
+const LOG_LEVELS = {
+  info: { label: 'INFO', code: '36' },
+  ok: { label: ' OK ', code: '32' },
+  warn: { label: 'WARN', code: '33' },
+  error: { label: 'FAIL', code: '31' },
+};
+
+function log(level, tag, message) {
+  const meta = LOG_LEVELS[level] || LOG_LEVELS.info;
+  const time = new Date().toLocaleTimeString('en-GB', { hour12: false });
+  const line = `${paint('90', time)} ${paint(meta.code, meta.label)} ${paint('35', `[${tag}]`)} ${message}`;
+  if (level === 'error') console.error(line);
+  else if (level === 'warn') console.warn(line);
+  else console.log(line);
+}
+
 const PORT = process.env.PORT || 3000;
 const GATEWAY_MODE = (process.env.SMS_GATEWAY_USE || 'local').toLowerCase();
 const USE_CLOUD_GATEWAY = GATEWAY_MODE === 'cloud' || GATEWAY_MODE === 'public';
@@ -55,7 +84,7 @@ try {
     projectId: process.env.FIREBASE_PROJECT_ID,
   });
   db = getFirestore();
-  console.log('[firebase] Admin SDK initialized, project:', process.env.FIREBASE_PROJECT_ID);
+  log('ok', 'firebase', `Admin SDK initialized, project: ${process.env.FIREBASE_PROJECT_ID}`);
 } catch (err) {
   console.error(
     '[firebase] Failed to initialize Admin SDK. Did you download the service ' +
@@ -101,7 +130,7 @@ async function getStellarNativeBalance(publicKey) {
     const nativeBalance = account.balances.find((b) => b.asset_type === 'native');
     return nativeBalance ? parseFloat(nativeBalance.balance) : 0;
   } catch (err) {
-    console.error('[stellar] getStellarNativeBalance failed for', publicKey, '-', err.message);
+    log('error', 'stellar', `Balance lookup failed for ${publicKey} - ${err.message}`);
     return null;
   }
 }
@@ -189,7 +218,7 @@ async function claimSignedRequest(requestId, nonce, senderId) {
   } catch (err) {
     if (err.message === 'duplicate-request') return { claimed: false, reason: 'duplicate-request' };
     if (err.message === 'nonce-reused') return { claimed: false, reason: 'nonce-reused' };
-    console.error('[signed-request] claim failed:', err.message);
+    log('error', 'signed-request', `Claim failed: ${err.message}`);
     return { claimed: false, reason: 'claim-error' };
   }
 }
@@ -201,7 +230,7 @@ async function finishSignedRequest(requestId, status) {
       .doc(String(requestId))
       .update({ status: status || 'processed', updatedAt: FieldValue.serverTimestamp() });
   } catch (err) {
-    console.error('[signed-request] finalize failed:', err.message);
+    log('error', 'signed-request', `Finalize failed: ${err.message}`);
   }
 }
 function verifyPinHash(pin, hash, saltHex) {
@@ -333,11 +362,12 @@ async function findRecipient(identifier) {
 }
 async function sendSms(toNumber, text) {
   if (!GATEWAY_BASE_URL) {
-    console.warn('[sms] No gateway URL configured, skipping send:', text);
+    log('warn', 'sms', `No gateway URL configured, skipping send to ${toNumber}`);
     return;
   }
+  log('info', 'sms', `Sending reply to ${toNumber} via ${GATEWAY_BASE_URL}${GATEWAY_MESSAGE_PATH}`);
   try {
-    await axios.post(
+    const response = await axios.post(
       `${GATEWAY_BASE_URL}${GATEWAY_MESSAGE_PATH}`,
       { textMessage: { text }, phoneNumbers: [toNumber] },
       {
@@ -345,13 +375,19 @@ async function sendSms(toNumber, text) {
         timeout: 15000,
       }
     );
+    const data = response.data || {};
+    const state = data.state ? `, ${data.state}` : '';
+    const id = data.id ? `, id ${data.id}` : '';
+    log('ok', 'sms', `Reply accepted by gateway for ${toNumber} (HTTP ${response.status}${state}${id})`);
   } catch (err) {
-    console.error('[sms] Failed to send confirmation SMS:', err.response?.data || err.message);
+    const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+    const status = err.response?.status ? `HTTP ${err.response.status} - ` : '';
+    log('error', 'sms', `Failed to send reply to ${toNumber}: ${status}${detail}`);
   }
 }
 function verifyWebhookSignature(rawBody, headers) {
   if (!GATEWAY_WEBHOOK_SECRET) {
-    console.error('[webhook] SMS_GATEWAY_WEBHOOK_SECRET is not set — rejecting all webhook calls until it is configured.');
+    log('error', 'webhook', 'SMS_GATEWAY_WEBHOOK_SECRET is not set — rejecting all webhook calls until it is configured.');
     return false;
   }
   const signature = headers['x-signature'];
@@ -379,7 +415,7 @@ async function logEvent(userId, icon, message, type) {
       createdAt: FieldValue.serverTimestamp(),
     });
   } catch (err) {
-    console.error('[firestore] logEvent failed:', err.message);
+    log('error', 'firestore', `logEvent failed: ${err.message}`);
   }
 }
 
@@ -391,7 +427,7 @@ async function recordTransaction(userDocId, txRecord) {
         transactions: FieldValue.arrayUnion(txRecord),
       });
   } catch (err) {
-    console.error('[firestore] recordTransaction failed:', err.message);
+    log('error', 'firestore', `recordTransaction failed: ${err.message}`);
   }
 }
 const RELAY_STATUS = {
@@ -420,7 +456,7 @@ async function createRelayRecord({ channel, senderPhone, senderId, recipient, am
       updatedAt: FieldValue.serverTimestamp(),
     });
   } catch (err) {
-    console.error('[relay] failed to create record:', err.message);
+    log('error', 'relay', `Failed to create record: ${err.message}`);
   }
   return ref.id;
 }
@@ -441,7 +477,7 @@ async function updateRelayStatus(relayId, status, fields = {}) {
         updatedAt: FieldValue.serverTimestamp(),
       });
   } catch (err) {
-    console.error('[relay] failed to update status:', relayId, status, err.message);
+    log('error', 'relay', `Failed to update ${relayId} to ${status}: ${err.message}`);
   }
 }
 function buildSmsEventKey(senderPhone, messageText, payload) {
@@ -493,9 +529,9 @@ async function claimSmsEvent(eventKey, senderPhone, messageText) {
     return true;
   } catch (err) {
     if (err.message === 'duplicate-sms-event') {
-      console.log('[webhook] Duplicate SMS event ignored:', eventKey);
+      log('info', 'webhook', `Duplicate SMS event ignored: ${eventKey}`);
     } else {
-      console.error('[webhook] Could not claim SMS event:', err.message);
+      log('error', 'webhook', `Could not claim SMS event: ${err.message}`);
     }
     return false;
   }
@@ -509,7 +545,7 @@ async function finishSmsEvent(eventKey, status) {
       updatedAt: FieldValue.serverTimestamp(),
     });
   } catch (err) {
-    console.error('[webhook] Could not finalize SMS event:', err.message);
+    log('error', 'webhook', `Could not finalize SMS event: ${err.message}`);
   }
 }
 function parseCommand(text) {
@@ -583,10 +619,11 @@ async function executeSend({ sender, recipient, amount, walletSecret, mode, rela
 
     await updateRelayStatus(relayId, RELAY_STATUS.SETTLED);
 
+    log('ok', 'payment', `${amount} ${ASSET_LABEL} settled via ${channelNote} | @${senderName} -> @${recipientName} | tx ${txHash.slice(0, 12)}...`);
     return { ok: true, txHash, newSenderBal, newRecipientBal, relayId };
   } catch (err) {
     const detail = err.response?.data?.extras?.result_codes || err.message;
-    console.error('[stellar] payment failed:', detail);
+    log('error', 'stellar', `Payment failed: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
     await logEvent(sender.id, '❌', `${channelNote} payment failed: ${JSON.stringify(detail)}`, 'error');
     await updateRelayStatus(relayId, RELAY_STATUS.FAILED, { detail });
     return { ok: false, code: 'stellar-failed', detail, relayId };
@@ -594,7 +631,7 @@ async function executeSend({ sender, recipient, amount, walletSecret, mode, rela
 }
 async function handleIncomingSms(senderPhone, messageText, eventKey) {
   if (!consumeSmsRateLimit(senderPhone)) {
-    console.warn('[sms] Rate limit exceeded for sender:', normalizePhone(senderPhone));
+    log('warn', 'sms', `Rate limit exceeded for sender: ${senderPhone}`);
     return;
   }
 
@@ -603,9 +640,11 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
 
   try {
     const command = parseCommand(messageText);
+    log('info', 'sms', `Command ${command.type} from ${senderPhone}`);
 
     const sender = await findUserByPhone(senderPhone);
     if (!sender) {
+      log('warn', 'sms', `No account linked to ${senderPhone}`);
       await sendSms(
         senderPhone,
         "OmniPay: This number isn't linked to an OmniPay account. Register in the app first."
@@ -623,11 +662,7 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
       }
 
       if (!sender.smsPinHash || !sender.smsPinSalt) {
-        console.warn(
-          '[sms] Sender doc',
-          sender.id,
-          'has no smsPinHash for BALANCE.'
-        );
+        log('warn', 'sms', `Sender doc ${sender.id} has no smsPinHash for BALANCE.`);
         await sendSms(
           senderPhone,
           'OmniPay: Balance PIN is not enabled yet. Log in to the app to set up your wallet.'
@@ -685,7 +720,7 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
           senderPublicKey: sender.walletPublic,
         });
         if (!verifyResult.ok) {
-          console.warn('[sms] signature rejected:', verifyResult.reason, 'sender:', sender.id);
+          log('warn', 'sms', `Signature rejected: ${verifyResult.reason} (sender: ${sender.id})`);
           await logEvent(sender.id, '❌', `SMS payment blocked: bad signature (${verifyResult.reason})`, 'error');
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: `bad-signature:${verifyResult.reason}` });
           await sendSms(senderPhone, 'OmniPay: Signature check failed. Payment not sent.');
@@ -693,7 +728,7 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
         }
         const claim = await claimSignedRequest(sig.requestId, sig.nonce, sender.id);
         if (!claim.claimed) {
-          console.log('[sms] duplicate signed SMS request ignored:', sig.requestId);
+          log('info', 'sms', `Duplicate signed SMS request ignored: ${sig.requestId}`);
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: claim.reason || 'duplicate-request' });
           return;
         }
@@ -707,7 +742,7 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
         }
 
         if (!sender.pinWalletSecretEncrypted || !sender.pinWalletSecretSalt || !sender.pinWalletSecretIv || !sender.walletPublic) {
-          console.warn('[sms] Sender doc', sender.id, 'has no `pinWalletSecretEncrypted` — log in to the app once to set up SMS payments.');
+          log('warn', 'sms', `Sender doc ${sender.id} has no pinWalletSecretEncrypted — log in to the app once to set up SMS payments.`);
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'wallet-not-setup' });
           await sendSms(senderPhone, 'OmniPay: SMS payments are not enabled for your wallet yet. Log in to the app to set it up.');
           return;
@@ -732,7 +767,9 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'recipient-not-found' });
           await sendSms(senderPhone, `OmniPay: Recipient "${recipientIdentifier}" not found on OmniPay.`);
           return;
-        }        const result = await executeSend({ sender, recipient, amount, walletSecret, mode: 'sms', relayId });
+        }
+
+        const result = await executeSend({ sender, recipient, amount, walletSecret, mode: 'sms', relayId });
 
         if (!result.ok) {
           if (result.code === 'insufficient-balance') {
@@ -805,21 +842,26 @@ function requireAdminKey(req, res, next) {
   next();
 }
 app.post('/webhook/sms-received', async (req, res) => {
+  log('info', 'webhook', `Request received from ${req.ip}`);
+
   if (!verifyWebhookSignature(req.rawBody, req.headers)) {
-    console.warn('[webhook] Rejected: bad or missing signature');
+    log('warn', 'webhook', 'Rejected: bad or missing signature');
     return res.status(401).json({ error: 'invalid signature' });
   }
 
   const { event, payload } = req.body || {};
   if (event !== 'sms:received' || !payload) {
+    log('info', 'webhook', `Ignored event: ${event || 'unknown'}`);
     return res.status(200).json({ ignored: true });
   }
 
   const senderPhone = payload.sender || payload.phoneNumber;
   const message = payload.message;
   if (!senderPhone || !message) {
+    log('warn', 'webhook', 'Rejected: missing sender/message');
     return res.status(400).json({ error: 'missing sender/message' });
   }
+  log('ok', 'webhook', `SMS received from ${senderPhone}`);
   const eventKey = buildSmsEventKey(senderPhone, message, payload);
   res.status(200).json({ received: true });
 
@@ -827,6 +869,51 @@ app.post('/webhook/sms-received', async (req, res) => {
     console.error('[handleIncomingSms] unhandled error:', err);
   });
 });
+app.post('/api/submit-payment', async (req, res) => {
+  const { senderId, recipientId, amount, signedXdr } = req.body || {};
+
+  if (!senderId || !recipientId || amount == null || !signedXdr) {
+    return res.status(400).json({ error: 'missing required fields' });
+  }
+  const amt = Number(amount);
+  if (!Number.isFinite(amt) || amt <= 0) {
+    return res.status(400).json({ error: 'invalid amount' });
+  }
+
+  const relayId = await createRelayRecord({
+    channel: 'web',
+    senderId,
+    recipient: recipientId,
+    amount: amt,
+  });
+
+  let tx;
+  try {
+    tx = StellarSdk.TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE);
+  } catch (err) {
+    await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'malformed-transaction' });
+    return res.status(400).json({ error: 'malformed transaction', relayId });
+  }
+
+  await updateRelayStatus(relayId, RELAY_STATUS.VALIDATED);
+
+  try {
+    await updateRelayStatus(relayId, RELAY_STATUS.SUBMITTED);
+    const result = await horizon.submitTransaction(tx);
+
+    await updateRelayStatus(relayId, RELAY_STATUS.CONFIRMED, { txHash: result.hash });
+    await updateRelayStatus(relayId, RELAY_STATUS.SETTLED);
+
+    return res.json({ ok: true, txHash: result.hash, relayId });
+  } catch (err) {
+    const extras = (err.response && err.response.data && err.response.data.extras) || {};
+    const detail = (extras.result_codes && extras.result_codes.transaction) || err.message || 'submit-failed';
+    log('error', 'api/submit-payment', `Failed: ${detail}`);
+    await updateRelayStatus(relayId, RELAY_STATUS.FAILED, { detail });
+    return res.status(502).json({ error: 'payment submission failed', detail, relayId });
+  }
+});
+
 app.post('/api/send', async (req, res) => {
   const { senderId, recipientId, amount, timestamp, nonce, requestId, signature, pin } = req.body || {};
 
@@ -863,7 +950,7 @@ app.post('/api/send', async (req, res) => {
     senderPublicKey: sender.walletPublic,
   });
   if (!verifyResult.ok) {
-    console.warn('[api/send] signature rejected:', verifyResult.reason, 'sender:', senderId);
+    log('warn', 'api/send', `Signature rejected: ${verifyResult.reason} (sender: ${senderId})`);
     await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: `bad-signature:${verifyResult.reason}` });
     return res.status(401).json({ error: 'invalid signature', reason: verifyResult.reason, relayId });
   }
@@ -986,20 +1073,42 @@ app.post('/api/reconcile-balance/:userId', requireAdminKey, async (req, res) => 
   }
 });
 
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  console.error('[error]', err && err.stack ? err.stack : err);
+  const status = err.status || err.statusCode || 500;
+  res.status(status).json({
+    error: err.publicMessage || 'internal error',
+    detail: err.expose ? err.detail || err.message : undefined,
+  });
+});
+
 app.listen(PORT, () => {
-  console.log(`OmniPay SMS relay listening on port ${PORT}`);
-  console.log(`Gateway mode: ${USE_CLOUD_GATEWAY ? 'cloud' : 'local'}`);
-  console.log(`Gateway target: ${GATEWAY_BASE_URL || '(not configured)'}`);
-  console.log(`Gateway message path: ${GATEWAY_MESSAGE_PATH}`);
+  const rule = paint('90', '-'.repeat(64));
+  console.log('');
+  console.log(rule);
+  console.log(`  ${paint('1', 'OmniPay SMS Relay')}  ${paint('32', 'online')}`);
+  console.log(rule);
+  console.log(`  ${paint('90', 'Port       ')} ${PORT}`);
+  console.log(`  ${paint('90', 'Gateway    ')} ${USE_CLOUD_GATEWAY ? 'cloud' : 'local'}  ${GATEWAY_BASE_URL || '(not configured)'}`);
+  console.log(`  ${paint('90', 'Send path  ')} ${GATEWAY_MESSAGE_PATH}`);
+  console.log(`  ${paint('90', 'Webhook    ')} POST /webhook/sms-received`);
+  console.log(`  ${paint('90', 'Signed SMS ')} ${REQUIRE_SIGNED_SMS ? 'required' : 'optional (PIN-only accepted)'}`);
+  console.log(rule);
+  console.log('');
+  if (!GATEWAY_USER || !GATEWAY_PASS) {
+    log('warn', 'auth', 'SMS_GATEWAY_USERNAME / SMS_GATEWAY_PASSWORD are not set — outgoing SMS will be rejected by the gateway.');
+  }
   if (!GATEWAY_WEBHOOK_SECRET) {
-    console.warn('[auth] SMS_GATEWAY_WEBHOOK_SECRET is not set — /webhook/sms-received will reject all requests until it is configured.');
+    log('warn', 'auth', 'SMS_GATEWAY_WEBHOOK_SECRET is not set — /webhook/sms-received will reject all requests until it is configured.');
   }
   if (!ADMIN_API_KEY) {
-    console.warn('[auth] ADMIN_API_KEY is not set — /api/relay-transactions* and /api/reconcile-balance are disabled until it is configured.');
+    log('warn', 'auth', 'ADMIN_API_KEY is not set — /api/relay-transactions* and /api/reconcile-balance are disabled until it is configured.');
   }
   if (REQUIRE_SIGNED_SMS) {
-    console.log('[auth] REQUIRE_SIGNED_SMS=true  -> plain unsigned "SEND" SMS commands are REJECTED. Only signed SMS (SIG <ts> <nonce> <reqId> <sig>) is accepted.');
+    log('info', 'auth', 'REQUIRE_SIGNED_SMS=true -> plain unsigned "SEND" SMS commands are REJECTED. Only signed SMS (SIG <ts> <nonce> <reqId> <sig>) is accepted.');
   } else {
-    console.warn('[auth] REQUIRE_SIGNED_SMS=false -> plain unsigned "SEND <amount> <recipient> <pin>" SMS is still ACCEPTED (PIN-only auth). Set REQUIRE_SIGNED_SMS=true in .env once the signing app has rolled out, to enforce digital-signature authentication on every SMS request.');
+    log('warn', 'auth', 'REQUIRE_SIGNED_SMS=false -> plain unsigned "SEND <amount> <recipient> <pin>" SMS is still ACCEPTED (PIN-only auth). Set REQUIRE_SIGNED_SMS=true in .env once the signing app has rolled out.');
   }
+  log('info', 'ready', 'Waiting for incoming SMS. Every webhook hit and SMS reply will be logged here.');
 });

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="theme-color" content="#2563EB">
 <meta name="referrer" content="strict-origin-when-cross-origin">
+<script>try{if(localStorage.getItem('omnipay_theme_v2')!=='light')document.documentElement.style.background='#04091A';}catch(e){document.documentElement.style.background='#04091A';}</script>
 <title>OmniPay — Disaster-Resilient Payments</title>
 <link rel="icon" type="image/x-icon" href="OMNIPAYLOGO.ico">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -12,8 +13,9 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
-<body>
-<div id="app">
+<body class="dark-body">
+<div id="app" class="dark">
+<script>try{if(localStorage.getItem('omnipay_theme_v2')==='light'){document.body.classList.remove('dark-body');document.getElementById('app').classList.remove('dark');}}catch(e){}</script>
 
   <div id="loadingOverlay">
     <div class="loading-ring"></div>
@@ -350,8 +352,12 @@
       <div id="connectStatus" class="status-badge online"><span class="status-dot online"></span>Online · Stellar Testnet</div>
       <div class="hero-balance-label">XLM Balance</div>
       <div class="hero-balance"><span id="heroBalance">10,000.0000</span><span style="font-size:22px;font-weight:600;opacity:0.7;margin-left:4px;"> XLM</span></div>
-      <div id="heroConvRow" style="font-size:13px;color:rgba(255,255,255,0.78);margin-top:5px;font-weight:600;letter-spacing:0.2px;position:relative;z-index:1;">
+      <div id="heroConvRow" class="hero-conv-row">
         <span id="heroConvText">Loading rate...</span>
+      </div>
+      <div class="hero-demo-badge" role="note">
+        <span class="hero-demo-dot" aria-hidden="true"></span>
+        <span>Testnet Demo Value</span>
       </div>
       <div class="hero-row">
         <div class="hero-stat">

@@ -640,6 +640,9 @@
   .hero-balance-label { font-size: 12px; color: rgba(255,255,255,0.6); margin-top: 22px; position: relative; z-index: 1; font-weight: 500; letter-spacing: 0.3px; }
   .hero-balance { font-size: 44px; font-weight: 900; color: #fff; letter-spacing: -2px; margin-top: 4px; position: relative; z-index: 1; }
   .hero-balance span { font-size: 24px; font-weight: 600; opacity: 0.75; }
+  .hero-conv-row { font-size: 12px; color: rgba(255,255,255,0.6); margin-top: 6px; font-weight: 500; letter-spacing: 0.2px; position: relative; z-index: 1; font-variant-numeric: tabular-nums; }
+  .hero-demo-badge { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; margin-top: 10px; padding: 5px 12px; border-radius: 99px; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.22); color: rgba(255,255,255,0.88); font-size: 11px; font-weight: 600; line-height: 1.35; letter-spacing: 0.2px; position: relative; z-index: 1; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+  .hero-demo-dot { flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%; background: #FFC24D; box-shadow: 0 0 0 3px rgba(255,194,77,0.25); }
   .hero-row { display: flex; gap: 10px; margin-top: 22px; position: relative; z-index: 1; }
   .hero-stat {
     flex: 1; background: rgba(255,255,255,0.12); backdrop-filter: blur(14px);

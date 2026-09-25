@@ -159,7 +159,7 @@ sent as a multi-part SMS.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/health` | Liveness check. Returns `{ ok: true }`. |
+| `GET` | `/health` | Health check. Verifies Firestore and Stellar Horizon connectivity and returns `{ ok, timestamp, services: { firestore, horizon } }`. Responds `200` when both are reachable, `503` otherwise. |
 | `POST` | `/webhook/sms-received` | Called by android-sms-gateway on every inbound SMS. Requires valid `X-Signature`/`X-Timestamp` headers (see `SMS_GATEWAY_WEBHOOK_SECRET`). |
 | `POST` | `/api/send` | Authenticated JSON payment channel. Body: `{ senderId, recipientId, amount, timestamp, nonce, requestId, signature, pin }`. |
 | `POST` | `/api/submit-payment` | Relays a payment that the client already signed as a Stellar transaction. Body: `{ senderId, recipientId, amount, signedXdr }`. Submits the XDR to Horizon and records a relay entry. It does **no** signature/PIN check of its own — the Stellar signature inside the XDR is what authorizes the payment, and `senderId`/`recipientId`/`amount` are recorded for monitoring only (not cross-checked against the XDR). Used by the current web send flow. |

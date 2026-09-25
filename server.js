@@ -861,7 +861,44 @@ if (fs.existsSync(PUBLIC_DIR)) {
     });
   });
 }
-app.get('/health', (_req, res) => res.json({ ok: true }));
+function withTimeout(promise, ms) {
+  let timer;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function checkFirestore() {
+  const started = Date.now();
+  try {
+    if (!db) throw new Error('Firestore not initialized');
+    await withTimeout(db.listCollections(), 4000);
+    return { status: 'ok', latencyMs: Date.now() - started };
+  } catch (err) {
+    return { status: 'error', latencyMs: Date.now() - started, message: err.message };
+  }
+}
+
+async function checkHorizon() {
+  const started = Date.now();
+  try {
+    await withTimeout(axios.get(HORIZON_URL, { timeout: 4000 }), 4000);
+    return { status: 'ok', latencyMs: Date.now() - started };
+  } catch (err) {
+    return { status: 'error', latencyMs: Date.now() - started, message: err.message };
+  }
+}
+
+app.get('/health', async (_req, res) => {
+  const [firestoreCheck, horizonCheck] = await Promise.all([checkFirestore(), checkHorizon()]);
+  const allOk = firestoreCheck.status === 'ok' && horizonCheck.status === 'ok';
+  res.status(allOk ? 200 : 503).json({
+    ok: allOk,
+    timestamp: new Date().toISOString(),
+    services: { firestore: firestoreCheck, horizon: horizonCheck },
+  });
+});
 function requireAdminKey(req, res, next) {
   if (!ADMIN_API_KEY) {
     return res.status(503).json({ error: 'admin endpoints disabled — set ADMIN_API_KEY' });

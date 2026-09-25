@@ -101,9 +101,42 @@ const smsEventsCol = () => db.collection('omnipay_sms_events');
 const relayTransactionsCol = () => db.collection('omnipay_relay_transactions');
 const horizon = new StellarSdk.Horizon.Server(HORIZON_URL);
 
+const HORIZON_RETRY_ATTEMPTS = 3;
+const HORIZON_RETRY_BASE_DELAY_MS = 300;
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetriableHorizonError(err) {
+  if (!err.response) return true;
+  const status = err.response.status;
+  return status === 502 || status === 503 || status === 504;
+}
+
+async function withHorizonRetry(operation, options = {}) {
+  const attempts = options.attempts || HORIZON_RETRY_ATTEMPTS;
+  const baseDelayMs = options.baseDelayMs || HORIZON_RETRY_BASE_DELAY_MS;
+  let lastErr;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (err) {
+      lastErr = err;
+      if (attempt === attempts || !isRetriableHorizonError(err)) {
+        throw err;
+      }
+      const backoffMs = baseDelayMs * 2 ** (attempt - 1);
+      log('warn', 'stellar', `Horizon call failed (attempt ${attempt}/${attempts}), retrying in ${backoffMs}ms - ${err.message}`);
+      await delay(backoffMs);
+    }
+  }
+  throw lastErr;
+}
+
 async function sendStellarPayment(senderSecret, destinationPublicKey, amount) {
   const senderKeypair = StellarSdk.Keypair.fromSecret(senderSecret);
-  const senderAccount = await horizon.loadAccount(senderKeypair.publicKey());
+  const senderAccount = await withHorizonRetry(() => horizon.loadAccount(senderKeypair.publicKey()));
 
   const tx = new StellarSdk.TransactionBuilder(senderAccount, {
     fee: StellarSdk.BASE_FEE,
@@ -120,13 +153,13 @@ async function sendStellarPayment(senderSecret, destinationPublicKey, amount) {
     .build();
 
   tx.sign(senderKeypair);
-  const result = await horizon.submitTransaction(tx);
+  const result = await withHorizonRetry(() => horizon.submitTransaction(tx));
   return result.hash;
 }
 async function getStellarNativeBalance(publicKey) {
   if (!publicKey) return null;
   try {
-    const account = await horizon.loadAccount(publicKey);
+    const account = await withHorizonRetry(() => horizon.loadAccount(publicKey));
     const nativeBalance = account.balances.find((b) => b.asset_type === 'native');
     return nativeBalance ? parseFloat(nativeBalance.balance) : 0;
   } catch (err) {
@@ -828,7 +861,44 @@ if (fs.existsSync(PUBLIC_DIR)) {
     });
   });
 }
-app.get('/health', (_req, res) => res.json({ ok: true }));
+function withTimeout(promise, ms) {
+  let timer;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function checkFirestore() {
+  const started = Date.now();
+  try {
+    if (!db) throw new Error('Firestore not initialized');
+    await withTimeout(db.listCollections(), 4000);
+    return { status: 'ok', latencyMs: Date.now() - started };
+  } catch (err) {
+    return { status: 'error', latencyMs: Date.now() - started, message: err.message };
+  }
+}
+
+async function checkHorizon() {
+  const started = Date.now();
+  try {
+    await withTimeout(axios.get(HORIZON_URL, { timeout: 4000 }), 4000);
+    return { status: 'ok', latencyMs: Date.now() - started };
+  } catch (err) {
+    return { status: 'error', latencyMs: Date.now() - started, message: err.message };
+  }
+}
+
+app.get('/health', async (_req, res) => {
+  const [firestoreCheck, horizonCheck] = await Promise.all([checkFirestore(), checkHorizon()]);
+  const allOk = firestoreCheck.status === 'ok' && horizonCheck.status === 'ok';
+  res.status(allOk ? 200 : 503).json({
+    ok: allOk,
+    timestamp: new Date().toISOString(),
+    services: { firestore: firestoreCheck, horizon: horizonCheck },
+  });
+});
 function requireAdminKey(req, res, next) {
   if (!ADMIN_API_KEY) {
     return res.status(503).json({ error: 'admin endpoints disabled — set ADMIN_API_KEY' });
@@ -899,7 +969,7 @@ app.post('/api/submit-payment', async (req, res) => {
 
   try {
     await updateRelayStatus(relayId, RELAY_STATUS.SUBMITTED);
-    const result = await horizon.submitTransaction(tx);
+    const result = await withHorizonRetry(() => horizon.submitTransaction(tx));
 
     await updateRelayStatus(relayId, RELAY_STATUS.CONFIRMED, { txHash: result.hash });
     await updateRelayStatus(relayId, RELAY_STATUS.SETTLED);

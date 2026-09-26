@@ -13,6 +13,8 @@ if (missingEnvVars.length > 0) {
 }
 
 const express = require('express');
+const helmet = require('helmet');
+const cors = require('cors');
 const axios = require('axios');
 const crypto = require('crypto');
 const { initializeApp, cert } = require('firebase-admin/app');
@@ -896,6 +898,51 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
   }
 }
 const app = express();
+
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: [
+          "'self'",
+          'https://www.gstatic.com',
+          'https://cdnjs.cloudflare.com',
+          'https://cdn.jsdelivr.net',
+        ],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:'],
+        connectSrc: [
+          "'self'",
+          'https://horizon-testnet.stellar.org',
+          'https://friendbot.stellar.org',
+          'https://api.coingecko.com',
+          'https://min-api.cryptocompare.com',
+          'https://firestore.googleapis.com',
+          'https://identitytoolkit.googleapis.com',
+          'https://securetoken.googleapis.com',
+        ],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        frameAncestors: ["'none'"],
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+  })
+);
+
+app.use(
+  cors({
+    origin: ALLOWED_ORIGINS.length > 0 ? ALLOWED_ORIGINS : false,
+    methods: ['GET', 'POST'],
+  })
+);
+
 app.use(
   express.json({
     verify: (req, _res, buf) => {

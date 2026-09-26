@@ -58,7 +58,7 @@ const NETWORK_PASSPHRASE =
   process.env.STELLAR_NETWORK_PASSPHRASE || StellarSdk.Networks.TESTNET;
 const ASSET_LABEL = process.env.SMS_ASSET_LABEL || 'XLM';
 const SECRET_HASH_ITERATIONS = 150000;
-const REQUIRE_SIGNED_SMS = String(process.env.REQUIRE_SIGNED_SMS || 'false').toLowerCase() === 'true';
+const REQUIRE_SIGNED_SMS = String(process.env.REQUIRE_SIGNED_SMS || 'true').toLowerCase() === 'true';
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || '';
 let db;
 try {
@@ -323,12 +323,29 @@ function isPinLocked(phone) {
 
 function registerPinFailure(phone) {
   const key = normalizePhone(phone);
-  const rec = pinAttempts.get(key) || { count: 0, lockedUntil: 0 };
+  const rec = pinAttempts.get(key) || { count: 0, lockedUntil: 0, lastAttempt: 0 };
   rec.count += 1;
+  rec.lastAttempt = Date.now();
   if (rec.count >= PIN_MAX_ATTEMPTS) {
     rec.lockedUntil = Date.now() + PIN_LOCKOUT_MS;
   }
   pinAttempts.set(key, rec);
+}
+
+function cleanupExpiredPinAttempts() {
+  const now = Date.now();
+  let removed = 0;
+  for (const [key, rec] of pinAttempts.entries()) {
+    const isExpiredLock = rec.lockedUntil && now >= rec.lockedUntil;
+    const isStaleUnlocked = !rec.lockedUntil && now - (rec.lastAttempt || 0) > PIN_LOCKOUT_MS;
+    if (isExpiredLock || isStaleUnlocked) {
+      pinAttempts.delete(key);
+      removed += 1;
+    }
+  }
+  if (removed > 0) {
+    log('info', 'cleanup', `Removed ${removed} expired pinAttempts entr${removed === 1 ? 'y' : 'ies'} (${pinAttempts.size} remaining)`);
+  }
 }
 
 function clearPinFailures(phone) {
@@ -360,6 +377,26 @@ function consumeSmsRateLimit(phone) {
   smsRateLimits.set(key, rec);
   return true;
 }
+
+function cleanupExpiredSmsRateLimits() {
+  const now = Date.now();
+  let removed = 0;
+  for (const [key, rec] of smsRateLimits.entries()) {
+    if (now - rec.windowStartedAt >= SMS_RATE_LIMIT_WINDOW_MS) {
+      smsRateLimits.delete(key);
+      removed += 1;
+    }
+  }
+  if (removed > 0) {
+    log('info', 'cleanup', `Removed ${removed} expired smsRateLimits entr${removed === 1 ? 'y' : 'ies'} (${smsRateLimits.size} remaining)`);
+  }
+}
+
+const MAP_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+setInterval(() => {
+  cleanupExpiredPinAttempts();
+  cleanupExpiredSmsRateLimits();
+}, MAP_CLEANUP_INTERVAL_MS).unref();
 
 async function findUserByPhone(phone) {
   const clean = normalizePhone(phone);

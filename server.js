@@ -581,6 +581,24 @@ async function finishSmsEvent(eventKey, status) {
     log('error', 'webhook', `Could not finalize SMS event: ${err.message}`);
   }
 }
+const MAX_AMOUNT_DECIMALS = 7;
+const STRICT_AMOUNT_PATTERN = new RegExp(`^\\d+(\\.\\d{1,${MAX_AMOUNT_DECIMALS}})?$`);
+
+function parseStrictAmount(raw) {
+  if (raw === undefined || raw === null) return { ok: false, reason: 'amount-missing' };
+  const str = typeof raw === 'string' ? raw.trim() : String(raw);
+  if (!str) return { ok: false, reason: 'amount-missing' };
+  if (!STRICT_AMOUNT_PATTERN.test(str)) return { ok: false, reason: 'amount-invalid-format' };
+  const num = Number(str);
+  if (!Number.isFinite(num)) return { ok: false, reason: 'amount-not-finite' };
+  if (num <= 0) return { ok: false, reason: 'amount-not-positive' };
+  return { ok: true, amount: num };
+}
+
+function isValidPin(pin) {
+  return typeof pin === 'string' && /^\d{4,6}$/.test(pin);
+}
+
 function parseCommand(text) {
   const parts = text.trim().split(/\s+/);
   const cmd = (parts[0] || '').toUpperCase();
@@ -597,11 +615,11 @@ function parseCommand(text) {
       sig = { timestamp: sigParts[0], nonce: sigParts[1], requestId: sigParts[2], signature: sigParts[3] };
     }
 
-    const amount = parseFloat(sendParts[1]);
+    const amountResult = parseStrictAmount(sendParts[1]);
     const pin = sendParts[sendParts.length - 1];
     const recipient = sendParts.slice(2, sendParts.length - 1).join(' ');
-    if (!isNaN(amount) && amount > 0 && recipient && /^\d{4,6}$/.test(pin)) {
-      return { type: 'SEND', amount, recipient, pin, sig };
+    if (amountResult.ok && recipient && isValidPin(pin)) {
+      return { type: 'SEND', amount: amountResult.amount, recipient, pin, sig };
     }
   }
   if (
@@ -939,16 +957,47 @@ app.post('/webhook/sms-received', async (req, res) => {
     console.error('[handleIncomingSms] unhandled error:', err);
   });
 });
+function matchesAmount(xdrAmount, expectedAmount) {
+  const parsed = Number(xdrAmount);
+  if (!Number.isFinite(parsed)) return false;
+  return Math.abs(parsed - expectedAmount) < 1e-7;
+}
+
+function crossCheckSignedXdr({ tx, senderPublicKey, recipientPublicKey, amount }) {
+  if (!tx || !Array.isArray(tx.operations) || tx.operations.length !== 1) {
+    return { ok: false, reason: 'unexpected-operation-count' };
+  }
+  const op = tx.operations[0];
+  if (op.type !== 'payment') {
+    return { ok: false, reason: 'not-a-payment-operation' };
+  }
+  if (op.asset && typeof op.asset.isNative === 'function' && !op.asset.isNative()) {
+    return { ok: false, reason: 'unexpected-asset' };
+  }
+  const opSource = op.source || tx.source;
+  if (!senderPublicKey || opSource !== senderPublicKey) {
+    return { ok: false, reason: 'sender-mismatch' };
+  }
+  if (!recipientPublicKey || op.destination !== recipientPublicKey) {
+    return { ok: false, reason: 'recipient-mismatch' };
+  }
+  if (!matchesAmount(op.amount, amount)) {
+    return { ok: false, reason: 'amount-mismatch' };
+  }
+  return { ok: true };
+}
+
 app.post('/api/submit-payment', async (req, res) => {
   const { senderId, recipientId, amount, signedXdr } = req.body || {};
 
-  if (!senderId || !recipientId || amount == null || !signedXdr) {
+  if (!senderId || !recipientId || !signedXdr) {
     return res.status(400).json({ error: 'missing required fields' });
   }
-  const amt = Number(amount);
-  if (!Number.isFinite(amt) || amt <= 0) {
-    return res.status(400).json({ error: 'invalid amount' });
+  const amountResult = parseStrictAmount(amount);
+  if (!amountResult.ok) {
+    return res.status(400).json({ error: 'invalid amount', reason: amountResult.reason });
   }
+  const amt = amountResult.amount;
 
   const relayId = await createRelayRecord({
     channel: 'web',
@@ -963,6 +1012,31 @@ app.post('/api/submit-payment', async (req, res) => {
   } catch (err) {
     await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'malformed-transaction' });
     return res.status(400).json({ error: 'malformed transaction', relayId });
+  }
+
+  const senderDoc = await usersCol().doc(String(senderId)).get();
+  if (!senderDoc.exists) {
+    await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'sender-not-found' });
+    return res.status(404).json({ error: 'sender not found', relayId });
+  }
+  const senderRecord = senderDoc.data();
+
+  const recipientRecord = await findRecipient(String(recipientId));
+  if (!recipientRecord || !recipientRecord.walletPublic) {
+    await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'recipient-not-found' });
+    return res.status(404).json({ error: 'recipient not found', relayId });
+  }
+
+  const crossCheck = crossCheckSignedXdr({
+    tx,
+    senderPublicKey: senderRecord.walletPublic,
+    recipientPublicKey: recipientRecord.walletPublic,
+    amount: amt,
+  });
+  if (!crossCheck.ok) {
+    log('warn', 'api/submit-payment', `Signed XDR rejected: ${crossCheck.reason} (sender: ${senderId})`);
+    await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: `xdr-mismatch:${crossCheck.reason}` });
+    return res.status(400).json({ error: 'signed transaction does not match request', reason: crossCheck.reason, relayId });
   }
 
   await updateRelayStatus(relayId, RELAY_STATUS.VALIDATED);
@@ -987,12 +1061,16 @@ app.post('/api/submit-payment', async (req, res) => {
 app.post('/api/send', async (req, res) => {
   const { senderId, recipientId, amount, timestamp, nonce, requestId, signature, pin } = req.body || {};
 
-  if (!senderId || !recipientId || amount == null || !timestamp || !nonce || !requestId || !signature) {
+  if (!senderId || !recipientId || !timestamp || !nonce || !requestId || !signature) {
     return res.status(400).json({ error: 'missing required authenticated-payload fields' });
   }
-  const amt = Number(amount);
-  if (!Number.isFinite(amt) || amt <= 0) {
-    return res.status(400).json({ error: 'invalid amount' });
+  const amountResult = parseStrictAmount(amount);
+  if (!amountResult.ok) {
+    return res.status(400).json({ error: 'invalid amount', reason: amountResult.reason });
+  }
+  const amt = amountResult.amount;
+  if (!isValidPin(pin)) {
+    return res.status(400).json({ error: 'missing or invalid pin' });
   }
 
   const relayId = await createRelayRecord({

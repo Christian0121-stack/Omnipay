@@ -945,6 +945,7 @@ app.use(
 
 app.use(
   express.json({
+    limit: '20kb',
     verify: (req, _res, buf) => {
       req.rawBody = buf.toString('utf8');
     },

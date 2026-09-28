@@ -13,6 +13,7 @@ if (missingEnvVars.length > 0) {
 }
 
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const cors = require('cors');
 const axios = require('axios');
@@ -915,7 +916,9 @@ app.use(
           'https://cdnjs.cloudflare.com',
           'https://cdn.jsdelivr.net',
         ],
-        styleSrc: ["'self'", "'unsafe-inline'"],
+        scriptSrcAttr: ["'unsafe-inline'"],
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+        fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
         imgSrc: ["'self'", 'data:'],
         connectSrc: [
           "'self'",
@@ -964,6 +967,14 @@ if (fs.existsSync(PUBLIC_DIR)) {
     });
   });
 }
+const paymentEndpointLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too many requests, please try again later' },
+});
+
 function withTimeout(promise, ms) {
   let timer;
   const timeout = new Promise((_resolve, reject) => {
@@ -1072,7 +1083,7 @@ function crossCheckSignedXdr({ tx, senderPublicKey, recipientPublicKey, amount }
   return { ok: true };
 }
 
-app.post('/api/submit-payment', async (req, res) => {
+app.post('/api/submit-payment', paymentEndpointLimiter, async (req, res) => {
   const { senderId, recipientId, amount, signedXdr } = req.body || {};
 
   if (!senderId || !recipientId || !signedXdr) {
@@ -1143,7 +1154,7 @@ app.post('/api/submit-payment', async (req, res) => {
   }
 });
 
-app.post('/api/send', async (req, res) => {
+app.post('/api/send', paymentEndpointLimiter, async (req, res) => {
   const { senderId, recipientId, amount, timestamp, nonce, requestId, signature, pin } = req.body || {};
 
   if (!senderId || !recipientId || !timestamp || !nonce || !requestId || !signature) {

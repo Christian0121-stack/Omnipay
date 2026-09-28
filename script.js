@@ -1705,6 +1705,74 @@ async function doSendMoney() {
   }
 }
 
+async function doSignAndPrepareSms() {
+  var relayNumber = (document.getElementById('smsRelayNumber').value || '').trim();
+  var recipient   = (document.getElementById('smsRecipient').value || '').trim();
+  var amt         = parseFloat(document.getElementById('smsAmount').value);
+  var pin         = (document.getElementById('smsPin').value || '').trim();
+
+  if (!relayNumber)                  { showAlert('red','⚠️ Enter the OmniPay relay number'); return; }
+  if (!recipient)                    { showAlert('red','⚠️ Enter a recipient username or phone number'); return; }
+  if (!isFinite(amt) || amt <= 0)    { showAlert('red','⚠️ Enter a valid amount'); return; }
+  if (!/^\d{4,6}$/.test(pin))        { showAlert('red','🔢 PIN must be 4–6 digits'); return; }
+
+  var secretKey = STATE.wallet && STATE.wallet.secretKey;
+  if (!secretKey) { showAlert('red','❌ No signing key available. Re-login to unlock your wallet.'); return; }
+
+  var senderId = STATE.uid;
+  if (!senderId) { showAlert('red','❌ You must be logged in to sign a payment.'); return; }
+
+  var btn = document.querySelector('[onclick="doSignAndPrepareSms()"]');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Signing…'; }
+
+  try {
+    var amtStr      = amt.toFixed(7);
+    var timestamp   = Date.now();
+    var nonce       = bytesToHex(randomBytes(16));
+    var requestId   = bytesToHex(randomBytes(16));
+
+    var payload       = [senderId, recipient, amtStr, timestamp, nonce, requestId].join('|');
+    var payloadBytes  = new TextEncoder().encode(payload);
+    var keypair       = StellarSdk.Keypair.fromSecret(secretKey);
+    var signatureB64  = bytesToBase64(keypair.sign(payloadBytes));
+
+    var message = 'SEND ' + amtStr + ' ' + recipient + ' ' + pin +
+      ' SIG ' + timestamp + ' ' + nonce + ' ' + requestId + ' ' + signatureB64;
+
+    STATE._pendingSmsMessage    = message;
+    STATE._pendingSmsRelayNumber = relayNumber;
+
+    var box     = document.getElementById('smsResultBox');
+    var display = document.getElementById('smsComposedMessage');
+    if (display) display.textContent = message;
+    if (box) box.style.display = 'block';
+
+    showAlert('green','✅ Payment signed. Review and send the SMS below.');
+  } catch (err) {
+    showAlert('red','❌ Could not sign payment: ' + (err && err.message ? err.message : 'unknown error'));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔏 Sign & Prepare SMS'; }
+  }
+}
+
+function openSmsApp() {
+  var message     = STATE._pendingSmsMessage;
+  var relayNumber = STATE._pendingSmsRelayNumber;
+  if (!message || !relayNumber) { showAlert('red','⚠️ Sign a payment first'); return; }
+  var isIOS     = /iP(hone|od|ad)/.test(navigator.userAgent || '');
+  var separator = isIOS ? '&' : '?';
+  var url = 'sms:' + encodeURIComponent(relayNumber) + separator + 'body=' + encodeURIComponent(message);
+  window.location.href = url;
+}
+
+function copySmsMessage() {
+  var message = STATE._pendingSmsMessage;
+  if (!message) { showAlert('red','⚠️ Sign a payment first'); return; }
+  navigator.clipboard.writeText(message)
+    .then(function(){ showAlert('green','📋 Message copied'); })
+    .catch(function(){ showAlert('yellow','Use long-press to copy the message manually'); });
+}
+
 function setTransfer(method) {
   STATE.transferMethod = method;
   ['QR','BT','NFC','SMS'].forEach(function(m){

@@ -465,6 +465,7 @@
     <div class="pay-tabs">
       <button class="pay-tab active" onclick="switchPayTab('scan',this)">📷 Scan QR</button>
       <button class="pay-tab" onclick="switchPayTab('send',this)">💸 Send</button>
+      <button class="pay-tab" onclick="switchPayTab('sms',this)">📶 SMS Pay</button>
     </div>
 
     <div class="pay-panel active" id="panel-scan">
@@ -527,6 +528,41 @@
       </div>
       <button class="btn btn-primary btn-block mt-16" onclick="doSendMoney()">⭐ Send XLM →</button>
       <button class="btn btn-accent btn-block mt-12" id="sendXLMBtn" onclick="showSendXLMModal()" style="display:none;">⭐ Send XLM via Freighter</button>
+    </div>
+
+    <div class="pay-panel" id="panel-sms">
+      <div class="card" style="background:var(--bg);margin-bottom:16px;">
+        <div class="info-row">
+          <span class="info-label">Works without internet</span>
+          <span class="info-val"><span class="badge badge-green">SMS Only</span></span>
+        </div>
+      </div>
+      <div class="input-group">
+        <label>Relay Number</label>
+        <input type="tel" id="smsRelayNumber" placeholder="e.g. +639171234567" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="input-group mt-16">
+        <label>Recipient (Username or Phone)</label>
+        <input type="text" id="smsRecipient" placeholder="e.g. juan or +639171234567" autocomplete="off" spellcheck="false">
+      </div>
+      <div style="margin-top:20px; text-align:center;">
+        <div class="amount-currency">Amount · XLM</div>
+        <input type="number" class="amount-input-big" id="smsAmount" placeholder="0.000000" min="0.0000001" step="any" style="letter-spacing:0.5px;">
+      </div>
+      <div class="input-group mt-16">
+        <label>PIN</label>
+        <input type="password" id="smsPin" placeholder="4–6 digit PIN" inputmode="numeric" maxlength="6" autocomplete="off">
+      </div>
+      <button class="btn btn-primary btn-block mt-16" onclick="doSignAndPrepareSms()">🔏 Sign &amp; Prepare SMS</button>
+
+      <div id="smsResultBox" style="display:none;margin-top:16px;">
+        <div class="success-proof">
+          <div class="proof-label">Signed SMS Message</div>
+          <div class="proof-code" id="smsComposedMessage" style="word-break:break-all;"></div>
+        </div>
+        <button class="btn btn-accent btn-block mt-12" onclick="openSmsApp()">📱 Open Messages App</button>
+        <button class="btn btn-ghost btn-block mt-12" onclick="copySmsMessage()">📋 Copy Message</button>
+      </div>
     </div>
   </div>
 

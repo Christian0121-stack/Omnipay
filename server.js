@@ -470,7 +470,7 @@ const RELAY_STATUS = {
   SETTLED: 'settled',
   FAILED: 'failed',
 };
-async function createRelayRecord({ channel, senderPhone, senderId, recipient, amount }) {
+async function createRelayRecord({ channel, senderPhone, senderId, recipient, amount, signedPayload }) {
   const ref = relayTransactionsCol().doc();
   const now = Date.now();
   try {
@@ -480,6 +480,8 @@ async function createRelayRecord({ channel, senderPhone, senderId, recipient, am
       senderId: senderId || null,
       recipient: recipient != null ? String(recipient) : null,
       amount: amount != null ? Number(amount) : null,
+      signedPayload: signedPayload || null,
+      signatureValidation: null,
       status: RELAY_STATUS.RECEIVED,
       statusHistory: [{ status: RELAY_STATUS.RECEIVED, at: now }],
       txHash: null,
@@ -511,6 +513,35 @@ async function updateRelayStatus(relayId, status, fields = {}) {
     log('error', 'relay', `Failed to update ${relayId} to ${status}: ${err.message}`);
   }
 }
+async function recordSignatureValidation(relayId, ok, reason) {
+  if (!relayId) return;
+  try {
+    await relayTransactionsCol()
+      .doc(relayId)
+      .update({
+        signatureValidation: {
+          result: ok ? 'passed' : 'failed',
+          reason: ok ? null : reason || 'unknown',
+          checkedAt: Date.now(),
+        },
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+  } catch (err) {
+    log('error', 'relay', `Failed to record signature validation for ${relayId}: ${err.message}`);
+  }
+}
+
+function logSignedPayload(signedPayload, ok, reason) {
+  if (!signedPayload) return;
+  const sigPreview = String(signedPayload.signature || '').slice(0, 16);
+  const outcome = ok ? 'PASSED' : `FAILED (${reason})`;
+  log(
+    ok ? 'ok' : 'warn',
+    'sms',
+    `Signed payload | senderId=${signedPayload.senderId} recipientId=${signedPayload.recipientId} amount=${signedPayload.amount} timestamp=${signedPayload.timestamp} nonce=${signedPayload.nonce} requestId=${signedPayload.requestId} signature=${sigPreview}... | validation=${outcome}`
+  );
+}
+
 function buildSmsEventKey(senderPhone, messageText, payload) {
   const providerId =
     payload &&
@@ -738,15 +769,29 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
     if (command.type === 'SEND') {
       const { amount, recipient: recipientIdentifier, pin, sig } = command;
 
+      const signedPayload = sig
+        ? {
+            senderId: sender.id,
+            recipientId: recipientIdentifier,
+            amount: Number(amount).toFixed(7),
+            timestamp: sig.timestamp,
+            nonce: sig.nonce,
+            requestId: sig.requestId,
+            signature: sig.signature,
+          }
+        : null;
+
       const relayId = await createRelayRecord({
         channel: 'sms',
         senderPhone: normalizePhone(senderPhone),
         senderId: sender.id,
         recipient: recipientIdentifier,
         amount,
+        signedPayload,
       });
 
       if (REQUIRE_SIGNED_SMS && !sig) {
+        await recordSignatureValidation(relayId, false, 'signature-required');
         await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'signature-required' });
         await sendSms(senderPhone, 'OmniPay: This command must be signed. Update your OmniPay app to the latest version.');
         return;
@@ -754,6 +799,8 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
 
       if (sig) {
         if (!sender.walletPublic) {
+          logSignedPayload(signedPayload, false, 'no-registered-signing-key');
+          await recordSignatureValidation(relayId, false, 'no-registered-signing-key');
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'no-registered-signing-key' });
           await sendSms(senderPhone, 'OmniPay: Your account has no registered signing key yet. Log in to the app once.');
           return;
@@ -770,6 +817,8 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
         });
         if (!verifyResult.ok) {
           log('warn', 'sms', `Signature rejected: ${verifyResult.reason} (sender: ${sender.id})`);
+          logSignedPayload(signedPayload, false, verifyResult.reason);
+          await recordSignatureValidation(relayId, false, verifyResult.reason);
           await logEvent(sender.id, '❌', `SMS payment blocked: bad signature (${verifyResult.reason})`, 'error');
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: `bad-signature:${verifyResult.reason}` });
           await sendSms(senderPhone, 'OmniPay: Signature check failed. Payment not sent.');
@@ -778,9 +827,13 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
         const claim = await claimSignedRequest(sig.requestId, sig.nonce, sender.id);
         if (!claim.claimed) {
           log('info', 'sms', `Duplicate signed SMS request ignored: ${sig.requestId}`);
+          logSignedPayload(signedPayload, false, claim.reason || 'duplicate-request');
+          await recordSignatureValidation(relayId, false, claim.reason || 'duplicate-request');
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: claim.reason || 'duplicate-request' });
           return;
         }
+        logSignedPayload(signedPayload, true);
+        await recordSignatureValidation(relayId, true);
       }
 
       try {

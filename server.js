@@ -60,6 +60,12 @@ const HORIZON_URL = process.env.STELLAR_HORIZON_URL || 'https://horizon-testnet.
 const NETWORK_PASSPHRASE =
   process.env.STELLAR_NETWORK_PASSPHRASE || StellarSdk.Networks.TESTNET;
 const ASSET_LABEL = process.env.SMS_ASSET_LABEL || 'XLM';
+const SOROBAN_RPC_URL = (process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org').trim();
+const SOROBAN_CONTRACT_ID = (process.env.SOROBAN_CONTRACT_ID || '').trim();
+const SOROBAN_SETTLE_FUNCTION = (process.env.SOROBAN_SETTLE_FUNCTION || 'settle').trim();
+const SOROBAN_POLL_ATTEMPTS = parseInt(process.env.SOROBAN_POLL_ATTEMPTS, 10) || 30;
+const SOROBAN_POLL_INTERVAL_MS = parseInt(process.env.SOROBAN_POLL_INTERVAL_MS, 10) || 1000;
+const SOROBAN_ENABLED = Boolean(SOROBAN_CONTRACT_ID);
 const SECRET_HASH_ITERATIONS = 150000;
 const REQUIRE_SIGNED_SMS = String(process.env.REQUIRE_SIGNED_SMS || 'true').toLowerCase() === 'true';
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || '';
@@ -103,6 +109,23 @@ const eventsCol = () => db.collection('omnipay_events');
 const smsEventsCol = () => db.collection('omnipay_sms_events');
 const relayTransactionsCol = () => db.collection('omnipay_relay_transactions');
 const horizon = new StellarSdk.Horizon.Server(HORIZON_URL);
+const SorobanRpcNamespace = StellarSdk.rpc || StellarSdk.SorobanRpc;
+let sorobanServer = null;
+if (SOROBAN_ENABLED) {
+  if (!SorobanRpcNamespace || !StellarSdk.Contract) {
+    console.error('[startup] SOROBAN_CONTRACT_ID is set but the installed stellar-sdk has no Soroban support. Upgrade stellar-sdk to v11 or newer.');
+    process.exit(1);
+  }
+  try {
+    StellarSdk.StrKey.decodeContract(SOROBAN_CONTRACT_ID);
+  } catch (err) {
+    console.error('[startup] SOROBAN_CONTRACT_ID is not a valid contract address (expected a value starting with C).');
+    process.exit(1);
+  }
+  sorobanServer = new SorobanRpcNamespace.Server(SOROBAN_RPC_URL, {
+    allowHttp: SOROBAN_RPC_URL.startsWith('http://'),
+  });
+}
 
 const HORIZON_RETRY_ATTEMPTS = 3;
 const HORIZON_RETRY_BASE_DELAY_MS = 300;
@@ -170,9 +193,61 @@ async function getStellarNativeBalance(publicKey) {
     return null;
   }
 }
+function amountToStroops(amount) {
+  const [whole, fraction] = Number(amount).toFixed(7).split('.');
+  return BigInt(whole + fraction);
+}
+
+async function waitForSorobanTransaction(hash) {
+  for (let attempt = 1; attempt <= SOROBAN_POLL_ATTEMPTS; attempt += 1) {
+    const result = await sorobanServer.getTransaction(hash);
+    if (result.status === 'SUCCESS') return result;
+    if (result.status === 'FAILED') throw new Error('soroban-transaction-failed');
+    await delay(SOROBAN_POLL_INTERVAL_MS);
+  }
+  throw new Error('soroban-confirmation-timeout');
+}
+
+async function invokeSorobanSettlement(senderSecret, recipientPublicKey, amount, requestId) {
+  const senderKeypair = StellarSdk.Keypair.fromSecret(senderSecret);
+  const senderPublicKey = senderKeypair.publicKey();
+  const sourceAccount = await sorobanServer.getAccount(senderPublicKey);
+  const contract = new StellarSdk.Contract(SOROBAN_CONTRACT_ID);
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      contract.call(
+        SOROBAN_SETTLE_FUNCTION,
+        StellarSdk.nativeToScVal(String(requestId), { type: 'string' }),
+        new StellarSdk.Address(senderPublicKey).toScVal(),
+        new StellarSdk.Address(recipientPublicKey).toScVal(),
+        StellarSdk.nativeToScVal(amountToStroops(amount), { type: 'i128' })
+      )
+    )
+    .setTimeout(60)
+    .build();
+
+  const prepared = await sorobanServer.prepareTransaction(tx);
+  prepared.sign(senderKeypair);
+
+  const submission = await sorobanServer.sendTransaction(prepared);
+  if (submission.status === 'ERROR' || submission.status === 'TRY_AGAIN_LATER') {
+    throw new Error(`soroban-submit-${String(submission.status).toLowerCase()}`);
+  }
+
+  await waitForSorobanTransaction(submission.hash);
+  return submission.hash;
+}
+
 const OmniPayBackend = {
   async settlePayment(walletSecret, destinationPublicKey, amount) {
     return sendStellarPayment(walletSecret, destinationPublicKey, amount);
+  },
+  async recordSettlement(walletSecret, destinationPublicKey, amount, requestId) {
+    return invokeSorobanSettlement(walletSecret, destinationPublicKey, amount, requestId);
   },
 };
 const { buildSignedPayloadString, verifySignature } = require('./signature');
@@ -513,6 +588,16 @@ async function updateRelayStatus(relayId, status, fields = {}) {
     log('error', 'relay', `Failed to update ${relayId} to ${status}: ${err.message}`);
   }
 }
+async function updateRelayFields(relayId, fields) {
+  if (!relayId) return;
+  try {
+    await relayTransactionsCol()
+      .doc(relayId)
+      .update({ ...fields, updatedAt: FieldValue.serverTimestamp() });
+  } catch (err) {
+    log('error', 'relay', `Failed to update fields on ${relayId}: ${err.message}`);
+  }
+}
 async function recordSignatureValidation(relayId, ok, reason) {
   if (!relayId) return;
   try {
@@ -660,7 +745,7 @@ function parseCommand(text) {
   }
   return { type: 'UNKNOWN' };
 }
-async function executeSend({ sender, recipient, amount, walletSecret, mode, relayId }) {
+async function executeSend({ sender, recipient, amount, walletSecret, mode, relayId, requestId }) {
   if ((sender.xlmBalance || 0) < amount) {
     await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'insufficient-balance' });
     return { ok: false, code: 'insufficient-balance', senderBalance: sender.xlmBalance || 0 };
@@ -679,6 +764,30 @@ async function executeSend({ sender, recipient, amount, walletSecret, mode, rela
 
   try {
     await updateRelayStatus(relayId, RELAY_STATUS.SUBMITTED);
+
+    let sorobanTxHash = null;
+    if (SOROBAN_ENABLED) {
+      try {
+        sorobanTxHash = await OmniPayBackend.recordSettlement(
+          walletSecret,
+          recipient.walletPublic,
+          amount,
+          requestId || relayId
+        );
+        await updateRelayFields(relayId, {
+          sorobanTxHash,
+          sorobanContractId: SOROBAN_CONTRACT_ID,
+        });
+        log('ok', 'soroban', `Settlement recorded on contract ${SOROBAN_CONTRACT_ID.slice(0, 8)}... | tx ${sorobanTxHash.slice(0, 12)}...`);
+      } catch (sorobanErr) {
+        const sorobanDetail = `soroban:${sorobanErr.message}`;
+        log('error', 'soroban', `Contract invocation failed: ${sorobanErr.message}`);
+        await logEvent(sender.id, '❌', `${channelNote} payment blocked: contract settlement failed`, 'error');
+        await updateRelayStatus(relayId, RELAY_STATUS.FAILED, { detail: sorobanDetail });
+        return { ok: false, code: 'soroban-failed', detail: sorobanDetail, relayId };
+      }
+    }
+
     const txHash = await OmniPayBackend.settlePayment(walletSecret, recipient.walletPublic, amount);
     await updateRelayStatus(relayId, RELAY_STATUS.CONFIRMED, { txHash });
     const senderPublicKey = StellarSdk.Keypair.fromSecret(walletSecret).publicKey();
@@ -694,13 +803,14 @@ async function executeSend({ sender, recipient, amount, walletSecret, mode, rela
     await usersCol().doc(recipient.id).update({ xlmBalance: newRecipientBal });
 
     const base = { id: 'tx-' + txHash.substring(0, 8), amount, status: 'synced', mode, txHash, ts: Date.now(), icon };
+    if (sorobanTxHash) base.sorobanTxHash = sorobanTxHash;
     await recordTransaction(sender.id, { ...base, type: 'send', name: `To @${recipientName}`, note: `Sent via ${channelNote}` });
     await recordTransaction(recipient.id, { ...base, type: 'receive', name: `From @${senderName}`, note: `Received via ${channelNote}` });
 
     await updateRelayStatus(relayId, RELAY_STATUS.SETTLED);
 
     log('ok', 'payment', `${amount} ${ASSET_LABEL} settled via ${channelNote} | @${senderName} -> @${recipientName} | tx ${txHash.slice(0, 12)}...`);
-    return { ok: true, txHash, newSenderBal, newRecipientBal, relayId };
+    return { ok: true, txHash, sorobanTxHash, newSenderBal, newRecipientBal, relayId };
   } catch (err) {
     const detail = err.response?.data?.extras?.result_codes || err.message;
     log('error', 'stellar', `Payment failed: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
@@ -871,7 +981,15 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
           return;
         }
 
-        const result = await executeSend({ sender, recipient, amount, walletSecret, mode: 'sms', relayId });
+        const result = await executeSend({
+          sender,
+          recipient,
+          amount,
+          walletSecret,
+          mode: 'sms',
+          relayId,
+          requestId: sig ? sig.requestId : relayId,
+        });
 
         if (!result.ok) {
           if (result.code === 'insufficient-balance') {
@@ -1015,13 +1133,29 @@ async function checkHorizon() {
   }
 }
 
+async function checkSoroban() {
+  const started = Date.now();
+  try {
+    await withTimeout(sorobanServer.getHealth(), 4000);
+    return { status: 'ok', latencyMs: Date.now() - started };
+  } catch (err) {
+    return { status: 'error', latencyMs: Date.now() - started, message: err.message };
+  }
+}
+
 app.get('/health', async (_req, res) => {
-  const [firestoreCheck, horizonCheck] = await Promise.all([checkFirestore(), checkHorizon()]);
-  const allOk = firestoreCheck.status === 'ok' && horizonCheck.status === 'ok';
+  const [firestoreCheck, horizonCheck, sorobanCheck] = await Promise.all([
+    checkFirestore(),
+    checkHorizon(),
+    SOROBAN_ENABLED ? checkSoroban() : Promise.resolve(null),
+  ]);
+  const services = { firestore: firestoreCheck, horizon: horizonCheck };
+  if (sorobanCheck) services.soroban = sorobanCheck;
+  const allOk = Object.values(services).every((svc) => svc.status === 'ok');
   res.status(allOk ? 200 : 503).json({
     ok: allOk,
     timestamp: new Date().toISOString(),
-    services: { firestore: firestoreCheck, horizon: horizonCheck },
+    services,
   });
 });
 function requireAdminKey(req, res, next) {
@@ -1251,7 +1385,7 @@ app.post('/api/send', paymentEndpointLimiter, async (req, res) => {
       return res.status(404).json({ error: 'recipient not found', relayId });
     }
 
-    const result = await executeSend({ sender, recipient, amount: amt, walletSecret, mode: 'api', relayId });
+    const result = await executeSend({ sender, recipient, amount: amt, walletSecret, mode: 'api', relayId, requestId });
     if (!result.ok) {
       await finishSignedRequest(requestId, 'failed');
       return res.status(422).json({ error: result.code, detail: result.detail, relayId });
@@ -1261,6 +1395,7 @@ app.post('/api/send', paymentEndpointLimiter, async (req, res) => {
     return res.json({
       ok: true,
       txHash: result.txHash,
+      sorobanTxHash: result.sorobanTxHash || null,
       newSenderBalance: result.newSenderBal,
       relayId,
     });
@@ -1349,6 +1484,7 @@ app.listen(PORT, () => {
   console.log(`  ${paint('90', 'Send path  ')} ${GATEWAY_MESSAGE_PATH}`);
   console.log(`  ${paint('90', 'Webhook    ')} POST /webhook/sms-received`);
   console.log(`  ${paint('90', 'Signed SMS ')} ${REQUIRE_SIGNED_SMS ? 'required' : 'optional (PIN-only accepted)'}`);
+  console.log(`  ${paint('90', 'Soroban    ')} ${SOROBAN_ENABLED ? `${SOROBAN_CONTRACT_ID.slice(0, 8)}...${SOROBAN_CONTRACT_ID.slice(-4)}  ${SOROBAN_RPC_URL}` : '(contract not configured)'}`);
   console.log(rule);
   console.log('');
   if (!GATEWAY_USER || !GATEWAY_PASS) {
@@ -1359,6 +1495,9 @@ app.listen(PORT, () => {
   }
   if (!ADMIN_API_KEY) {
     log('warn', 'auth', 'ADMIN_API_KEY is not set — /api/relay-transactions* and /api/reconcile-balance are disabled until it is configured.');
+  }
+  if (!SOROBAN_ENABLED) {
+    log('warn', 'soroban', 'SOROBAN_CONTRACT_ID is not set — payments settle on Horizon only, without contract-level settlement recording.');
   }
   if (REQUIRE_SIGNED_SMS) {
     log('info', 'auth', 'REQUIRE_SIGNED_SMS=true -> plain unsigned "SEND" SMS commands are REJECTED. Only signed SMS (SIG <ts> <nonce> <reqId> <sig>) is accepted.');

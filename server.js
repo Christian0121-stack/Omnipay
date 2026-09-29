@@ -251,15 +251,19 @@ const OmniPayBackend = {
   },
 };
 const { buildSignedPayloadString, verifySignature } = require('./signature');
-const signedRequestsCol = () => db.collection('omnipay_signed_requests');
+const signedRequestsCol = () => db.collection('relay_requests');
 const usedNoncesCol = () => db.collection('omnipay_used_nonces');
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+const REJECTED_SEND_CODES = ['insufficient-balance', 'self-send'];
 
-async function claimSignedRequest(requestId, nonce, senderId) {
+async function claimSignedRequest(requestId, nonce, senderId, meta = {}) {
   if (!requestId) return { claimed: false, reason: 'missing-requestid' };
   if (!nonce) return { claimed: false, reason: 'missing-nonce' };
+  if (!REQUEST_ID_PATTERN.test(String(requestId))) return { claimed: false, reason: 'invalid-requestid' };
 
   const requestRef = signedRequestsCol().doc(String(requestId));
   const nonceRef = usedNoncesCol().doc(`${senderId}:${nonce}`);
+  let previousStatus = null;
 
   try {
     await db.runTransaction(async (tx) => {
@@ -267,12 +271,18 @@ async function claimSignedRequest(requestId, nonce, senderId) {
         tx.get(requestRef),
         tx.get(nonceRef),
       ]);
-      if (existingRequest.exists) throw new Error('duplicate-request');
+      if (existingRequest.exists) {
+        previousStatus = (existingRequest.data() || {}).status || null;
+        throw new Error('duplicate-request');
+      }
       if (existingNonce.exists) throw new Error('nonce-reused');
 
       tx.create(requestRef, {
+        requestId: String(requestId),
         senderId,
         nonce: String(nonce),
+        channel: meta.channel || null,
+        relayId: meta.relayId || null,
         status: 'processing',
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
@@ -285,19 +295,21 @@ async function claimSignedRequest(requestId, nonce, senderId) {
     });
     return { claimed: true };
   } catch (err) {
-    if (err.message === 'duplicate-request') return { claimed: false, reason: 'duplicate-request' };
+    if (err.message === 'duplicate-request') return { claimed: false, reason: 'duplicate-request', previousStatus };
     if (err.message === 'nonce-reused') return { claimed: false, reason: 'nonce-reused' };
     log('error', 'signed-request', `Claim failed: ${err.message}`);
     return { claimed: false, reason: 'claim-error' };
   }
 }
 
-async function finishSignedRequest(requestId, status) {
+async function finishSignedRequest(requestId, status, extra = {}) {
   if (!requestId) return;
+  const fields = { status: status || 'processed', updatedAt: FieldValue.serverTimestamp() };
+  if (extra.txHash) fields.txHash = extra.txHash;
+  if (extra.sorobanTxHash) fields.sorobanTxHash = extra.sorobanTxHash;
+  if (extra.detail) fields.detail = String(extra.detail);
   try {
-    await signedRequestsCol()
-      .doc(String(requestId))
-      .update({ status: status || 'processed', updatedAt: FieldValue.serverTimestamp() });
+    await signedRequestsCol().doc(String(requestId)).update(fields);
   } catch (err) {
     log('error', 'signed-request', `Finalize failed: ${err.message}`);
   }
@@ -934,18 +946,25 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
           await sendSms(senderPhone, 'OmniPay: Signature check failed. Payment not sent.');
           return;
         }
-        const claim = await claimSignedRequest(sig.requestId, sig.nonce, sender.id);
+        const claim = await claimSignedRequest(sig.requestId, sig.nonce, sender.id, { channel: 'sms', relayId });
         if (!claim.claimed) {
-          log('info', 'sms', `Duplicate signed SMS request ignored: ${sig.requestId}`);
+          log('info', 'sms', `Signed SMS request not accepted (${claim.reason}): ${sig.requestId}`);
           logSignedPayload(signedPayload, false, claim.reason || 'duplicate-request');
           await recordSignatureValidation(relayId, false, claim.reason || 'duplicate-request');
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: claim.reason || 'duplicate-request' });
+          if (claim.reason === 'claim-error') {
+            await sendSms(senderPhone, 'OmniPay: Could not process your request right now. Nothing was deducted. Please try again.');
+          } else if (claim.reason === 'invalid-requestid') {
+            await sendSms(senderPhone, 'OmniPay: Invalid request. Payment not sent.');
+          }
           return;
         }
         logSignedPayload(signedPayload, true);
         await recordSignatureValidation(relayId, true);
       }
 
+      let requestOutcome = 'rejected';
+      let requestExtra = {};
       try {
         if (isPinLocked(senderPhone)) {
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'pin-locked' });
@@ -981,6 +1000,7 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
           return;
         }
 
+        requestOutcome = 'failed';
         const result = await executeSend({
           sender,
           recipient,
@@ -992,6 +1012,8 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
         });
 
         if (!result.ok) {
+          requestOutcome = REJECTED_SEND_CODES.includes(result.code) ? 'rejected' : 'failed';
+          requestExtra = { detail: result.code };
           if (result.code === 'insufficient-balance') {
             await sendSms(senderPhone, `OmniPay: Insufficient balance. You have ${result.senderBalance.toFixed(4)} ${ASSET_LABEL}.`);
           } else if (result.code === 'self-send') {
@@ -1002,6 +1024,8 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
           return;
         }
 
+        requestOutcome = 'processed';
+        requestExtra = { txHash: result.txHash, sorobanTxHash: result.sorobanTxHash };
         const recipientName = recipient.username || recipient.id;
         const senderName = sender.username || sender.id;
         await sendSms(
@@ -1015,7 +1039,7 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
           );
         }
       } finally {
-        if (sig) await finishSignedRequest(sig.requestId, 'processed');
+        if (sig) await finishSignedRequest(sig.requestId, requestOutcome, requestExtra);
       }
       return;
     }
@@ -1344,11 +1368,17 @@ app.post('/api/send', paymentEndpointLimiter, async (req, res) => {
     return res.status(401).json({ error: 'invalid signature', reason: verifyResult.reason, relayId });
   }
 
-  const claim = await claimSignedRequest(requestId, nonce, senderId);
+  const claim = await claimSignedRequest(requestId, nonce, senderId, { channel: 'api', relayId });
   if (!claim.claimed) {
     await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: claim.reason || 'claim-error' });
-    const status = ['duplicate-request', 'nonce-reused'].includes(claim.reason) ? 409 : 500;
-    return res.status(status).json({ error: claim.reason || 'could not process request', relayId });
+    let status = 500;
+    if (['duplicate-request', 'nonce-reused'].includes(claim.reason)) status = 409;
+    else if (claim.reason === 'invalid-requestid') status = 400;
+    return res.status(status).json({
+      error: claim.reason || 'could not process request',
+      previousStatus: claim.previousStatus || undefined,
+      relayId,
+    });
   }
 
   try {
@@ -1387,11 +1417,11 @@ app.post('/api/send', paymentEndpointLimiter, async (req, res) => {
 
     const result = await executeSend({ sender, recipient, amount: amt, walletSecret, mode: 'api', relayId, requestId });
     if (!result.ok) {
-      await finishSignedRequest(requestId, 'failed');
+      await finishSignedRequest(requestId, REJECTED_SEND_CODES.includes(result.code) ? 'rejected' : 'failed', { detail: result.code });
       return res.status(422).json({ error: result.code, detail: result.detail, relayId });
     }
 
-    await finishSignedRequest(requestId, 'processed');
+    await finishSignedRequest(requestId, 'processed', { txHash: result.txHash, sorobanTxHash: result.sorobanTxHash });
     return res.json({
       ok: true,
       txHash: result.txHash,
@@ -1401,7 +1431,7 @@ app.post('/api/send', paymentEndpointLimiter, async (req, res) => {
     });
   } catch (err) {
     console.error('[api/send] unhandled error:', err);
-    await finishSignedRequest(requestId, 'failed');
+    await finishSignedRequest(requestId, 'failed', { detail: 'internal-error' });
     await updateRelayStatus(relayId, RELAY_STATUS.FAILED, { detail: 'internal-error' });
     return res.status(500).json({ error: 'internal error', relayId });
   }

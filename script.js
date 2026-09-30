@@ -1491,6 +1491,117 @@ async function doSendMoney() {
   var recipientEl = document.getElementById('sendRecipient');
   var recipient = normalizeStellarPublicKey(recipientEl ? recipientEl.value : '');
   var amt       = parseFloat(document.getElementById('sendAmount').value);
+  var note      = (document.getElementById('sendNote') || {}).value || '';
+
+  if (!recipient)                 { showAlert('red','⚠️ Enter a Stellar recipient address (G…)'); return; }
+  if (!isFinite(amt) || amt <= 0) { showAlert('red','⚠️ Enter a valid amount'); return; }
+  if (amt > STATE.balance)        { showAlert('red','❌ Insufficient balance'); return; }
+
+  if (recipientEl) recipientEl.value = recipient;
+  if (!isValidStellarPublicKey(recipient)) {
+    if (recipientEl) recipientEl.classList.add('error');
+    showAlert('red','❌ ' + stellarAddressError(recipient));
+    return;
+  }
+
+  var secretKey = STATE.wallet.secretKey;
+  var primaryPublic = null;
+  if (secretKey) {
+    try { primaryPublic = StellarSdk.Keypair.fromSecret(secretKey).publicKey(); } catch (e) { primaryPublic = null; }
+  }
+  var viaFreighter = (
+    typeof FREIGHTER !== 'undefined' &&
+    FREIGHTER.isConnected &&
+    FREIGHTER.publicKey &&
+    FREIGHTER.publicKey === STATE.wallet.publicKey &&
+    typeof getFreighterAPI === 'function' &&
+    getFreighterAPI()
+  );
+
+  if (viaFreighter || !secretKey || !primaryPublic || primaryPublic !== STATE.wallet.publicKey) {
+    return executeSendMoney(null);
+  }
+
+  var toEl   = document.getElementById('signToAddr');
+  var amtEl  = document.getElementById('signAmt');
+  var noteEl = document.getElementById('signNote');
+  var pinEl  = document.getElementById('signPin');
+  var errEl  = document.getElementById('signPinError');
+  if (toEl)   toEl.textContent   = recipient.substring(0, 8) + '…' + recipient.slice(-8);
+  if (amtEl)  amtEl.textContent  = amt.toFixed(7) + ' XLM';
+  if (noteEl) noteEl.textContent = note || '—';
+  if (pinEl)  { pinEl.value = ''; pinEl.classList.remove('error'); }
+  if (errEl)  errEl.style.display = 'none';
+  showModal('signPaymentModal');
+  setTimeout(function(){ if (pinEl) pinEl.focus(); }, 150);
+}
+
+async function confirmSignPayment() {
+  var pinEl = document.getElementById('signPin');
+  var errEl = document.getElementById('signPinError');
+  var btn   = document.getElementById('signPayBtn');
+  var pin   = ((pinEl && pinEl.value) || '').trim();
+
+  function fail(message) {
+    if (errEl) { errEl.textContent = message; errEl.style.display = 'block'; }
+    if (pinEl) pinEl.classList.add('error');
+  }
+  if (errEl) errEl.style.display = 'none';
+  if (pinEl) pinEl.classList.remove('error');
+
+  if (!/^\d{4,6}$/.test(pin)) { fail('PIN must be 4–6 digits'); return; }
+  if (!STATE.uid || !db)      { fail('You must be logged in to sign a payment.'); return; }
+
+  var secretKey = STATE.wallet && STATE.wallet.secretKey;
+  if (!secretKey) { fail('No signing key available. Re-login to unlock your wallet.'); return; }
+
+  var recipient = normalizeStellarPublicKey((document.getElementById('sendRecipient') || {}).value || '');
+  var amt       = parseFloat((document.getElementById('sendAmount') || {}).value);
+  if (!recipient || !isFinite(amt) || amt <= 0) { fail('Payment details are incomplete.'); return; }
+
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Signing…'; }
+
+  var auth = null;
+  try {
+    var snap = await db.collection(USERS_COLLECTION).doc(STATE.uid).get();
+    var profile = snap.exists ? snap.data() : null;
+    if (!profile || !profile.smsPinHash || !profile.smsPinSalt) {
+      fail('No PIN is set for this account.');
+      return;
+    }
+    var pinOk = await verifySecret(pin, profile.smsPinHash, profile.smsPinSalt);
+    if (!pinOk) { fail('Incorrect PIN. Try again.'); return; }
+
+    var amtStr    = amt.toFixed(7);
+    var timestamp = Date.now();
+    var nonce     = bytesToHex(randomBytes(16));
+    var requestId = bytesToHex(randomBytes(16));
+    var payload   = [STATE.uid, recipient, amtStr, timestamp, nonce, requestId].join('|');
+    var keypair   = StellarSdk.Keypair.fromSecret(secretKey);
+    auth = {
+      timestamp: timestamp,
+      nonce:     nonce,
+      requestId: requestId,
+      signature: bytesToBase64(keypair.sign(new TextEncoder().encode(payload)))
+    };
+  } catch (err) {
+    fail('Could not sign payment: ' + (err && err.message ? err.message : 'unknown error'));
+    return;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔏 Sign & Send'; }
+  }
+
+  if (pinEl) pinEl.value = '';
+  closeModal('signPaymentModal');
+  showAlert('success','🔏 Payment digitally signed');
+  await executeSendMoney(auth);
+}
+
+async function executeSendMoney(signedAuth) {
+  syncSpendableBalance();
+  var recipientEl = document.getElementById('sendRecipient');
+  var recipient = normalizeStellarPublicKey(recipientEl ? recipientEl.value : '');
+  var amt       = parseFloat(document.getElementById('sendAmount').value);
   var note      = (document.getElementById('sendNote') || {}).value || 'Online payment';
 
   if (!recipient)          { showAlert('red','⚠️ Enter a Stellar recipient address (G…)'); return; }
@@ -1613,7 +1724,11 @@ async function doSendMoney() {
         senderId:    STATE.uid,
         recipientId: recipient,
         amount:      amtStr,
-        signedXdr:   txXdr
+        signedXdr:   txXdr,
+        timestamp:   signedAuth ? signedAuth.timestamp : undefined,
+        nonce:       signedAuth ? signedAuth.nonce : undefined,
+        requestId:   signedAuth ? signedAuth.requestId : undefined,
+        signature:   signedAuth ? signedAuth.signature : undefined
       })
     });
     var submitData = await submitResp.json();

@@ -1327,6 +1327,42 @@
     </div>
   </div>
 
+  <div class="modal-overlay" id="signPaymentModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <h3>🔏 Sign Payment</h3>
+      <p class="sub">Review the details, then enter your PIN to digitally sign this payment.</p>
+      <div class="card" style="background:var(--bg);">
+        <div class="info-row">
+          <span class="info-label">To</span>
+          <span class="info-val" id="signToAddr" style="font-family:'Courier New',monospace;font-size:12px;word-break:break-all;text-align:right;">—</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Amount</span>
+          <span class="info-val" id="signAmt">—</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Note</span>
+          <span class="info-val" id="signNote" style="text-align:right;word-break:break-word;">—</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Network</span>
+          <span class="info-val"><span class="badge badge-green">Testnet</span></span>
+        </div>
+      </div>
+      <div class="input-group mt-16">
+        <label>PIN</label>
+        <div class="input-wrapper">
+          <input type="password" id="signPin" inputmode="numeric" maxlength="6" placeholder="4–6 digit PIN" autocomplete="off" oninput="this.classList.remove('error')" onkeydown="if(event.key==='Enter'){confirmSignPayment();}">
+          <button class="input-toggle" onclick="togglePass('signPin',this)">👁</button>
+        </div>
+        <div id="signPinError" style="display:none;font-size:12px;color:var(--danger);margin-top:6px;font-weight:600;"></div>
+      </div>
+      <button class="btn btn-primary btn-block mt-16" id="signPayBtn" onclick="confirmSignPayment()">🔏 Sign &amp; Send</button>
+      <button class="btn btn-ghost btn-block mt-12" onclick="closeModal('signPaymentModal')">Cancel</button>
+    </div>
+  </div>
+
   <div class="modal-overlay" id="sendXLMModal">
     <div class="modal">
       <div class="modal-handle"></div>

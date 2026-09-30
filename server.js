@@ -69,6 +69,8 @@ const SOROBAN_ENABLED = Boolean(SOROBAN_CONTRACT_ID);
 const SECRET_HASH_ITERATIONS = 150000;
 const REQUIRE_SIGNED_SMS = String(process.env.REQUIRE_SIGNED_SMS || 'true').toLowerCase() === 'true';
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || '';
+const REPLAY_CHECK_ENABLED =
+  process.argv.includes('--replay-check') || String(process.env.REPLAY_CHECK || '').toLowerCase() === 'true';
 let db;
 try {
   const serviceAccountPath = path.resolve(
@@ -250,22 +252,12 @@ const OmniPayBackend = {
     return invokeSorobanSettlement(walletSecret, destinationPublicKey, amount, requestId);
   },
 };
-<<<<<<< HEAD
-const { buildSignedPayloadString, verifySignature } = require('./signature');
-=======
 const { buildSignedPayloadString, verifySignature } = require('./Signature');
->>>>>>> 9dbe91b (fix: track synced nonces to reject replayed offline payments)
 const signedRequestsCol = () => db.collection('relay_requests');
 const usedNoncesCol = () => db.collection('omnipay_used_nonces');
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const REJECTED_SEND_CODES = ['insufficient-balance', 'self-send'];
 
-<<<<<<< HEAD
-async function claimSignedRequest(requestId, nonce, senderId, meta = {}) {
-  if (!requestId) return { claimed: false, reason: 'missing-requestid' };
-  if (!nonce) return { claimed: false, reason: 'missing-nonce' };
-  if (!REQUEST_ID_PATTERN.test(String(requestId))) return { claimed: false, reason: 'invalid-requestid' };
-=======
 function shortRef(value) {
   const str = String(value);
   return str.length > 12 ? `${str.slice(0, 12)}...` : str;
@@ -284,11 +276,11 @@ async function claimSignedRequest(requestId, nonce, senderId, meta = {}) {
     log('warn', 'nonce', `REJECTED (invalid requestId format) | channel=${meta.channel || 'n/a'} sender=${senderId}`);
     return { claimed: false, reason: 'invalid-requestid' };
   }
->>>>>>> 9dbe91b (fix: track synced nonces to reject replayed offline payments)
 
   const requestRef = signedRequestsCol().doc(String(requestId));
   const nonceRef = usedNoncesCol().doc(`${senderId}:${nonce}`);
   let previousStatus = null;
+  let originalRequestId = null;
 
   try {
     await db.runTransaction(async (tx) => {
@@ -298,9 +290,13 @@ async function claimSignedRequest(requestId, nonce, senderId, meta = {}) {
       ]);
       if (existingRequest.exists) {
         previousStatus = (existingRequest.data() || {}).status || null;
+        originalRequestId = String(requestId);
         throw new Error('duplicate-request');
       }
-      if (existingNonce.exists) throw new Error('nonce-reused');
+      if (existingNonce.exists) {
+        originalRequestId = (existingNonce.data() || {}).requestId || null;
+        throw new Error('nonce-reused');
+      }
 
       tx.create(requestRef, {
         requestId: String(requestId),
@@ -321,21 +317,36 @@ async function claimSignedRequest(requestId, nonce, senderId, meta = {}) {
     log('ok', 'nonce', `ACCEPTED | channel=${meta.channel || 'n/a'} sender=${senderId} nonce=${shortRef(nonce)} requestId=${shortRef(requestId)}`);
     return { claimed: true };
   } catch (err) {
-<<<<<<< HEAD
-    if (err.message === 'duplicate-request') return { claimed: false, reason: 'duplicate-request', previousStatus };
-    if (err.message === 'nonce-reused') return { claimed: false, reason: 'nonce-reused' };
-=======
     if (err.message === 'duplicate-request') {
-      log('warn', 'nonce', `REPLAY REJECTED (duplicate request) | channel=${meta.channel || 'n/a'} sender=${senderId} nonce=${shortRef(nonce)} requestId=${shortRef(requestId)} previousStatus=${previousStatus || 'unknown'}`);
-      return { claimed: false, reason: 'duplicate-request', previousStatus };
+      const tracked = await trackReplayAttempt(originalRequestId, meta.channel);
+      log('warn', 'nonce', `REPLAY REJECTED (duplicate request) | channel=${meta.channel || 'n/a'} sender=${senderId} nonce=${shortRef(nonce)} requestId=${shortRef(requestId)} previousStatus=${previousStatus || 'unknown'} replayCount=${tracked.replayCount || 'n/a'} originalTx=${tracked.txHash ? shortRef(tracked.txHash) : 'none'} newSettlement=no`);
+      return { claimed: false, reason: 'duplicate-request', previousStatus, originalTxHash: tracked.txHash || null };
     }
     if (err.message === 'nonce-reused') {
-      log('warn', 'nonce', `REPLAY REJECTED (nonce already used) | channel=${meta.channel || 'n/a'} sender=${senderId} nonce=${shortRef(nonce)} requestId=${shortRef(requestId)}`);
-      return { claimed: false, reason: 'nonce-reused' };
+      const tracked = await trackReplayAttempt(originalRequestId, meta.channel);
+      log('warn', 'nonce', `REPLAY REJECTED (nonce already used) | channel=${meta.channel || 'n/a'} sender=${senderId} nonce=${shortRef(nonce)} requestId=${shortRef(requestId)} replayCount=${tracked.replayCount || 'n/a'} originalTx=${tracked.txHash ? shortRef(tracked.txHash) : 'none'} newSettlement=no`);
+      return { claimed: false, reason: 'nonce-reused', previousStatus: tracked.status || null, originalTxHash: tracked.txHash || null };
     }
->>>>>>> 9dbe91b (fix: track synced nonces to reject replayed offline payments)
     log('error', 'signed-request', `Claim failed: ${err.message}`);
     return { claimed: false, reason: 'claim-error' };
+  }
+}
+
+async function trackReplayAttempt(originalRequestId, channel) {
+  if (!originalRequestId) return {};
+  const ref = signedRequestsCol().doc(String(originalRequestId));
+  try {
+    await ref.update({
+      replayCount: FieldValue.increment(1),
+      lastReplayAt: FieldValue.serverTimestamp(),
+      lastReplayChannel: channel || null,
+    });
+    const snap = await ref.get();
+    const data = snap.data() || {};
+    return { txHash: data.txHash || null, status: data.status || null, replayCount: data.replayCount || 0 };
+  } catch (err) {
+    log('error', 'nonce', `Replay tracking failed: ${err.message}`);
+    return {};
   }
 }
 
@@ -985,10 +996,6 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
         }
         const claim = await claimSignedRequest(sig.requestId, sig.nonce, sender.id, { channel: 'sms', relayId });
         if (!claim.claimed) {
-<<<<<<< HEAD
-          log('info', 'sms', `Signed SMS request not accepted (${claim.reason}): ${sig.requestId}`);
-=======
->>>>>>> 9dbe91b (fix: track synced nonces to reject replayed offline payments)
           logSignedPayload(signedPayload, false, claim.reason || 'duplicate-request');
           await recordSignatureValidation(relayId, false, claim.reason || 'duplicate-request');
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: claim.reason || 'duplicate-request' });
@@ -996,6 +1003,8 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
             await sendSms(senderPhone, 'OmniPay: Could not process your request right now. Nothing was deducted. Please try again.');
           } else if (claim.reason === 'invalid-requestid') {
             await sendSms(senderPhone, 'OmniPay: Invalid request. Payment not sent.');
+          } else if (['duplicate-request', 'nonce-reused'].includes(claim.reason)) {
+            await sendSms(senderPhone, 'OmniPay: Duplicate request ignored. No additional payment was made.');
           }
           return;
         }
@@ -1414,9 +1423,12 @@ app.post('/api/send', paymentEndpointLimiter, async (req, res) => {
     let status = 500;
     if (['duplicate-request', 'nonce-reused'].includes(claim.reason)) status = 409;
     else if (claim.reason === 'invalid-requestid') status = 400;
+    const replayed = ['duplicate-request', 'nonce-reused'].includes(claim.reason);
     return res.status(status).json({
       error: claim.reason || 'could not process request',
       previousStatus: claim.previousStatus || undefined,
+      originalTxHash: replayed ? claim.originalTxHash || null : undefined,
+      settlementCreated: replayed ? false : undefined,
       relayId,
     });
   }
@@ -1513,6 +1525,27 @@ app.get('/api/relay-transactions', requireAdminKey, async (req, res) => {
     res.status(500).json({ error: 'internal error' });
   }
 });
+app.get('/api/replay-audit/:requestId', requireAdminKey, async (req, res) => {
+  try {
+    const doc = await signedRequestsCol().doc(String(req.params.requestId)).get();
+    if (!doc.exists) return res.status(404).json({ error: 'not found' });
+    const data = doc.data() || {};
+    res.json({
+      requestId: doc.id,
+      status: data.status || null,
+      channel: data.channel || null,
+      txHash: data.txHash || null,
+      settlements: data.txHash ? 1 : 0,
+      replayCount: data.replayCount || 0,
+      lastReplayAt: data.lastReplayAt && data.lastReplayAt.toDate ? data.lastReplayAt.toDate().toISOString() : null,
+      lastReplayChannel: data.lastReplayChannel || null,
+    });
+  } catch (err) {
+    console.error('[api/replay-audit] failed:', err.message);
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
 app.post('/api/reconcile-balance/:userId', requireAdminKey, async (req, res) => {
   try {
     const userDoc = await usersCol().doc(req.params.userId).get();
@@ -1542,6 +1575,96 @@ app.use((err, req, res, next) => {
     detail: err.expose ? err.detail || err.message : undefined,
   });
 });
+
+async function runReplayCheck() {
+  const REPLAYS = 3;
+  const suffix = crypto.randomBytes(6).toString('hex');
+  const requestId = `replaycheck_${Date.now().toString(36)}_${suffix}`;
+  const nonce = `nonce_${Date.now().toString(36)}_${suffix}`;
+  const senderId = 'replay-check';
+  const nonceDocId = `${senderId}:${nonce}`;
+  const txHash = crypto.randomBytes(32).toString('hex');
+  const startingBalance = 100;
+  const amount = 10;
+  let balance = startingBalance;
+  let settlements = 0;
+  const evidence = { requestId, startedAt: new Date().toISOString(), steps: [], checks: [] };
+
+  const settle = async () => {
+    settlements += 1;
+    balance -= amount;
+    await finishSignedRequest(requestId, 'processed', { txHash });
+  };
+  const check = (name, pass, detail) => {
+    evidence.checks.push({ name, pass, detail });
+    log(pass ? 'ok' : 'error', 'replay-check', `${pass ? 'PASS' : 'FAIL'} | ${name} | ${detail}`);
+  };
+
+  log('info', 'replay-check', `Started | requestId=${shortRef(requestId)} replays=${REPLAYS}`);
+  try {
+    const first = await claimSignedRequest(requestId, nonce, senderId, { channel: 'replay-check' });
+    evidence.steps.push({ step: 'original', claimed: first.claimed, reason: first.reason || null });
+    if (first.claimed) await settle();
+    const balanceAfterOriginal = balance;
+
+    for (let i = 1; i <= REPLAYS; i += 1) {
+      const replay = await claimSignedRequest(requestId, nonce, senderId, { channel: 'replay-check' });
+      evidence.steps.push({
+        step: `replay-${i}`,
+        claimed: replay.claimed,
+        reason: replay.reason || null,
+        originalTxHash: replay.originalTxHash || null,
+      });
+      if (replay.claimed) await settle();
+    }
+
+    const otherId = `${requestId}_b`;
+    const nonceReplay = await claimSignedRequest(otherId, nonce, senderId, { channel: 'replay-check' });
+    evidence.steps.push({ step: 'nonce-reuse', claimed: nonceReplay.claimed, reason: nonceReplay.reason || null });
+    if (nonceReplay.claimed) await settle();
+
+    const snap = await signedRequestsCol().doc(requestId).get();
+    const record = snap.exists ? snap.data() : {};
+    const replaySteps = evidence.steps.filter((s) => s.step.startsWith('replay-'));
+
+    check('Original request accepted', first.claimed === true, `claimed=${first.claimed}`);
+    check(
+      'Replayed request rejected',
+      replaySteps.length === REPLAYS && replaySteps.every((s) => !s.claimed && s.reason === 'duplicate-request'),
+      `${replaySteps.filter((s) => !s.claimed).length}/${REPLAYS} rejected`
+    );
+    check('Reused nonce rejected', !nonceReplay.claimed && nonceReplay.reason === 'nonce-reused', `reason=${nonceReplay.reason || 'none'}`);
+    check('Single settlement only', settlements === 1, `settlements=${settlements}`);
+    check('Single tx hash', record.txHash === txHash && replaySteps.every((s) => s.originalTxHash === txHash), `tx=${shortRef(record.txHash || 'none')}`);
+    check('Balance unchanged after replays', balance === balanceAfterOriginal, `before=${balanceAfterOriginal} after=${balance}`);
+    check('Replay attempts recorded', record.replayCount === REPLAYS + 1, `replayCount=${record.replayCount || 0}`);
+
+    evidence.txHash = txHash;
+    evidence.settlements = settlements;
+    evidence.balance = { start: startingBalance, afterOriginal: balanceAfterOriginal, final: balance };
+    evidence.replayCount = record.replayCount || 0;
+  } catch (err) {
+    check('Replay check completed', false, err.message);
+  } finally {
+    try {
+      await signedRequestsCol().doc(requestId).delete();
+      await usedNoncesCol().doc(nonceDocId).delete();
+    } catch (err) {
+      log('warn', 'replay-check', `Cleanup failed: ${err.message}`);
+    }
+  }
+
+  const passed = evidence.checks.length > 0 && evidence.checks.every((c) => c.pass);
+  evidence.result = passed ? 'PASS' : 'FAIL';
+  evidence.finishedAt = new Date().toISOString();
+  try {
+    fs.writeFileSync(path.join(__dirname, 'replay-evidence.json'), JSON.stringify(evidence, null, 2));
+    log('info', 'replay-check', 'Evidence saved to replay-evidence.json');
+  } catch (err) {
+    log('error', 'replay-check', `Could not save evidence: ${err.message}`);
+  }
+  log(passed ? 'ok' : 'error', 'replay-check', `RESULT: ${evidence.result} | settlements=${settlements} | replayCount=${evidence.replayCount || 0}`);
+}
 
 app.listen(PORT, () => {
   const rule = paint('90', '-'.repeat(64));
@@ -1575,4 +1698,5 @@ app.listen(PORT, () => {
     log('warn', 'auth', 'REQUIRE_SIGNED_SMS=false -> plain unsigned "SEND <amount> <recipient> <pin>" SMS is still ACCEPTED (PIN-only auth). Set REQUIRE_SIGNED_SMS=true in .env once the signing app has rolled out.');
   }
   log('info', 'ready', 'Waiting for incoming SMS. Every webhook hit and SMS reply will be logged here.');
+  if (REPLAY_CHECK_ENABLED) runReplayCheck();
 });

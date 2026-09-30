@@ -375,6 +375,8 @@ var STATE = {
   transferMethod: 'QR',
   noncePool: [1,2,3,4,5,6,7,8,9,10],
   usedNonces: [],
+  syncedNonces: [],
+  nonceLog: [],
   memberSince: '',
   wallet: {
     publicKey: '',
@@ -630,6 +632,8 @@ async function doLogin() {
     STATE.monoCounter        = account.monoCounter || 0;
     STATE.noncePool          = [1,2,3,4,5,6,7,8,9,10];
     STATE.usedNonces         = [];
+    STATE.syncedNonces       = [];
+    STATE.nonceLog           = [];
     if (!Array.isArray(STATE.wallets) || STATE.wallets.length === 0) {
       STATE.wallets = [{
         publicKey:  STATE.wallet.publicKey,
@@ -990,6 +994,8 @@ async function finishWalletSetup() {
   STATE.monoCounter        = 0;
   STATE.noncePool          = [1,2,3,4,5,6,7,8,9,10];
   STATE.usedNonces         = [];
+  STATE.syncedNonces       = [];
+  STATE.nonceLog           = [];
   STATE.wallets = [{
     publicKey: PENDING_USER.walletPublic,
     label: 'Primary Wallet',
@@ -1807,7 +1813,7 @@ function doOfflinePay() {
   var newTx = {
     id: 'tx'+Date.now(), type:'send', name: merchant, amount: amt,
     status: 'pending', mode: 'offline', note: 'Offline via '+STATE.transferMethod,
-    ts: Date.now(), icon: '📴'
+    ts: Date.now(), icon: '📴', nonce: availNonce
   };
   STATE.transactions.unshift(newTx);
   STATE.pendingTxCount++;
@@ -1902,18 +1908,28 @@ function doSync() {
 
   var results = [];
   pending.forEach(function(tx){
-    var isDuplicate = STATE.usedNonces.filter(function(n){ return n === tx.nonce; }).length > 1;
-    if (isDuplicate) {
+    var nonceLabel = tx.nonce != null ? '#' + String(tx.nonce).padStart(3,'0') : 'n/a';
+    var isReplay = tx.nonce != null && STATE.syncedNonces.indexOf(tx.nonce) !== -1;
+    var logEntry = { ts: Date.now(), nonce: nonceLabel, name: tx.name, ok: !isReplay };
+    if (isReplay) {
       tx.status = 'failed';
       results.push({ tx: tx, result: 'FRAUD', reason: 'Duplicate nonce detected' });
       STATE.trustScore = Math.max(0, STATE.trustScore - 10);
+      logEntry.msg = 'REPLAY REJECTED';
+      console.warn('[nonce] REPLAY REJECTED | nonce=' + nonceLabel + ' | ' + tx.name);
     } else {
+      if (tx.nonce != null) STATE.syncedNonces.push(tx.nonce);
       tx.status = 'synced';
       results.push({ tx: tx, result: 'OK' });
       STATE.goodTxCount++;
       STATE.trustScore = Math.min(100, STATE.trustScore + 2);
+      logEntry.msg = 'ACCEPTED';
+      console.log('[nonce] ACCEPTED | nonce=' + nonceLabel + ' | ' + tx.name);
     }
+    STATE.nonceLog.push(logEntry);
   });
+  if (STATE.nonceLog.length > 50) STATE.nonceLog = STATE.nonceLog.slice(-50);
+  saveSession();
 
   STATE.pendingTxCount = 0;
   var t = getTrustTier(STATE.trustScore);
@@ -1923,7 +1939,12 @@ function doSync() {
   var syncResultsEl = document.getElementById('syncResults');
   syncResultsEl.innerHTML = results.map(function(r){
     return '<div class="card" style="padding:14px 16px; margin-bottom:8px; background:'+(r.result==='OK'?'#D4F7EC':'#FFE0E3')+'"><div style="font-size:13px; font-weight:700; color:var(--text);">'+safeText(r.tx.name)+'</div><div style="font-size:12px; color:'+(r.result==='OK'?'var(--success)':'var(--danger)')+'; margin-top:4px; font-weight:600;">'+(r.result==='OK'?'✅ Settled on Stellar':'❌ Rejected — '+safeText(r.reason))+'</div><div style="font-size:12px; color:var(--text-muted); margin-top:2px; font-weight:500;">'+fmtAmt(r.tx.amount)+'</div></div>';
-  }).join('') + '<div style="margin-top:12px; padding:14px; background:var(--primary-light); border-radius:14px; text-align:center;"><div style="font-size:13px; font-weight:700; color:var(--primary);">New Trust Score: '+STATE.trustScore+'/100</div><div style="font-size:12px; color:var(--primary); opacity:0.75; margin-top:2px; font-weight:600;">'+t.icon+' '+t.tier+' tier</div></div>';
+  }).join('') + '<div style="margin-top:12px; padding:14px; background:var(--primary-light); border-radius:14px; text-align:center;"><div style="font-size:13px; font-weight:700; color:var(--primary);">New Trust Score: '+STATE.trustScore+'/100</div><div style="font-size:12px; color:var(--primary); opacity:0.75; margin-top:2px; font-weight:600;">'+t.icon+' '+t.tier+' tier</div></div>'
+    + '<div style="margin-top:12px; padding:12px 14px; border:1px solid var(--border); border-radius:14px; text-align:left;"><div style="font-size:12px; font-weight:700; color:var(--text); margin-bottom:6px;">Nonce Log</div>'
+    + STATE.nonceLog.slice(-results.length).map(function(e){
+        return '<div style="display:flex; flex-wrap:wrap; gap:6px 10px; font-size:12px; font-weight:600; padding:3px 0; color:'+(e.ok?'var(--success)':'var(--danger)')+';"><span style="color:var(--text-muted);">'+new Date(e.ts).toLocaleTimeString('en-GB',{hour12:false})+'</span><span>'+(e.ok?'✅':'❌')+' '+safeText(e.msg)+'</span><span style="color:var(--text-muted);">nonce '+safeText(e.nonce)+'</span></div>';
+      }).join('')
+    + '</div>';
 
   showModal('syncModal');
 }
@@ -3043,7 +3064,9 @@ function saveSession() {
       activeWalletIndex:  STATE.activeWalletIndex,
       transactions:       dedupeTransactions(STATE.transactions),
       noncePool:          STATE.noncePool,
-      usedNonces:         STATE.usedNonces
+      usedNonces:         STATE.usedNonces,
+      syncedNonces:       STATE.syncedNonces,
+      nonceLog:           STATE.nonceLog.slice(-50)
     };
     sessionStorage.setItem('omnipay_session', JSON.stringify(data));
   } catch(e) {}
@@ -3076,6 +3099,8 @@ function restoreSession() {
     STATE.transactions       = dedupeTransactions(d.transactions);
     STATE.noncePool          = Array.isArray(d.noncePool)    ? d.noncePool    : [1,2,3,4,5,6,7,8,9,10];
     STATE.usedNonces         = Array.isArray(d.usedNonces)   ? d.usedNonces   : [];
+    STATE.syncedNonces       = Array.isArray(d.syncedNonces) ? d.syncedNonces : [];
+    STATE.nonceLog           = Array.isArray(d.nonceLog)     ? d.nonceLog     : [];
     setTimeout(startInboxListener, 0);
     return true;
   } catch(e) { return false; }

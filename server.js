@@ -250,16 +250,41 @@ const OmniPayBackend = {
     return invokeSorobanSettlement(walletSecret, destinationPublicKey, amount, requestId);
   },
 };
+<<<<<<< HEAD
 const { buildSignedPayloadString, verifySignature } = require('./signature');
+=======
+const { buildSignedPayloadString, verifySignature } = require('./Signature');
+>>>>>>> 9dbe91b (fix: track synced nonces to reject replayed offline payments)
 const signedRequestsCol = () => db.collection('relay_requests');
 const usedNoncesCol = () => db.collection('omnipay_used_nonces');
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const REJECTED_SEND_CODES = ['insufficient-balance', 'self-send'];
 
+<<<<<<< HEAD
 async function claimSignedRequest(requestId, nonce, senderId, meta = {}) {
   if (!requestId) return { claimed: false, reason: 'missing-requestid' };
   if (!nonce) return { claimed: false, reason: 'missing-nonce' };
   if (!REQUEST_ID_PATTERN.test(String(requestId))) return { claimed: false, reason: 'invalid-requestid' };
+=======
+function shortRef(value) {
+  const str = String(value);
+  return str.length > 12 ? `${str.slice(0, 12)}...` : str;
+}
+
+async function claimSignedRequest(requestId, nonce, senderId, meta = {}) {
+  if (!requestId) {
+    log('warn', 'nonce', `REJECTED (missing requestId) | channel=${meta.channel || 'n/a'} sender=${senderId}`);
+    return { claimed: false, reason: 'missing-requestid' };
+  }
+  if (!nonce) {
+    log('warn', 'nonce', `REJECTED (missing nonce) | channel=${meta.channel || 'n/a'} sender=${senderId}`);
+    return { claimed: false, reason: 'missing-nonce' };
+  }
+  if (!REQUEST_ID_PATTERN.test(String(requestId))) {
+    log('warn', 'nonce', `REJECTED (invalid requestId format) | channel=${meta.channel || 'n/a'} sender=${senderId}`);
+    return { claimed: false, reason: 'invalid-requestid' };
+  }
+>>>>>>> 9dbe91b (fix: track synced nonces to reject replayed offline payments)
 
   const requestRef = signedRequestsCol().doc(String(requestId));
   const nonceRef = usedNoncesCol().doc(`${senderId}:${nonce}`);
@@ -293,10 +318,22 @@ async function claimSignedRequest(requestId, nonce, senderId, meta = {}) {
         createdAt: FieldValue.serverTimestamp(),
       });
     });
+    log('ok', 'nonce', `ACCEPTED | channel=${meta.channel || 'n/a'} sender=${senderId} nonce=${shortRef(nonce)} requestId=${shortRef(requestId)}`);
     return { claimed: true };
   } catch (err) {
+<<<<<<< HEAD
     if (err.message === 'duplicate-request') return { claimed: false, reason: 'duplicate-request', previousStatus };
     if (err.message === 'nonce-reused') return { claimed: false, reason: 'nonce-reused' };
+=======
+    if (err.message === 'duplicate-request') {
+      log('warn', 'nonce', `REPLAY REJECTED (duplicate request) | channel=${meta.channel || 'n/a'} sender=${senderId} nonce=${shortRef(nonce)} requestId=${shortRef(requestId)} previousStatus=${previousStatus || 'unknown'}`);
+      return { claimed: false, reason: 'duplicate-request', previousStatus };
+    }
+    if (err.message === 'nonce-reused') {
+      log('warn', 'nonce', `REPLAY REJECTED (nonce already used) | channel=${meta.channel || 'n/a'} sender=${senderId} nonce=${shortRef(nonce)} requestId=${shortRef(requestId)}`);
+      return { claimed: false, reason: 'nonce-reused' };
+    }
+>>>>>>> 9dbe91b (fix: track synced nonces to reject replayed offline payments)
     log('error', 'signed-request', `Claim failed: ${err.message}`);
     return { claimed: false, reason: 'claim-error' };
   }
@@ -948,7 +985,10 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
         }
         const claim = await claimSignedRequest(sig.requestId, sig.nonce, sender.id, { channel: 'sms', relayId });
         if (!claim.claimed) {
+<<<<<<< HEAD
           log('info', 'sms', `Signed SMS request not accepted (${claim.reason}): ${sig.requestId}`);
+=======
+>>>>>>> 9dbe91b (fix: track synced nonces to reject replayed offline payments)
           logSignedPayload(signedPayload, false, claim.reason || 'duplicate-request');
           await recordSignatureValidation(relayId, false, claim.reason || 'duplicate-request');
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: claim.reason || 'duplicate-request' });

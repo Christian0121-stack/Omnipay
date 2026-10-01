@@ -767,16 +767,6 @@ async function doRegister() {
     showAlert('red', '❌ Could not protect your PIN. Try again over HTTPS.');
     return;
   }
-  // Separate copy of the wallet secret, encrypted with the SMS PIN instead of
-  // the account password, so the SMS relay server can unlock it once it has
-  // verified the PIN texted in by the user — without ever knowing the password.
-  var pinWalletSecretRecord;
-  try {
-    pinWalletSecretRecord = await encryptWalletSecret(secKey, pin);
-  } catch (e) {
-    showAlert('red', '❌ Could not protect your wallet for SMS payments. Try again over HTTPS.');
-    return;
-  }
   var contract = generateContractAddress();
   var country  = (document.getElementById('regCountry') || {}).value || '\U0001f1f5\U0001f1ed Philippines';
   var now = new Date();
@@ -799,9 +789,6 @@ async function doRegister() {
     walletSecretIv:   walletSecretRecord.iv,
     smsPinHash:      pinRecord.hash,
     smsPinSalt:      pinRecord.salt,
-    pinWalletSecretEncrypted: pinWalletSecretRecord.ciphertext,
-    pinWalletSecretSalt:      pinWalletSecretRecord.salt,
-    pinWalletSecretIv:        pinWalletSecretRecord.iv,
     contractAddress: contract,
     xlmBalance:      10000,
     balance:         2500,
@@ -932,9 +919,6 @@ async function finishWalletSetup() {
     walletSecretIv:   PENDING_USER.walletSecretIv,
     smsPinHash:      PENDING_USER.smsPinHash,
     smsPinSalt:      PENDING_USER.smsPinSalt,
-    pinWalletSecretEncrypted: PENDING_USER.pinWalletSecretEncrypted,
-    pinWalletSecretSalt:      PENDING_USER.pinWalletSecretSalt,
-    pinWalletSecretIv:        PENDING_USER.pinWalletSecretIv,
     contractAddress: PENDING_USER.contractAddress,
     xlmBalance:      PENDING_USER.xlmBalance,
     balance:         PENDING_USER.balance,
@@ -1838,6 +1822,36 @@ async function executeSendMoney(signedAuth) {
   }
 }
 
+async function ensureSettlementSigner(secretKey) {
+  if (STATE._settlementSignerReady) return;
+  var cfgResp = await fetch('/api/settlement-signer');
+  if (!cfgResp.ok) throw new Error('SMS settlement is not available right now.');
+  var cfg = await cfgResp.json();
+  var keypair = StellarSdk.Keypair.fromSecret(secretKey);
+  var accountResp = await fetch(STELLAR_HORIZON_TESTNET + '/accounts/' + encodeURIComponent(keypair.publicKey()));
+  if (!accountResp.ok) throw new Error('Your wallet is not active on Stellar Testnet yet.');
+  var accountJson = await accountResp.json();
+  var enabled = (accountJson.signers || []).some(function(s){ return s.key === cfg.publicKey && Number(s.weight) > 0; });
+  if (!enabled) {
+    var account = new StellarSdk.Account(keypair.publicKey(), accountJson.sequence);
+    var tx = new StellarSdk.TransactionBuilder(account, {
+      fee: StellarSdk.BASE_FEE,
+      networkPassphrase: cfg.networkPassphrase || StellarSdk.Networks.TESTNET
+    })
+      .addOperation(StellarSdk.Operation.setOptions({ signer: { ed25519PublicKey: cfg.publicKey, weight: 1 } }))
+      .setTimeout(60)
+      .build();
+    tx.sign(keypair);
+    var submitResp = await fetch(STELLAR_HORIZON_TESTNET + '/transactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'tx=' + encodeURIComponent(tx.toXDR())
+    });
+    if (!submitResp.ok) throw new Error('Could not enable SMS settlement on your wallet.');
+  }
+  STATE._settlementSignerReady = true;
+}
+
 async function doSignAndPrepareSms() {
   var relayNumber = (document.getElementById('smsRelayNumber').value || '').trim();
   var recipient   = (document.getElementById('smsRecipient').value || '').trim();
@@ -1859,6 +1873,8 @@ async function doSignAndPrepareSms() {
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Signing…'; }
 
   try {
+    await ensureSettlementSigner(secretKey);
+
     var amtStr      = amt.toFixed(7);
     var timestamp   = Date.now();
     var nonce       = bytesToHex(randomBytes(16));

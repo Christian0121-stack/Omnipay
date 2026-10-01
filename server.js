@@ -66,7 +66,15 @@ const SOROBAN_SETTLE_FUNCTION = (process.env.SOROBAN_SETTLE_FUNCTION || 'settle'
 const SOROBAN_POLL_ATTEMPTS = parseInt(process.env.SOROBAN_POLL_ATTEMPTS, 10) || 30;
 const SOROBAN_POLL_INTERVAL_MS = parseInt(process.env.SOROBAN_POLL_INTERVAL_MS, 10) || 1000;
 const SOROBAN_ENABLED = Boolean(SOROBAN_CONTRACT_ID);
-const SECRET_HASH_ITERATIONS = 150000;
+const SETTLEMENT_SIGNER_SECRET = (process.env.SETTLEMENT_SIGNER_SECRET || '').trim();
+let settlementKeypair = null;
+if (SETTLEMENT_SIGNER_SECRET) {
+  try {
+    settlementKeypair = StellarSdk.Keypair.fromSecret(SETTLEMENT_SIGNER_SECRET);
+  } catch (err) {
+    log('error', 'settlement', 'SETTLEMENT_SIGNER_SECRET is not a valid Stellar secret key.');
+  }
+}
 const REQUIRE_SIGNED_SMS = String(process.env.REQUIRE_SIGNED_SMS || 'true').toLowerCase() === 'true';
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || '';
 const REPLAY_CHECK_ENABLED =
@@ -162,9 +170,19 @@ async function withHorizonRetry(operation, options = {}) {
   throw lastErr;
 }
 
-async function sendStellarPayment(senderSecret, destinationPublicKey, amount) {
-  const senderKeypair = StellarSdk.Keypair.fromSecret(senderSecret);
-  const senderAccount = await withHorizonRetry(() => horizon.loadAccount(senderKeypair.publicKey()));
+function requireSettlementSigner() {
+  if (!settlementKeypair) throw new Error('settlement-signer-not-configured');
+  return settlementKeypair;
+}
+
+async function isSettlementSignerEnabled(accountPublicKey) {
+  const signer = requireSettlementSigner();
+  const account = await withHorizonRetry(() => horizon.loadAccount(accountPublicKey));
+  return (account.signers || []).some((s) => s.key === signer.publicKey() && Number(s.weight) > 0);
+}
+
+async function sendStellarPayment(senderPublicKey, destinationPublicKey, amount) {
+  const senderAccount = await withHorizonRetry(() => horizon.loadAccount(senderPublicKey));
 
   const tx = new StellarSdk.TransactionBuilder(senderAccount, {
     fee: StellarSdk.BASE_FEE,
@@ -180,7 +198,7 @@ async function sendStellarPayment(senderSecret, destinationPublicKey, amount) {
     .setTimeout(60)
     .build();
 
-  tx.sign(senderKeypair);
+  tx.sign(requireSettlementSigner());
   const result = await withHorizonRetry(() => horizon.submitTransaction(tx));
   return result.hash;
 }
@@ -210,9 +228,7 @@ async function waitForSorobanTransaction(hash) {
   throw new Error('soroban-confirmation-timeout');
 }
 
-async function invokeSorobanSettlement(senderSecret, recipientPublicKey, amount, requestId) {
-  const senderKeypair = StellarSdk.Keypair.fromSecret(senderSecret);
-  const senderPublicKey = senderKeypair.publicKey();
+async function invokeSorobanSettlement(senderPublicKey, recipientPublicKey, amount, requestId) {
   const sourceAccount = await sorobanServer.getAccount(senderPublicKey);
   const contract = new StellarSdk.Contract(SOROBAN_CONTRACT_ID);
 
@@ -233,7 +249,7 @@ async function invokeSorobanSettlement(senderSecret, recipientPublicKey, amount,
     .build();
 
   const prepared = await sorobanServer.prepareTransaction(tx);
-  prepared.sign(senderKeypair);
+  prepared.sign(requireSettlementSigner());
 
   const submission = await sorobanServer.sendTransaction(prepared);
   if (submission.status === 'ERROR' || submission.status === 'TRY_AGAIN_LATER') {
@@ -245,128 +261,24 @@ async function invokeSorobanSettlement(senderSecret, recipientPublicKey, amount,
 }
 
 const OmniPayBackend = {
-  async settlePayment(walletSecret, destinationPublicKey, amount) {
-    return sendStellarPayment(walletSecret, destinationPublicKey, amount);
+  async settlePayment(senderPublicKey, destinationPublicKey, amount) {
+    return sendStellarPayment(senderPublicKey, destinationPublicKey, amount);
   },
-  async recordSettlement(walletSecret, destinationPublicKey, amount, requestId) {
-    return invokeSorobanSettlement(walletSecret, destinationPublicKey, amount, requestId);
+  async recordSettlement(senderPublicKey, destinationPublicKey, amount, requestId) {
+    return invokeSorobanSettlement(senderPublicKey, destinationPublicKey, amount, requestId);
   },
 };
-const { buildSignedPayloadString, isValidSigningKey, verifySignature } = require('./Signature');
-const signedRequestsCol = () => db.collection('relay_requests');
-const usedNoncesCol = () => db.collection('omnipay_used_nonces');
-const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+const { buildSignedPayloadString, verifySignature } = require('./Signature');
+const { createRelay } = require('./Relay');
+const {
+  signedRequestsCol,
+  usedNoncesCol,
+  shortRef,
+  getRegisteredSigningKey,
+  claimSignedRequest,
+  finishSignedRequest,
+} = createRelay({ getDb: () => db, FieldValue, log });
 const REJECTED_SEND_CODES = ['insufficient-balance', 'self-send'];
-
-function getRegisteredSigningKey(user) {
-  const key = user && typeof user.walletPublic === 'string' ? user.walletPublic.trim() : '';
-  return isValidSigningKey(key) ? key : null;
-}
-
-function shortRef(value) {
-  const str = String(value);
-  return str.length > 12 ? `${str.slice(0, 12)}...` : str;
-}
-
-async function claimSignedRequest(requestId, nonce, senderId, meta = {}) {
-  if (!requestId) {
-    log('warn', 'nonce', `REJECTED (missing requestId) | channel=${meta.channel || 'n/a'} sender=${senderId}`);
-    return { claimed: false, reason: 'missing-requestid' };
-  }
-  if (!nonce) {
-    log('warn', 'nonce', `REJECTED (missing nonce) | channel=${meta.channel || 'n/a'} sender=${senderId}`);
-    return { claimed: false, reason: 'missing-nonce' };
-  }
-  if (!REQUEST_ID_PATTERN.test(String(requestId))) {
-    log('warn', 'nonce', `REJECTED (invalid requestId format) | channel=${meta.channel || 'n/a'} sender=${senderId}`);
-    return { claimed: false, reason: 'invalid-requestid' };
-  }
-
-  const requestRef = signedRequestsCol().doc(String(requestId));
-  const nonceRef = usedNoncesCol().doc(`${senderId}:${nonce}`);
-  let previousStatus = null;
-  let originalRequestId = null;
-
-  try {
-    await db.runTransaction(async (tx) => {
-      const [existingRequest, existingNonce] = await Promise.all([
-        tx.get(requestRef),
-        tx.get(nonceRef),
-      ]);
-      if (existingRequest.exists) {
-        previousStatus = (existingRequest.data() || {}).status || null;
-        originalRequestId = String(requestId);
-        throw new Error('duplicate-request');
-      }
-      if (existingNonce.exists) {
-        originalRequestId = (existingNonce.data() || {}).requestId || null;
-        throw new Error('nonce-reused');
-      }
-
-      tx.create(requestRef, {
-        requestId: String(requestId),
-        senderId,
-        nonce: String(nonce),
-        channel: meta.channel || null,
-        relayId: meta.relayId || null,
-        status: 'processing',
-        createdAt: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-      tx.create(nonceRef, {
-        senderId,
-        requestId: String(requestId),
-        createdAt: FieldValue.serverTimestamp(),
-      });
-    });
-    log('ok', 'nonce', `ACCEPTED | channel=${meta.channel || 'n/a'} sender=${senderId} nonce=${shortRef(nonce)} requestId=${shortRef(requestId)}`);
-    return { claimed: true };
-  } catch (err) {
-    if (err.message === 'duplicate-request') {
-      const tracked = await trackReplayAttempt(originalRequestId, meta.channel);
-      log('warn', 'nonce', `REPLAY REJECTED (duplicate request) | channel=${meta.channel || 'n/a'} sender=${senderId} nonce=${shortRef(nonce)} requestId=${shortRef(requestId)} previousStatus=${previousStatus || 'unknown'} replayCount=${tracked.replayCount || 'n/a'} originalTx=${tracked.txHash ? shortRef(tracked.txHash) : 'none'} newSettlement=no`);
-      return { claimed: false, reason: 'duplicate-request', previousStatus, originalTxHash: tracked.txHash || null };
-    }
-    if (err.message === 'nonce-reused') {
-      const tracked = await trackReplayAttempt(originalRequestId, meta.channel);
-      log('warn', 'nonce', `REPLAY REJECTED (nonce already used) | channel=${meta.channel || 'n/a'} sender=${senderId} nonce=${shortRef(nonce)} requestId=${shortRef(requestId)} replayCount=${tracked.replayCount || 'n/a'} originalTx=${tracked.txHash ? shortRef(tracked.txHash) : 'none'} newSettlement=no`);
-      return { claimed: false, reason: 'nonce-reused', previousStatus: tracked.status || null, originalTxHash: tracked.txHash || null };
-    }
-    log('error', 'signed-request', `Claim failed: ${err.message}`);
-    return { claimed: false, reason: 'claim-error' };
-  }
-}
-
-async function trackReplayAttempt(originalRequestId, channel) {
-  if (!originalRequestId) return {};
-  const ref = signedRequestsCol().doc(String(originalRequestId));
-  try {
-    await ref.update({
-      replayCount: FieldValue.increment(1),
-      lastReplayAt: FieldValue.serverTimestamp(),
-      lastReplayChannel: channel || null,
-    });
-    const snap = await ref.get();
-    const data = snap.data() || {};
-    return { txHash: data.txHash || null, status: data.status || null, replayCount: data.replayCount || 0 };
-  } catch (err) {
-    log('error', 'nonce', `Replay tracking failed: ${err.message}`);
-    return {};
-  }
-}
-
-async function finishSignedRequest(requestId, status, extra = {}) {
-  if (!requestId) return;
-  const fields = { status: status || 'processed', updatedAt: FieldValue.serverTimestamp() };
-  if (extra.txHash) fields.txHash = extra.txHash;
-  if (extra.sorobanTxHash) fields.sorobanTxHash = extra.sorobanTxHash;
-  if (extra.detail) fields.detail = String(extra.detail);
-  try {
-    await signedRequestsCol().doc(String(requestId)).update(fields);
-  } catch (err) {
-    log('error', 'signed-request', `Finalize failed: ${err.message}`);
-  }
-}
 function verifyPinHash(pin, hash, saltHex) {
   if (!pin || !hash || !saltHex) return false;
   const PREFIX = 'pbkdf2-sha256$';
@@ -387,26 +299,6 @@ function verifyPinHash(pin, hash, saltHex) {
   }
 }
 
-function decryptWalletSecretByPin(ciphertextB64, saltHex, ivB64, pin) {
-  if (!ciphertextB64 || !saltHex || !ivB64 || !pin) return '';
-  try {
-    const salt = Buffer.from(saltHex, 'hex');
-    const key = crypto.pbkdf2Sync(String(pin), salt, SECRET_HASH_ITERATIONS, 32, 'sha256');
-    const iv = Buffer.from(ivB64, 'base64');
-    const data = Buffer.from(ciphertextB64, 'base64');
-    if (data.length < 17) return '';
-
-    const authTag = data.subarray(data.length - 16);
-    const encrypted = data.subarray(0, data.length - 16);
-
-    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
-    decipher.setAuthTag(authTag);
-    const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
-    return decrypted.toString('utf8');
-  } catch (err) {
-    return '';
-  }
-}
 const PIN_MAX_ATTEMPTS = 5;
 const PIN_LOCKOUT_MS = 15 * 60 * 1000;
 const pinAttempts = new Map();
@@ -811,7 +703,7 @@ function parseCommand(text) {
   }
   return { type: 'UNKNOWN' };
 }
-async function executeSend({ sender, recipient, amount, walletSecret, mode, relayId, requestId }) {
+async function executeSend({ sender, recipient, amount, mode, relayId, requestId }) {
   if ((sender.xlmBalance || 0) < amount) {
     await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'insufficient-balance' });
     return { ok: false, code: 'insufficient-balance', senderBalance: sender.xlmBalance || 0 };
@@ -822,6 +714,21 @@ async function executeSend({ sender, recipient, amount, walletSecret, mode, rela
   }
 
   await updateRelayStatus(relayId, RELAY_STATUS.VALIDATED);
+
+  if (!settlementKeypair) {
+    await updateRelayStatus(relayId, RELAY_STATUS.FAILED, { detail: 'settlement-signer-not-configured' });
+    return { ok: false, code: 'settlement-not-configured', detail: 'settlement-signer-not-configured', relayId };
+  }
+  let signerEnabled = false;
+  try {
+    signerEnabled = await isSettlementSignerEnabled(sender.walletPublic);
+  } catch (err) {
+    log('error', 'settlement', `Signer check failed for ${sender.walletPublic} - ${err.message}`);
+  }
+  if (!signerEnabled) {
+    await updateRelayStatus(relayId, RELAY_STATUS.FAILED, { detail: 'settlement-signer-not-enabled' });
+    return { ok: false, code: 'signer-not-enabled', detail: 'settlement-signer-not-enabled', relayId };
+  }
 
   const senderName = sender.username || sender.id;
   const recipientName = recipient.username || recipient.id;
@@ -835,7 +742,7 @@ async function executeSend({ sender, recipient, amount, walletSecret, mode, rela
     if (SOROBAN_ENABLED) {
       try {
         sorobanTxHash = await OmniPayBackend.recordSettlement(
-          walletSecret,
+          sender.walletPublic,
           recipient.walletPublic,
           amount,
           requestId || relayId
@@ -854,9 +761,9 @@ async function executeSend({ sender, recipient, amount, walletSecret, mode, rela
       }
     }
 
-    const txHash = await OmniPayBackend.settlePayment(walletSecret, recipient.walletPublic, amount);
+    const txHash = await OmniPayBackend.settlePayment(sender.walletPublic, recipient.walletPublic, amount);
     await updateRelayStatus(relayId, RELAY_STATUS.CONFIRMED, { txHash });
-    const senderPublicKey = StellarSdk.Keypair.fromSecret(walletSecret).publicKey();
+    const senderPublicKey = sender.walletPublic;
     const [chainSenderBal, chainRecipientBal] = await Promise.all([
       getStellarNativeBalance(senderPublicKey),
       getStellarNativeBalance(recipient.walletPublic),
@@ -1040,19 +947,13 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
           return;
         }
 
-        if (!sender.pinWalletSecretEncrypted || !sender.pinWalletSecretSalt || !sender.pinWalletSecretIv || !sender.walletPublic) {
-          log('warn', 'sms', `Sender doc ${sender.id} has no pinWalletSecretEncrypted — log in to the app once to set up SMS payments.`);
+        if (!sender.smsPinHash || !sender.smsPinSalt || !sender.walletPublic) {
+          log('warn', 'sms', `Sender doc ${sender.id} has no SMS PIN record — log in to the app once to set up SMS payments.`);
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'wallet-not-setup' });
           await sendSms(senderPhone, 'OmniPay: SMS payments are not enabled for your wallet yet. Log in to the app to set it up.');
           return;
         }
-        const walletSecret = decryptWalletSecretByPin(
-          sender.pinWalletSecretEncrypted,
-          sender.pinWalletSecretSalt,
-          sender.pinWalletSecretIv,
-          pin
-        );
-        if (!walletSecret) {
+        if (!verifyPinHash(pin, sender.smsPinHash, sender.smsPinSalt)) {
           registerPinFailure(senderPhone);
           await logEvent(sender.id, '❌', 'SMS payment blocked: incorrect PIN', 'error');
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'incorrect-pin' });
@@ -1073,7 +974,6 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
           sender,
           recipient,
           amount,
-          walletSecret,
           mode: 'sms',
           relayId,
           requestId: sig ? sig.requestId : relayId,
@@ -1086,6 +986,8 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
             await sendSms(senderPhone, `OmniPay: Insufficient balance. You have ${result.senderBalance.toFixed(4)} ${ASSET_LABEL}.`);
           } else if (result.code === 'self-send') {
             await sendSms(senderPhone, "OmniPay: You can't send money to yourself.");
+          } else if (result.code === 'signer-not-enabled') {
+            await sendSms(senderPhone, 'OmniPay: SMS payments are not enabled for your wallet yet. Open the app and prepare an SMS payment once to enable it.');
           } else {
             await sendSms(senderPhone, `OmniPay: Payment failed (${JSON.stringify(result.detail)}). Nothing was deducted.`);
           }
@@ -1250,6 +1152,13 @@ app.get('/health', async (_req, res) => {
     services,
   });
 });
+app.get('/api/settlement-signer', (_req, res) => {
+  if (!settlementKeypair) {
+    return res.status(503).json({ error: 'settlement signer not configured' });
+  }
+  return res.json({ publicKey: settlementKeypair.publicKey(), networkPassphrase: NETWORK_PASSPHRASE });
+});
+
 function requireAdminKey(req, res, next) {
   if (!ADMIN_API_KEY) {
     return res.status(503).json({ error: 'admin endpoints disabled — set ADMIN_API_KEY' });
@@ -1466,19 +1375,13 @@ app.post('/api/send', paymentEndpointLimiter, async (req, res) => {
       await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'pin-locked' });
       return res.status(423).json({ error: 'too many wrong PIN attempts, try again later', relayId });
     }
-    if (!sender.pinWalletSecretEncrypted || !sender.pinWalletSecretSalt || !sender.pinWalletSecretIv) {
+    if (!sender.smsPinHash || !sender.smsPinSalt) {
       await finishSignedRequest(requestId, 'rejected');
       await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'wallet-not-setup' });
       return res.status(400).json({ error: 'wallet not set up for signed payments — log in to the app once', relayId });
     }
 
-    const walletSecret = decryptWalletSecretByPin(
-      sender.pinWalletSecretEncrypted,
-      sender.pinWalletSecretSalt,
-      sender.pinWalletSecretIv,
-      pin
-    );
-    if (!walletSecret) {
+    if (!verifyPinHash(pin, sender.smsPinHash, sender.smsPinSalt)) {
       registerPinFailure(lockKey);
       await logEvent(sender.id, '❌', 'Signed API payment blocked: incorrect PIN', 'error');
       await finishSignedRequest(requestId, 'rejected');
@@ -1493,7 +1396,7 @@ app.post('/api/send', paymentEndpointLimiter, async (req, res) => {
       return res.status(404).json({ error: 'recipient not found', relayId });
     }
 
-    const result = await executeSend({ sender, recipient, amount: amt, walletSecret, mode: 'api', relayId, requestId });
+    const result = await executeSend({ sender, recipient, amount: amt, mode: 'api', relayId, requestId });
     if (!result.ok) {
       await finishSignedRequest(requestId, REJECTED_SEND_CODES.includes(result.code) ? 'rejected' : 'failed', { detail: result.code });
       return res.status(422).json({ error: result.code, detail: result.detail, relayId });
@@ -1692,6 +1595,27 @@ async function runReplayCheck() {
   log(passed ? 'ok' : 'error', 'replay-check', `RESULT: ${evidence.result} | settlements=${settlements} | replayCount=${evidence.replayCount || 0}`);
 }
 
+async function purgeLegacyPinSecrets() {
+  try {
+    const snap = await usersCol().where('pinWalletSecretEncrypted', '>', '').get();
+    if (snap.empty) return;
+    for (let i = 0; i < snap.docs.length; i += 400) {
+      const batch = db.batch();
+      snap.docs.slice(i, i + 400).forEach((doc) => {
+        batch.update(doc.ref, {
+          pinWalletSecretEncrypted: FieldValue.delete(),
+          pinWalletSecretSalt: FieldValue.delete(),
+          pinWalletSecretIv: FieldValue.delete(),
+        });
+      });
+      await batch.commit();
+    }
+    log('ok', 'security', `Removed PIN-encrypted wallet keys from ${snap.size} user record(s).`);
+  } catch (err) {
+    log('error', 'security', `Legacy key cleanup failed: ${err.message}`);
+  }
+}
+
 app.listen(PORT, () => {
   const rule = paint('90', '-'.repeat(64));
   console.log('');
@@ -1712,6 +1636,9 @@ app.listen(PORT, () => {
   if (!GATEWAY_WEBHOOK_SECRET) {
     log('warn', 'auth', 'SMS_GATEWAY_WEBHOOK_SECRET is not set — /webhook/sms-received will reject all requests until it is configured.');
   }
+  if (!settlementKeypair) {
+    log('warn', 'settlement', 'SETTLEMENT_SIGNER_SECRET is not set — SMS and signed API payments cannot be settled until it is configured.');
+  }
   if (!ADMIN_API_KEY) {
     log('warn', 'auth', 'ADMIN_API_KEY is not set — /api/relay-transactions* and /api/reconcile-balance are disabled until it is configured.');
   }
@@ -1724,5 +1651,6 @@ app.listen(PORT, () => {
     log('warn', 'auth', 'REQUIRE_SIGNED_SMS=false -> plain unsigned "SEND <amount> <recipient> <pin>" SMS is still ACCEPTED (PIN-only auth). Set REQUIRE_SIGNED_SMS=true in .env once the signing app has rolled out.');
   }
   log('info', 'ready', 'Waiting for incoming SMS. Every webhook hit and SMS reply will be logged here.');
+  purgeLegacyPinSecrets();
   if (REPLAY_CHECK_ENABLED) runReplayCheck();
 });

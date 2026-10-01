@@ -252,11 +252,16 @@ const OmniPayBackend = {
     return invokeSorobanSettlement(walletSecret, destinationPublicKey, amount, requestId);
   },
 };
-const { buildSignedPayloadString, verifySignature } = require('./Signature');
+const { buildSignedPayloadString, isValidSigningKey, verifySignature } = require('./Signature');
 const signedRequestsCol = () => db.collection('relay_requests');
 const usedNoncesCol = () => db.collection('omnipay_used_nonces');
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const REJECTED_SEND_CODES = ['insufficient-balance', 'self-send'];
+
+function getRegisteredSigningKey(user) {
+  const key = user && typeof user.walletPublic === 'string' ? user.walletPublic.trim() : '';
+  return isValidSigningKey(key) ? key : null;
+}
 
 function shortRef(value) {
   const str = String(value);
@@ -498,19 +503,20 @@ async function findUserByPhone(phone) {
   const clean = normalizePhone(phone);
   if (!clean) return null;
 
-  const snap = await usersCol().where('phone', '==', clean).limit(1).get();
-  if (!snap.empty) {
+  const snap = await usersCol().where('phone', '==', clean).limit(2).get();
+  if (snap.size === 1) {
     return { id: snap.docs[0].id, ...snap.docs[0].data() };
   }
+  if (snap.size > 1) return null;
   const last9 = clean.replace(/\D/g, '').slice(-9);
   if (!last9) return null;
 
   const all = await usersCol().get();
-  const match = all.docs.find((d) => {
+  const matches = all.docs.filter((d) => {
     const p = (d.data().phone || '').replace(/\D/g, '').slice(-9);
     return p === last9;
   });
-  return match ? { id: match.id, ...match.data() } : null;
+  return matches.length === 1 ? { id: matches[0].id, ...matches[0].data() } : null;
 }
 
 async function findRecipient(identifier) {
@@ -895,6 +901,18 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
     const sender = await findUserByPhone(senderPhone);
     if (!sender) {
       log('warn', 'sms', `No account linked to ${senderPhone}`);
+      if (command.type === 'SEND') {
+        const unknownRelayId = await createRelayRecord({
+          channel: 'sms',
+          senderPhone: normalizePhone(senderPhone),
+          senderId: null,
+          recipient: command.recipient,
+          amount: command.amount,
+          signedPayload: null,
+        });
+        await recordSignatureValidation(unknownRelayId, false, 'unknown-sender');
+        await updateRelayStatus(unknownRelayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'unknown-sender' });
+      }
       await sendSms(
         senderPhone,
         "OmniPay: This number isn't linked to an OmniPay account. Register in the app first."
@@ -968,7 +986,8 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
       }
 
       if (sig) {
-        if (!sender.walletPublic) {
+        const signingKey = getRegisteredSigningKey(sender);
+        if (!signingKey) {
           logSignedPayload(signedPayload, false, 'no-registered-signing-key');
           await recordSignatureValidation(relayId, false, 'no-registered-signing-key');
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'no-registered-signing-key' });
@@ -983,7 +1002,7 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
           nonce: sig.nonce,
           requestId: sig.requestId,
           signature: sig.signature,
-          senderPublicKey: sender.walletPublic,
+          senderPublicKey: signingKey,
         });
         if (!verifyResult.ok) {
           log('warn', 'sms', `Signature rejected: ${verifyResult.reason} (sender: ${sender.id})`);
@@ -1396,10 +1415,17 @@ app.post('/api/send', paymentEndpointLimiter, async (req, res) => {
 
   const senderDoc = await usersCol().doc(String(senderId)).get();
   if (!senderDoc.exists) {
-    await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'sender-not-found' });
-    return res.status(404).json({ error: 'sender not found', relayId });
+    await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'unknown-sender' });
+    return res.status(401).json({ error: 'unauthorized sender', relayId });
   }
   const sender = { id: senderDoc.id, ...senderDoc.data() };
+
+  const signingKey = getRegisteredSigningKey(sender);
+  if (!signingKey) {
+    log('warn', 'api/send', `No registered signing key (sender: ${senderId})`);
+    await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'no-registered-signing-key' });
+    return res.status(401).json({ error: 'unauthorized sender', relayId });
+  }
 
   const verifyResult = verifySignature({
     senderId,
@@ -1409,7 +1435,7 @@ app.post('/api/send', paymentEndpointLimiter, async (req, res) => {
     nonce,
     requestId,
     signature,
-    senderPublicKey: sender.walletPublic,
+    senderPublicKey: signingKey,
   });
   if (!verifyResult.ok) {
     log('warn', 'api/send', `Signature rejected: ${verifyResult.reason} (sender: ${senderId})`);

@@ -152,6 +152,18 @@ function hexToBytes(hex) {
   return bytes;
 }
 
+var PAYLOAD_VERSION = 'OMNIPAY-v1';
+
+function buildSignedPayloadString(senderId, recipientId, amtStr, timestamp, nonce, requestId) {
+  var fields = [senderId, recipientId, amtStr, timestamp, nonce, requestId];
+  for (var i = 0; i < fields.length; i++) {
+    if (String(fields[i]).indexOf('|') !== -1) {
+      throw new Error('Recipient contains an unsupported character.');
+    }
+  }
+  return [PAYLOAD_VERSION].concat(fields).join('|');
+}
+
 function bytesToBase64(bytes) {
   var binary = '';
   for (var i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
@@ -1576,7 +1588,7 @@ async function confirmSignPayment() {
     var timestamp = Date.now();
     var nonce     = bytesToHex(randomBytes(16));
     var requestId = bytesToHex(randomBytes(16));
-    var payload   = [STATE.uid, recipient, amtStr, timestamp, nonce, requestId].join('|');
+    var payload   = buildSignedPayloadString(STATE.uid, recipient, amtStr, timestamp, nonce, requestId);
     var keypair   = StellarSdk.Keypair.fromSecret(secretKey);
     auth = {
       timestamp: timestamp,
@@ -1852,7 +1864,7 @@ async function doSignAndPrepareSms() {
     var nonce       = bytesToHex(randomBytes(16));
     var requestId   = bytesToHex(randomBytes(16));
 
-    var payload       = [senderId, recipient, amtStr, timestamp, nonce, requestId].join('|');
+    var payload       = buildSignedPayloadString(senderId, recipient, amtStr, timestamp, nonce, requestId);
     var payloadBytes  = new TextEncoder().encode(payload);
     var keypair       = StellarSdk.Keypair.fromSecret(secretKey);
     var signatureB64  = bytesToBase64(keypair.sign(payloadBytes));

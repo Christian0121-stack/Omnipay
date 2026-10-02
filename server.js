@@ -1015,6 +1015,18 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
       }
       return;
     }
+    if (/^\s*SEND\b/i.test(messageText)) {
+      const malformedRelayId = await createRelayRecord({
+        channel: 'sms',
+        senderPhone: normalizePhone(senderPhone),
+        senderId: sender.id,
+        recipient: null,
+        amount: null,
+        signedPayload: null,
+      });
+      await updateRelayStatus(malformedRelayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'malformed-command' });
+      log('warn', 'sms', `REJECTED (malformed SEND command) | sender=${sender.id} relayId=${malformedRelayId}`);
+    }
     await sendSms(
       senderPhone,
       'OmniPay commands: "SEND <amount> <username|number> <pin>" or "BAL <pin>" to check your balance.'

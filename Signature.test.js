@@ -3,9 +3,10 @@ const crypto = require('crypto');
 const StellarSdk = require('stellar-sdk');
 const {
   SIGNATURE_MAX_SKEW_MS,
+  PAYLOAD_VERSION,
   buildSignedPayloadString,
   verifySignature,
-} = require('./signature');
+} = require('./Signature');
 
 const FIXED_NOW = 1790000000000;
 const bytesToHex = (buf) => Buffer.from(buf).toString('hex');
@@ -35,14 +36,27 @@ describe('buildSignedPayloadString', () => {
       nonce: 'n1',
       requestId: 'r1',
     });
-    expect(out).toBe('a|b|1.0000000|100|n1|r1');
+    expect(out).toBe('OMNIPAY-v1|a|b|1.0000000|100|n1|r1');
+  });
+
+  test('starts with the payload version prefix', () => {
+    const out = buildSignedPayloadString({
+      senderId: 'a',
+      recipientId: 'b',
+      amount: 1,
+      timestamp: 100,
+      nonce: 'n1',
+      requestId: 'r1',
+    });
+    expect(PAYLOAD_VERSION).toBe('OMNIPAY-v1');
+    expect(out.split('|')[0]).toBe(PAYLOAD_VERSION);
   });
 
   test('formats amount with exactly 7 decimals', () => {
     const base = { senderId: 'a', recipientId: 'b', timestamp: 1, nonce: 'n', requestId: 'r' };
-    expect(buildSignedPayloadString({ ...base, amount: 5 }).split('|')[2]).toBe('5.0000000');
-    expect(buildSignedPayloadString({ ...base, amount: '0.5' }).split('|')[2]).toBe('0.5000000');
-    expect(buildSignedPayloadString({ ...base, amount: 1.23456789 }).split('|')[2]).toBe('1.2345679');
+    expect(buildSignedPayloadString({ ...base, amount: 5 }).split('|')[3]).toBe('5.0000000');
+    expect(buildSignedPayloadString({ ...base, amount: '0.5' }).split('|')[3]).toBe('0.5000000');
+    expect(buildSignedPayloadString({ ...base, amount: 1.23456789 }).split('|')[3]).toBe('1.2345679');
   });
 
   test('is deterministic for identical input', () => {
@@ -165,6 +179,16 @@ describe('verifySignature', () => {
         ok: false,
         reason: 'missing-nonce-or-requestid',
       });
+    });
+
+    test('rejects a field containing the delimiter', () => {
+      const req = makeRequest(keypair, { recipientId: 'juan|mallory' });
+      expect(verifySignature(req)).toEqual({ ok: false, reason: 'invalid-field-format' });
+    });
+
+    test('rejects a non-numeric amount', () => {
+      const req = { ...makeRequest(keypair), amount: 'abc' };
+      expect(verifySignature(req)).toEqual({ ok: false, reason: 'invalid-amount' });
     });
 
     test('rejects an invalid public key', () => {

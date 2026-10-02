@@ -79,6 +79,8 @@ const REQUIRE_SIGNED_SMS = String(process.env.REQUIRE_SIGNED_SMS || 'true').toLo
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || '';
 const REPLAY_CHECK_ENABLED =
   process.argv.includes('--replay-check') || String(process.env.REPLAY_CHECK || '').toLowerCase() === 'true';
+const PROOF_CHECK_ENABLED =
+  process.argv.includes('--proof-check') || String(process.env.PROOF_CHECK || '').toLowerCase() === 'true';
 let db;
 try {
   const serviceAccountPath = path.resolve(
@@ -268,7 +270,7 @@ const OmniPayBackend = {
     return invokeSorobanSettlement(senderPublicKey, destinationPublicKey, amount, requestId);
   },
 };
-const { buildSignedPayloadString, verifySignature } = require('./Signature');
+const { buildSignedPayloadString, verifySignature, SIGNATURE_MAX_SKEW_MS } = require('./Signature');
 const { createRelay } = require('./Relay');
 const {
   signedRequestsCol,
@@ -1595,6 +1597,240 @@ async function runReplayCheck() {
   log(passed ? 'ok' : 'error', 'replay-check', `RESULT: ${evidence.result} | settlements=${settlements} | replayCount=${evidence.replayCount || 0}`);
 }
 
+async function runSettlementProof() {
+  const EXPLORER = process.env.EXPLORER_BASE_URL || 'https://stellar.expert/explorer/testnet';
+  const SENDER_ID = process.env.TEST_SENDER_ID;
+  const SENDER_SECRET = process.env.TEST_SENDER_SECRET;
+  const SENDER_PIN = process.env.TEST_SENDER_PIN;
+  const RECIPIENT = process.env.TEST_RECIPIENT;
+  const RECIPIENT_PUBLIC = process.env.TEST_RECIPIENT_PUBLIC || '';
+  const UNAUTHORIZED_ID = process.env.TEST_UNAUTHORIZED_ID || 'proof_unauthorized_sender';
+  const PROOF_AMOUNT = Number(process.env.TEST_AMOUNT || 1).toFixed(7);
+  const WAIT_MS = parseInt(process.env.PROOF_SETTLE_WAIT_MS, 10) || 6000;
+
+  const missing = ['TEST_SENDER_ID', 'TEST_SENDER_SECRET', 'TEST_SENDER_PIN', 'TEST_RECIPIENT'].filter((k) => !process.env[k]);
+  if (missing.length) {
+    log('error', 'proof', `Missing environment variables: ${missing.join(', ')}`);
+    return;
+  }
+
+  const senderKeypair = StellarSdk.Keypair.fromSecret(SENDER_SECRET);
+  const senderPublic = senderKeypair.publicKey();
+  const txLink = (hash) => (hash ? `${EXPLORER}/tx/${hash}` : null);
+  const randomHex = () => crypto.randomBytes(16).toString('hex');
+  const evidence = {
+    startedAt: new Date().toISOString(),
+    network: { horizon: HORIZON_URL, sorobanRpc: SOROBAN_RPC_URL, passphrase: NETWORK_PASSPHRASE },
+    contractId: SOROBAN_CONTRACT_ID || null,
+    sender: senderPublic,
+    success: null,
+    sorobanIdempotency: null,
+    noSettlement: [],
+  };
+  let failures = 0;
+  const report = (pass, label, detail) => {
+    if (!pass) failures += 1;
+    log(pass ? 'ok' : 'error', 'proof', `${pass ? 'PASS' : 'FAIL'} | ${label}${detail ? ` | ${detail}` : ''}`);
+  };
+
+  const signedBody = ({ signer = senderKeypair, senderId = SENDER_ID, overrides = {}, tamper = false } = {}) => {
+    const base = {
+      senderId,
+      recipientId: RECIPIENT,
+      amount: PROOF_AMOUNT,
+      timestamp: Date.now(),
+      nonce: randomHex(),
+      requestId: randomHex(),
+      ...overrides,
+    };
+    const sig = Buffer.from(signer.sign(Buffer.from(buildSignedPayloadString(base), 'utf8')));
+    if (tamper) sig[0] ^= 0xff;
+    return { ...base, signature: sig.toString('base64'), pin: SENDER_PIN };
+  };
+
+  const send = async (body) => {
+    const res = await fetch(`http://127.0.0.1:${PORT}/api/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    let json = {};
+    try {
+      json = await res.json();
+    } catch (err) {
+      json = {};
+    }
+    return { status: res.status, body: json };
+  };
+
+  const snapshot = async () => {
+    const account = await withHorizonRetry(() => horizon.loadAccount(senderPublic));
+    const native = account.balances.find((b) => b.asset_type === 'native');
+    const latest = await withHorizonRetry(() => horizon.transactions().forAccount(senderPublic).order('desc').limit(1).call());
+    let recipientBalance = null;
+    if (RECIPIENT_PUBLIC) {
+      const recipientAccount = await withHorizonRetry(() => horizon.loadAccount(RECIPIENT_PUBLIC));
+      const rn = recipientAccount.balances.find((b) => b.asset_type === 'native');
+      recipientBalance = rn ? rn.balance : '0';
+    }
+    return {
+      senderBalance: native ? native.balance : '0',
+      senderSequence: account.sequence,
+      latestTxHash: latest.records.length ? latest.records[0].hash : null,
+      recipientBalance,
+    };
+  };
+  const unchanged = (a, b) =>
+    a.senderBalance === b.senderBalance &&
+    a.senderSequence === b.senderSequence &&
+    a.latestTxHash === b.latestTxHash &&
+    a.recipientBalance === b.recipientBalance;
+
+  const sorobanDuplicateCheck = async (requestId) => {
+    if (!SOROBAN_ENABLED || !sorobanServer) return { skipped: true };
+    const account = await sorobanServer.getAccount(senderPublic);
+    const tx = new StellarSdk.TransactionBuilder(account, { fee: StellarSdk.BASE_FEE, networkPassphrase: NETWORK_PASSPHRASE })
+      .addOperation(
+        new StellarSdk.Contract(SOROBAN_CONTRACT_ID).call(
+          SOROBAN_SETTLE_FUNCTION,
+          StellarSdk.nativeToScVal(String(requestId), { type: 'string' }),
+          new StellarSdk.Address(senderPublic).toScVal(),
+          new StellarSdk.Address(RECIPIENT_PUBLIC || senderPublic).toScVal(),
+          StellarSdk.nativeToScVal(amountToStroops(PROOF_AMOUNT), { type: 'i128' })
+        )
+      )
+      .setTimeout(60)
+      .build();
+    const sim = await sorobanServer.simulateTransaction(tx);
+    return { skipped: false, rejected: Boolean(sim.error), detail: sim.error || 'accepted' };
+  };
+
+  log('info', 'proof', `Started | sender=${SENDER_ID} amount=${PROOF_AMOUNT}`);
+  try {
+    const before = await snapshot();
+    const successBody = signedBody();
+    const success = await send(successBody);
+    const settled = success.status === 200 && success.body.ok === true && Boolean(success.body.txHash);
+    report(settled, 'Signed request settled', `status=${success.status} tx=${shortRef(success.body.txHash || 'none')}`);
+
+    if (settled) {
+      await delay(WAIT_MS);
+      const afterSuccess = await snapshot();
+      let horizonTx = null;
+      try {
+        horizonTx = await withHorizonRetry(() => horizon.transactions().transaction(success.body.txHash).call());
+      } catch (err) {
+        horizonTx = null;
+      }
+      report(Boolean(horizonTx && horizonTx.successful), 'Transaction confirmed on Horizon', txLink(success.body.txHash));
+      report(
+        Number(before.senderBalance) - Number(afterSuccess.senderBalance) >= Number(PROOF_AMOUNT),
+        'Sender balance decreased',
+        `${before.senderBalance} -> ${afterSuccess.senderBalance}`
+      );
+      if (before.recipientBalance !== null) {
+        report(
+          Math.abs(Number(afterSuccess.recipientBalance) - Number(before.recipientBalance) - Number(PROOF_AMOUNT)) < 1e-6,
+          'Recipient balance increased',
+          `${before.recipientBalance} -> ${afterSuccess.recipientBalance}`
+        );
+      }
+
+      let sorobanStatus = null;
+      if (success.body.sorobanTxHash && sorobanServer) {
+        const sorobanTx = await sorobanServer.getTransaction(success.body.sorobanTxHash);
+        sorobanStatus = sorobanTx.status;
+        report(sorobanStatus === 'SUCCESS', 'Soroban contract call confirmed', txLink(success.body.sorobanTxHash));
+      }
+      evidence.success = {
+        requestId: successBody.requestId,
+        nonce: successBody.nonce,
+        amount: PROOF_AMOUNT,
+        txHash: success.body.txHash,
+        txLink: txLink(success.body.txHash),
+        sorobanTxHash: success.body.sorobanTxHash || null,
+        sorobanTxLink: txLink(success.body.sorobanTxHash),
+        sorobanStatus,
+        before,
+        after: afterSuccess,
+      };
+
+      const dup = await sorobanDuplicateCheck(successBody.requestId);
+      if (dup.skipped) {
+        log('warn', 'proof', 'SKIP | Soroban idempotency check (SOROBAN_CONTRACT_ID is not set)');
+      } else {
+        report(dup.rejected, 'Contract rejects a repeated requestId', String(dup.detail).slice(0, 120));
+      }
+      evidence.sorobanIdempotency = dup;
+
+      const outsider = StellarSdk.Keypair.random();
+      const cases = [
+        {
+          name: 'Invalid signature',
+          body: () => signedBody({ tamper: true }),
+          expect: (r) => r.status === 401 && r.body.reason === 'signature-mismatch',
+        },
+        {
+          name: 'Expired timestamp',
+          body: () => signedBody({ overrides: { timestamp: Date.now() - SIGNATURE_MAX_SKEW_MS - 60000 } }),
+          expect: (r) => r.status === 401 && r.body.reason === 'timestamp-out-of-window',
+        },
+        {
+          name: 'Reused nonce',
+          body: () => signedBody({ overrides: { nonce: successBody.nonce } }),
+          expect: (r) => r.status === 409 && r.body.error === 'nonce-reused',
+        },
+        {
+          name: 'Duplicate request ID',
+          body: () => ({ ...successBody }),
+          expect: (r) => r.status === 409 && r.body.error === 'duplicate-request',
+        },
+        {
+          name: 'Unauthorized sender',
+          body: () => signedBody({ signer: outsider, senderId: UNAUTHORIZED_ID }),
+          expect: (r) => r.status === 401 && r.body.error === 'unauthorized sender',
+        },
+      ];
+
+      for (const testCase of cases) {
+        const pre = await snapshot();
+        const result = await send(testCase.body());
+        await delay(1500);
+        const post = await snapshot();
+        const rejected = testCase.expect(result);
+        const noNewTx = unchanged(pre, post);
+        report(
+          rejected && noNewTx && !result.body.txHash,
+          testCase.name,
+          `status=${result.status} error=${result.body.reason || result.body.error || 'none'} newTx=${noNewTx ? 'no' : 'YES'}`
+        );
+        evidence.noSettlement.push({
+          case: testCase.name,
+          httpStatus: result.status,
+          response: result.body,
+          rejected,
+          noNewTransaction: noNewTx,
+          before: pre,
+          after: post,
+        });
+      }
+    }
+  } catch (err) {
+    failures += 1;
+    log('error', 'proof', `Run failed: ${err.message}`);
+  }
+
+  evidence.finishedAt = new Date().toISOString();
+  evidence.result = failures === 0 ? 'PASS' : 'FAIL';
+  try {
+    fs.writeFileSync(path.join(__dirname, 'proof-evidence.json'), JSON.stringify(evidence, null, 2));
+    log('info', 'proof', 'Evidence saved to proof-evidence.json');
+  } catch (err) {
+    log('error', 'proof', `Could not save evidence: ${err.message}`);
+  }
+  log(failures === 0 ? 'ok' : 'error', 'proof', `RESULT: ${evidence.result}`);
+}
+
 async function purgeLegacyPinSecrets() {
   try {
     const snap = await usersCol().where('pinWalletSecretEncrypted', '>', '').get();
@@ -1653,4 +1889,5 @@ app.listen(PORT, () => {
   log('info', 'ready', 'Waiting for incoming SMS. Every webhook hit and SMS reply will be logged here.');
   purgeLegacyPinSecrets();
   if (REPLAY_CHECK_ENABLED) runReplayCheck();
+  if (PROOF_CHECK_ENABLED) runSettlementProof();
 });

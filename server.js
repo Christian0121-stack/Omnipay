@@ -420,6 +420,10 @@ async function findRecipient(identifier) {
     if (byId.exists) return { id: byId.id, ...byId.data() };
   } catch (err) {
   }
+  if (StellarSdk.StrKey.isValidEd25519PublicKey(raw)) {
+    const byWallet = await usersCol().where('walletPublic', '==', raw).limit(1).get();
+    if (!byWallet.empty) return { id: byWallet.docs[0].id, ...byWallet.docs[0].data() };
+  }
   for (const candidate of [...new Set([raw, raw.toLowerCase()])]) {
     const snap = await usersCol().where('username', '==', candidate).limit(1).get();
     if (!snap.empty) return { id: snap.docs[0].id, ...snap.docs[0].data() };
@@ -753,7 +757,7 @@ async function executeSend({ sender, recipient, amount, mode, relayId, requestId
           sorobanTxHash,
           sorobanContractId: SOROBAN_CONTRACT_ID,
         });
-        log('ok', 'soroban', `Settlement recorded on contract ${SOROBAN_CONTRACT_ID.slice(0, 8)}... | tx ${sorobanTxHash.slice(0, 12)}...`);
+       /* log('ok', 'soroban', `Settlement recorded on contract ${SOROBAN_CONTRACT_ID.slice(0, 8)}... | tx ${sorobanTxHash.slice(0, 12)}...`);*/
       } catch (sorobanErr) {
         const sorobanDetail = `soroban:${sorobanErr.message}`;
         log('error', 'soroban', `Contract invocation failed: ${sorobanErr.message}`);
@@ -794,7 +798,25 @@ async function executeSend({ sender, recipient, amount, mode, relayId, requestId
     return { ok: false, code: 'stellar-failed', detail, relayId };
   }
 }
+const recentSms = new Map();
+const SMS_DEDUP_WINDOW_MS = parseInt(process.env.SMS_DEDUP_WINDOW_MS, 10) || 3000;
+
+function isRecentDuplicateSms(phone, text) {
+  const key = normalizePhone(phone) + '|' + String(text || '').trim();
+  const now = Date.now();
+  for (const [k, t] of recentSms) {
+    if (now - t > SMS_DEDUP_WINDOW_MS) recentSms.delete(k);
+  }
+  if (recentSms.has(key)) return true;
+  recentSms.set(key, now);
+  return false;
+}
+
 async function handleIncomingSms(senderPhone, messageText, eventKey) {
+  if (isRecentDuplicateSms(senderPhone, messageText)) {
+    log('info', 'sms', `Duplicate webhook delivery ignored (same SMS received twice within ${SMS_DEDUP_WINDOW_MS}ms) from ${senderPhone}`);
+    return;
+  }
   if (!consumeSmsRateLimit(senderPhone)) {
     log('warn', 'sms', `Rate limit exceeded for sender: ${senderPhone}`);
     return;
@@ -822,10 +844,6 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
         await recordSignatureValidation(unknownRelayId, false, 'unknown-sender');
         await updateRelayStatus(unknownRelayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'unknown-sender' });
       }
-      await sendSms(
-        senderPhone,
-        "OmniPay: This number isn't linked to an OmniPay account. Register in the app first."
-      );
       return;
     }
 
@@ -1047,6 +1065,7 @@ app.use(
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
+        upgradeInsecureRequests: null,
         scriptSrc: [
           "'self'",
           'https://www.gstatic.com',
@@ -1078,7 +1097,12 @@ app.use(
 
 app.use(
   cors({
-    origin: ALLOWED_ORIGINS.length > 0 ? ALLOWED_ORIGINS : false,
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+      if (origin === 'null' && process.env.NODE_ENV !== 'production') return callback(null, true);
+      return callback(null, false);
+    },
     methods: ['GET', 'POST'],
   })
 );
@@ -1104,6 +1128,15 @@ if (fs.existsSync(PUBLIC_DIR)) {
     });
   });
 }
+const BRAND_ASSETS = ['OMNIPAY LOGO 4.png', 'OMNIPAY LOGO 5.png', 'OMNIPAYLOGO.ico'];
+BRAND_ASSETS.forEach((name) => {
+  const filePath = path.join(__dirname, name);
+  const routePath = encodeURIComponent(name).replace(/%2F/g, '/');
+  app.get('/' + routePath, (_req, res) => {
+    if (!fs.existsSync(filePath)) return res.status(404).end();
+    res.sendFile(filePath);
+  });
+});
 const paymentEndpointLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 20,
@@ -1205,8 +1238,13 @@ app.post('/webhook/sms-received', async (req, res) => {
     log('warn', 'webhook', 'Rejected: missing sender/message');
     return res.status(400).json({ error: 'missing sender/message' });
   }
+  if (!/^\+?\d{7,15}$/.test(String(senderPhone).replace(/[\s-]/g, ''))) {
+    log('info', 'webhook', `Ignored non-phone sender: ${senderPhone}`);
+    return res.status(200).json({ ignored: true });
+  }
   log('ok', 'webhook', `SMS received from ${senderPhone}`);
   const eventKey = buildSmsEventKey(senderPhone, message, payload);
+  log('info', 'webhook', `key=${eventKey.slice(0, 20)} id=${payload.id || payload.messageId || '-'} webhookId=${(req.body && req.body.webhookId) || '-'}`);
   res.status(200).json({ received: true });
 
   handleIncomingSms(senderPhone, message, eventKey).catch((err) => {

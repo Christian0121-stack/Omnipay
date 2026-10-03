@@ -13,6 +13,7 @@ if (missingEnvVars.length > 0) {
 }
 
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const cors = require('cors');
 const axios = require('axios');
@@ -59,9 +60,27 @@ const HORIZON_URL = process.env.STELLAR_HORIZON_URL || 'https://horizon-testnet.
 const NETWORK_PASSPHRASE =
   process.env.STELLAR_NETWORK_PASSPHRASE || StellarSdk.Networks.TESTNET;
 const ASSET_LABEL = process.env.SMS_ASSET_LABEL || 'XLM';
-const SECRET_HASH_ITERATIONS = 150000;
+const SOROBAN_RPC_URL = (process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org').trim();
+const SOROBAN_CONTRACT_ID = (process.env.SOROBAN_CONTRACT_ID || '').trim();
+const SOROBAN_SETTLE_FUNCTION = (process.env.SOROBAN_SETTLE_FUNCTION || 'settle').trim();
+const SOROBAN_POLL_ATTEMPTS = parseInt(process.env.SOROBAN_POLL_ATTEMPTS, 10) || 30;
+const SOROBAN_POLL_INTERVAL_MS = parseInt(process.env.SOROBAN_POLL_INTERVAL_MS, 10) || 1000;
+const SOROBAN_ENABLED = Boolean(SOROBAN_CONTRACT_ID);
+const SETTLEMENT_SIGNER_SECRET = (process.env.SETTLEMENT_SIGNER_SECRET || '').trim();
+let settlementKeypair = null;
+if (SETTLEMENT_SIGNER_SECRET) {
+  try {
+    settlementKeypair = StellarSdk.Keypair.fromSecret(SETTLEMENT_SIGNER_SECRET);
+  } catch (err) {
+    log('error', 'settlement', 'SETTLEMENT_SIGNER_SECRET is not a valid Stellar secret key.');
+  }
+}
 const REQUIRE_SIGNED_SMS = String(process.env.REQUIRE_SIGNED_SMS || 'true').toLowerCase() === 'true';
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || '';
+const REPLAY_CHECK_ENABLED =
+  process.argv.includes('--replay-check') || String(process.env.REPLAY_CHECK || '').toLowerCase() === 'true';
+const PROOF_CHECK_ENABLED =
+  process.argv.includes('--proof-check') || String(process.env.PROOF_CHECK || '').toLowerCase() === 'true';
 let db;
 try {
   const serviceAccountPath = path.resolve(
@@ -102,6 +121,23 @@ const eventsCol = () => db.collection('omnipay_events');
 const smsEventsCol = () => db.collection('omnipay_sms_events');
 const relayTransactionsCol = () => db.collection('omnipay_relay_transactions');
 const horizon = new StellarSdk.Horizon.Server(HORIZON_URL);
+const SorobanRpcNamespace = StellarSdk.rpc || StellarSdk.SorobanRpc;
+let sorobanServer = null;
+if (SOROBAN_ENABLED) {
+  if (!SorobanRpcNamespace || !StellarSdk.Contract) {
+    console.error('[startup] SOROBAN_CONTRACT_ID is set but the installed stellar-sdk has no Soroban support. Upgrade stellar-sdk to v11 or newer.');
+    process.exit(1);
+  }
+  try {
+    StellarSdk.StrKey.decodeContract(SOROBAN_CONTRACT_ID);
+  } catch (err) {
+    console.error('[startup] SOROBAN_CONTRACT_ID is not a valid contract address (expected a value starting with C).');
+    process.exit(1);
+  }
+  sorobanServer = new SorobanRpcNamespace.Server(SOROBAN_RPC_URL, {
+    allowHttp: SOROBAN_RPC_URL.startsWith('http://'),
+  });
+}
 
 const HORIZON_RETRY_ATTEMPTS = 3;
 const HORIZON_RETRY_BASE_DELAY_MS = 300;
@@ -136,9 +172,19 @@ async function withHorizonRetry(operation, options = {}) {
   throw lastErr;
 }
 
-async function sendStellarPayment(senderSecret, destinationPublicKey, amount) {
-  const senderKeypair = StellarSdk.Keypair.fromSecret(senderSecret);
-  const senderAccount = await withHorizonRetry(() => horizon.loadAccount(senderKeypair.publicKey()));
+function requireSettlementSigner() {
+  if (!settlementKeypair) throw new Error('settlement-signer-not-configured');
+  return settlementKeypair;
+}
+
+async function isSettlementSignerEnabled(accountPublicKey) {
+  const signer = requireSettlementSigner();
+  const account = await withHorizonRetry(() => horizon.loadAccount(accountPublicKey));
+  return (account.signers || []).some((s) => s.key === signer.publicKey() && Number(s.weight) > 0);
+}
+
+async function sendStellarPayment(senderPublicKey, destinationPublicKey, amount) {
+  const senderAccount = await withHorizonRetry(() => horizon.loadAccount(senderPublicKey));
 
   const tx = new StellarSdk.TransactionBuilder(senderAccount, {
     fee: StellarSdk.BASE_FEE,
@@ -154,7 +200,7 @@ async function sendStellarPayment(senderSecret, destinationPublicKey, amount) {
     .setTimeout(60)
     .build();
 
-  tx.sign(senderKeypair);
+  tx.sign(requireSettlementSigner());
   const result = await withHorizonRetry(() => horizon.submitTransaction(tx));
   return result.hash;
 }
@@ -169,105 +215,72 @@ async function getStellarNativeBalance(publicKey) {
     return null;
   }
 }
+function amountToStroops(amount) {
+  const [whole, fraction] = Number(amount).toFixed(7).split('.');
+  return BigInt(whole + fraction);
+}
+
+async function waitForSorobanTransaction(hash) {
+  for (let attempt = 1; attempt <= SOROBAN_POLL_ATTEMPTS; attempt += 1) {
+    const result = await sorobanServer.getTransaction(hash);
+    if (result.status === 'SUCCESS') return result;
+    if (result.status === 'FAILED') throw new Error('soroban-transaction-failed');
+    await delay(SOROBAN_POLL_INTERVAL_MS);
+  }
+  throw new Error('soroban-confirmation-timeout');
+}
+
+async function invokeSorobanSettlement(senderPublicKey, recipientPublicKey, amount, requestId) {
+  const sourceAccount = await sorobanServer.getAccount(senderPublicKey);
+  const contract = new StellarSdk.Contract(SOROBAN_CONTRACT_ID);
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      contract.call(
+        SOROBAN_SETTLE_FUNCTION,
+        StellarSdk.nativeToScVal(String(requestId), { type: 'string' }),
+        new StellarSdk.Address(senderPublicKey).toScVal(),
+        new StellarSdk.Address(recipientPublicKey).toScVal(),
+        StellarSdk.nativeToScVal(amountToStroops(amount), { type: 'i128' })
+      )
+    )
+    .setTimeout(60)
+    .build();
+
+  const prepared = await sorobanServer.prepareTransaction(tx);
+  prepared.sign(requireSettlementSigner());
+
+  const submission = await sorobanServer.sendTransaction(prepared);
+  if (submission.status === 'ERROR' || submission.status === 'TRY_AGAIN_LATER') {
+    throw new Error(`soroban-submit-${String(submission.status).toLowerCase()}`);
+  }
+
+  await waitForSorobanTransaction(submission.hash);
+  return submission.hash;
+}
+
 const OmniPayBackend = {
-  async settlePayment(walletSecret, destinationPublicKey, amount) {
-    return sendStellarPayment(walletSecret, destinationPublicKey, amount);
+  async settlePayment(senderPublicKey, destinationPublicKey, amount) {
+    return sendStellarPayment(senderPublicKey, destinationPublicKey, amount);
+  },
+  async recordSettlement(senderPublicKey, destinationPublicKey, amount, requestId) {
+    return invokeSorobanSettlement(senderPublicKey, destinationPublicKey, amount, requestId);
   },
 };
-const SIGNATURE_MAX_SKEW_MS = 5 * 60 * 1000;
-
-function buildSignedPayloadString({ senderId, recipientId, amount, timestamp, nonce, requestId }) {
-  const amt = Number(amount).toFixed(7);
-  return [senderId, recipientId, amt, timestamp, nonce, requestId].join('|');
-}
-
-function verifySignature({ senderId, recipientId, amount, timestamp, nonce, requestId, signature, senderPublicKey }) {
-  if (!senderPublicKey || !signature) return { ok: false, reason: 'missing-signature-or-key' };
-  if (!senderId || !recipientId) return { ok: false, reason: 'missing-sender-or-recipient' };
-  if (!nonce || !requestId) return { ok: false, reason: 'missing-nonce-or-requestid' };
-
-  const ts = Number(timestamp);
-  if (!Number.isFinite(ts)) return { ok: false, reason: 'invalid-timestamp' };
-  if (Math.abs(Date.now() - ts) > SIGNATURE_MAX_SKEW_MS) {
-    return { ok: false, reason: 'timestamp-out-of-window' };
-  }
-
-  let keypair;
-  try {
-    keypair = StellarSdk.Keypair.fromPublicKey(senderPublicKey);
-  } catch (err) {
-    return { ok: false, reason: 'invalid-public-key' };
-  }
-
-  let sigBuf;
-  try {
-    sigBuf = Buffer.from(String(signature), 'base64');
-    if (sigBuf.length !== 64) return { ok: false, reason: 'malformed-signature' };
-  } catch (err) {
-    return { ok: false, reason: 'malformed-signature' };
-  }
-
-  const message = buildSignedPayloadString({ senderId, recipientId, amount, timestamp, nonce, requestId });
-
-  let valid = false;
-  try {
-    valid = keypair.verify(Buffer.from(message, 'utf8'), sigBuf);
-  } catch (err) {
-    valid = false;
-  }
-  return valid ? { ok: true } : { ok: false, reason: 'signature-mismatch' };
-}
-const signedRequestsCol = () => db.collection('omnipay_signed_requests');
-const usedNoncesCol = () => db.collection('omnipay_used_nonces');
-
-async function claimSignedRequest(requestId, nonce, senderId) {
-  if (!requestId) return { claimed: false, reason: 'missing-requestid' };
-  if (!nonce) return { claimed: false, reason: 'missing-nonce' };
-
-  const requestRef = signedRequestsCol().doc(String(requestId));
-  const nonceRef = usedNoncesCol().doc(`${senderId}:${nonce}`);
-
-  try {
-    await db.runTransaction(async (tx) => {
-      const [existingRequest, existingNonce] = await Promise.all([
-        tx.get(requestRef),
-        tx.get(nonceRef),
-      ]);
-      if (existingRequest.exists) throw new Error('duplicate-request');
-      if (existingNonce.exists) throw new Error('nonce-reused');
-
-      tx.create(requestRef, {
-        senderId,
-        nonce: String(nonce),
-        status: 'processing',
-        createdAt: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-      tx.create(nonceRef, {
-        senderId,
-        requestId: String(requestId),
-        createdAt: FieldValue.serverTimestamp(),
-      });
-    });
-    return { claimed: true };
-  } catch (err) {
-    if (err.message === 'duplicate-request') return { claimed: false, reason: 'duplicate-request' };
-    if (err.message === 'nonce-reused') return { claimed: false, reason: 'nonce-reused' };
-    log('error', 'signed-request', `Claim failed: ${err.message}`);
-    return { claimed: false, reason: 'claim-error' };
-  }
-}
-
-async function finishSignedRequest(requestId, status) {
-  if (!requestId) return;
-  try {
-    await signedRequestsCol()
-      .doc(String(requestId))
-      .update({ status: status || 'processed', updatedAt: FieldValue.serverTimestamp() });
-  } catch (err) {
-    log('error', 'signed-request', `Finalize failed: ${err.message}`);
-  }
-}
+const { buildSignedPayloadString, verifySignature, SIGNATURE_MAX_SKEW_MS } = require('./Signature');
+const { createRelay } = require('./Relay');
+const {
+  signedRequestsCol,
+  usedNoncesCol,
+  shortRef,
+  getRegisteredSigningKey,
+  claimSignedRequest,
+  finishSignedRequest,
+} = createRelay({ getDb: () => db, FieldValue, log });
+const REJECTED_SEND_CODES = ['insufficient-balance', 'self-send'];
 function verifyPinHash(pin, hash, saltHex) {
   if (!pin || !hash || !saltHex) return false;
   const PREFIX = 'pbkdf2-sha256$';
@@ -288,26 +301,6 @@ function verifyPinHash(pin, hash, saltHex) {
   }
 }
 
-function decryptWalletSecretByPin(ciphertextB64, saltHex, ivB64, pin) {
-  if (!ciphertextB64 || !saltHex || !ivB64 || !pin) return '';
-  try {
-    const salt = Buffer.from(saltHex, 'hex');
-    const key = crypto.pbkdf2Sync(String(pin), salt, SECRET_HASH_ITERATIONS, 32, 'sha256');
-    const iv = Buffer.from(ivB64, 'base64');
-    const data = Buffer.from(ciphertextB64, 'base64');
-    if (data.length < 17) return '';
-
-    const authTag = data.subarray(data.length - 16);
-    const encrypted = data.subarray(0, data.length - 16);
-
-    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
-    decipher.setAuthTag(authTag);
-    const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
-    return decrypted.toString('utf8');
-  } catch (err) {
-    return '';
-  }
-}
 const PIN_MAX_ATTEMPTS = 5;
 const PIN_LOCKOUT_MS = 15 * 60 * 1000;
 const pinAttempts = new Map();
@@ -404,19 +397,20 @@ async function findUserByPhone(phone) {
   const clean = normalizePhone(phone);
   if (!clean) return null;
 
-  const snap = await usersCol().where('phone', '==', clean).limit(1).get();
-  if (!snap.empty) {
+  const snap = await usersCol().where('phone', '==', clean).limit(2).get();
+  if (snap.size === 1) {
     return { id: snap.docs[0].id, ...snap.docs[0].data() };
   }
+  if (snap.size > 1) return null;
   const last9 = clean.replace(/\D/g, '').slice(-9);
   if (!last9) return null;
 
   const all = await usersCol().get();
-  const match = all.docs.find((d) => {
+  const matches = all.docs.filter((d) => {
     const p = (d.data().phone || '').replace(/\D/g, '').slice(-9);
     return p === last9;
   });
-  return match ? { id: match.id, ...match.data() } : null;
+  return matches.length === 1 ? { id: matches[0].id, ...matches[0].data() } : null;
 }
 
 async function findRecipient(identifier) {
@@ -425,6 +419,10 @@ async function findRecipient(identifier) {
     const byId = await usersCol().doc(raw).get();
     if (byId.exists) return { id: byId.id, ...byId.data() };
   } catch (err) {
+  }
+  if (StellarSdk.StrKey.isValidEd25519PublicKey(raw)) {
+    const byWallet = await usersCol().where('walletPublic', '==', raw).limit(1).get();
+    if (!byWallet.empty) return { id: byWallet.docs[0].id, ...byWallet.docs[0].data() };
   }
   for (const candidate of [...new Set([raw, raw.toLowerCase()])]) {
     const snap = await usersCol().where('username', '==', candidate).limit(1).get();
@@ -511,7 +509,7 @@ const RELAY_STATUS = {
   SETTLED: 'settled',
   FAILED: 'failed',
 };
-async function createRelayRecord({ channel, senderPhone, senderId, recipient, amount }) {
+async function createRelayRecord({ channel, senderPhone, senderId, recipient, amount, signedPayload }) {
   const ref = relayTransactionsCol().doc();
   const now = Date.now();
   try {
@@ -521,6 +519,8 @@ async function createRelayRecord({ channel, senderPhone, senderId, recipient, am
       senderId: senderId || null,
       recipient: recipient != null ? String(recipient) : null,
       amount: amount != null ? Number(amount) : null,
+      signedPayload: signedPayload || null,
+      signatureValidation: null,
       status: RELAY_STATUS.RECEIVED,
       statusHistory: [{ status: RELAY_STATUS.RECEIVED, at: now }],
       txHash: null,
@@ -552,6 +552,45 @@ async function updateRelayStatus(relayId, status, fields = {}) {
     log('error', 'relay', `Failed to update ${relayId} to ${status}: ${err.message}`);
   }
 }
+async function updateRelayFields(relayId, fields) {
+  if (!relayId) return;
+  try {
+    await relayTransactionsCol()
+      .doc(relayId)
+      .update({ ...fields, updatedAt: FieldValue.serverTimestamp() });
+  } catch (err) {
+    log('error', 'relay', `Failed to update fields on ${relayId}: ${err.message}`);
+  }
+}
+async function recordSignatureValidation(relayId, ok, reason) {
+  if (!relayId) return;
+  try {
+    await relayTransactionsCol()
+      .doc(relayId)
+      .update({
+        signatureValidation: {
+          result: ok ? 'passed' : 'failed',
+          reason: ok ? null : reason || 'unknown',
+          checkedAt: Date.now(),
+        },
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+  } catch (err) {
+    log('error', 'relay', `Failed to record signature validation for ${relayId}: ${err.message}`);
+  }
+}
+
+function logSignedPayload(signedPayload, ok, reason) {
+  if (!signedPayload) return;
+  const sigPreview = String(signedPayload.signature || '').slice(0, 16);
+  const outcome = ok ? 'PASSED' : `FAILED (${reason})`;
+  log(
+    ok ? 'ok' : 'warn',
+    'sms',
+    `Signed payload | senderId=${signedPayload.senderId} recipientId=${signedPayload.recipientId} amount=${signedPayload.amount} timestamp=${signedPayload.timestamp} nonce=${signedPayload.nonce} requestId=${signedPayload.requestId} signature=${sigPreview}... | validation=${outcome}`
+  );
+}
+
 function buildSmsEventKey(senderPhone, messageText, payload) {
   const providerId =
     payload &&
@@ -670,7 +709,7 @@ function parseCommand(text) {
   }
   return { type: 'UNKNOWN' };
 }
-async function executeSend({ sender, recipient, amount, walletSecret, mode, relayId }) {
+async function executeSend({ sender, recipient, amount, mode, relayId, requestId }) {
   if ((sender.xlmBalance || 0) < amount) {
     await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'insufficient-balance' });
     return { ok: false, code: 'insufficient-balance', senderBalance: sender.xlmBalance || 0 };
@@ -682,6 +721,21 @@ async function executeSend({ sender, recipient, amount, walletSecret, mode, rela
 
   await updateRelayStatus(relayId, RELAY_STATUS.VALIDATED);
 
+  if (!settlementKeypair) {
+    await updateRelayStatus(relayId, RELAY_STATUS.FAILED, { detail: 'settlement-signer-not-configured' });
+    return { ok: false, code: 'settlement-not-configured', detail: 'settlement-signer-not-configured', relayId };
+  }
+  let signerEnabled = false;
+  try {
+    signerEnabled = await isSettlementSignerEnabled(sender.walletPublic);
+  } catch (err) {
+    log('error', 'settlement', `Signer check failed for ${sender.walletPublic} - ${err.message}`);
+  }
+  if (!signerEnabled) {
+    await updateRelayStatus(relayId, RELAY_STATUS.FAILED, { detail: 'settlement-signer-not-enabled' });
+    return { ok: false, code: 'signer-not-enabled', detail: 'settlement-signer-not-enabled', relayId };
+  }
+
   const senderName = sender.username || sender.id;
   const recipientName = recipient.username || recipient.id;
   const icon = mode === 'sms' ? '📱' : '🔐';
@@ -689,9 +743,33 @@ async function executeSend({ sender, recipient, amount, walletSecret, mode, rela
 
   try {
     await updateRelayStatus(relayId, RELAY_STATUS.SUBMITTED);
-    const txHash = await OmniPayBackend.settlePayment(walletSecret, recipient.walletPublic, amount);
+
+    let sorobanTxHash = null;
+    if (SOROBAN_ENABLED) {
+      try {
+        sorobanTxHash = await OmniPayBackend.recordSettlement(
+          sender.walletPublic,
+          recipient.walletPublic,
+          amount,
+          requestId || relayId
+        );
+        await updateRelayFields(relayId, {
+          sorobanTxHash,
+          sorobanContractId: SOROBAN_CONTRACT_ID,
+        });
+       /* log('ok', 'soroban', `Settlement recorded on contract ${SOROBAN_CONTRACT_ID.slice(0, 8)}... | tx ${sorobanTxHash.slice(0, 12)}...`);*/
+      } catch (sorobanErr) {
+        const sorobanDetail = `soroban:${sorobanErr.message}`;
+        log('error', 'soroban', `Contract invocation failed: ${sorobanErr.message}`);
+        await logEvent(sender.id, '❌', `${channelNote} payment blocked: contract settlement failed`, 'error');
+        await updateRelayStatus(relayId, RELAY_STATUS.FAILED, { detail: sorobanDetail });
+        return { ok: false, code: 'soroban-failed', detail: sorobanDetail, relayId };
+      }
+    }
+
+    const txHash = await OmniPayBackend.settlePayment(sender.walletPublic, recipient.walletPublic, amount);
     await updateRelayStatus(relayId, RELAY_STATUS.CONFIRMED, { txHash });
-    const senderPublicKey = StellarSdk.Keypair.fromSecret(walletSecret).publicKey();
+    const senderPublicKey = sender.walletPublic;
     const [chainSenderBal, chainRecipientBal] = await Promise.all([
       getStellarNativeBalance(senderPublicKey),
       getStellarNativeBalance(recipient.walletPublic),
@@ -704,13 +782,14 @@ async function executeSend({ sender, recipient, amount, walletSecret, mode, rela
     await usersCol().doc(recipient.id).update({ xlmBalance: newRecipientBal });
 
     const base = { id: 'tx-' + txHash.substring(0, 8), amount, status: 'synced', mode, txHash, ts: Date.now(), icon };
+    if (sorobanTxHash) base.sorobanTxHash = sorobanTxHash;
     await recordTransaction(sender.id, { ...base, type: 'send', name: `To @${recipientName}`, note: `Sent via ${channelNote}` });
     await recordTransaction(recipient.id, { ...base, type: 'receive', name: `From @${senderName}`, note: `Received via ${channelNote}` });
 
     await updateRelayStatus(relayId, RELAY_STATUS.SETTLED);
 
     log('ok', 'payment', `${amount} ${ASSET_LABEL} settled via ${channelNote} | @${senderName} -> @${recipientName} | tx ${txHash.slice(0, 12)}...`);
-    return { ok: true, txHash, newSenderBal, newRecipientBal, relayId };
+    return { ok: true, txHash, sorobanTxHash, newSenderBal, newRecipientBal, relayId };
   } catch (err) {
     const detail = err.response?.data?.extras?.result_codes || err.message;
     log('error', 'stellar', `Payment failed: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
@@ -719,7 +798,25 @@ async function executeSend({ sender, recipient, amount, walletSecret, mode, rela
     return { ok: false, code: 'stellar-failed', detail, relayId };
   }
 }
+const recentSms = new Map();
+const SMS_DEDUP_WINDOW_MS = parseInt(process.env.SMS_DEDUP_WINDOW_MS, 10) || 3000;
+
+function isRecentDuplicateSms(phone, text) {
+  const key = normalizePhone(phone) + '|' + String(text || '').trim();
+  const now = Date.now();
+  for (const [k, t] of recentSms) {
+    if (now - t > SMS_DEDUP_WINDOW_MS) recentSms.delete(k);
+  }
+  if (recentSms.has(key)) return true;
+  recentSms.set(key, now);
+  return false;
+}
+
 async function handleIncomingSms(senderPhone, messageText, eventKey) {
+  if (isRecentDuplicateSms(senderPhone, messageText)) {
+    log('info', 'sms', `Duplicate webhook delivery ignored (same SMS received twice within ${SMS_DEDUP_WINDOW_MS}ms) from ${senderPhone}`);
+    return;
+  }
   if (!consumeSmsRateLimit(senderPhone)) {
     log('warn', 'sms', `Rate limit exceeded for sender: ${senderPhone}`);
     return;
@@ -735,10 +832,18 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
     const sender = await findUserByPhone(senderPhone);
     if (!sender) {
       log('warn', 'sms', `No account linked to ${senderPhone}`);
-      await sendSms(
-        senderPhone,
-        "OmniPay: This number isn't linked to an OmniPay account. Register in the app first."
-      );
+      if (command.type === 'SEND') {
+        const unknownRelayId = await createRelayRecord({
+          channel: 'sms',
+          senderPhone: normalizePhone(senderPhone),
+          senderId: null,
+          recipient: command.recipient,
+          amount: command.amount,
+          signedPayload: null,
+        });
+        await recordSignatureValidation(unknownRelayId, false, 'unknown-sender');
+        await updateRelayStatus(unknownRelayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'unknown-sender' });
+      }
       return;
     }
 
@@ -779,22 +884,39 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
     if (command.type === 'SEND') {
       const { amount, recipient: recipientIdentifier, pin, sig } = command;
 
+      const signedPayload = sig
+        ? {
+            senderId: sender.id,
+            recipientId: recipientIdentifier,
+            amount: Number(amount).toFixed(7),
+            timestamp: sig.timestamp,
+            nonce: sig.nonce,
+            requestId: sig.requestId,
+            signature: sig.signature,
+          }
+        : null;
+
       const relayId = await createRelayRecord({
         channel: 'sms',
         senderPhone: normalizePhone(senderPhone),
         senderId: sender.id,
         recipient: recipientIdentifier,
         amount,
+        signedPayload,
       });
 
       if (REQUIRE_SIGNED_SMS && !sig) {
+        await recordSignatureValidation(relayId, false, 'signature-required');
         await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'signature-required' });
         await sendSms(senderPhone, 'OmniPay: This command must be signed. Update your OmniPay app to the latest version.');
         return;
       }
 
       if (sig) {
-        if (!sender.walletPublic) {
+        const signingKey = getRegisteredSigningKey(sender);
+        if (!signingKey) {
+          logSignedPayload(signedPayload, false, 'no-registered-signing-key');
+          await recordSignatureValidation(relayId, false, 'no-registered-signing-key');
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'no-registered-signing-key' });
           await sendSms(senderPhone, 'OmniPay: Your account has no registered signing key yet. Log in to the app once.');
           return;
@@ -807,23 +929,37 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
           nonce: sig.nonce,
           requestId: sig.requestId,
           signature: sig.signature,
-          senderPublicKey: sender.walletPublic,
+          senderPublicKey: signingKey,
         });
         if (!verifyResult.ok) {
           log('warn', 'sms', `Signature rejected: ${verifyResult.reason} (sender: ${sender.id})`);
+          logSignedPayload(signedPayload, false, verifyResult.reason);
+          await recordSignatureValidation(relayId, false, verifyResult.reason);
           await logEvent(sender.id, '❌', `SMS payment blocked: bad signature (${verifyResult.reason})`, 'error');
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: `bad-signature:${verifyResult.reason}` });
           await sendSms(senderPhone, 'OmniPay: Signature check failed. Payment not sent.');
           return;
         }
-        const claim = await claimSignedRequest(sig.requestId, sig.nonce, sender.id);
+        const claim = await claimSignedRequest(sig.requestId, sig.nonce, sender.id, { channel: 'sms', relayId });
         if (!claim.claimed) {
-          log('info', 'sms', `Duplicate signed SMS request ignored: ${sig.requestId}`);
+          logSignedPayload(signedPayload, false, claim.reason || 'duplicate-request');
+          await recordSignatureValidation(relayId, false, claim.reason || 'duplicate-request');
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: claim.reason || 'duplicate-request' });
+          if (claim.reason === 'claim-error') {
+            await sendSms(senderPhone, 'OmniPay: Could not process your request right now. Nothing was deducted. Please try again.');
+          } else if (claim.reason === 'invalid-requestid') {
+            await sendSms(senderPhone, 'OmniPay: Invalid request. Payment not sent.');
+          } else if (['duplicate-request', 'nonce-reused'].includes(claim.reason)) {
+            await sendSms(senderPhone, 'OmniPay: Duplicate request ignored. No additional payment was made.');
+          }
           return;
         }
+        logSignedPayload(signedPayload, true);
+        await recordSignatureValidation(relayId, true);
       }
 
+      let requestOutcome = 'rejected';
+      let requestExtra = {};
       try {
         if (isPinLocked(senderPhone)) {
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'pin-locked' });
@@ -831,19 +967,13 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
           return;
         }
 
-        if (!sender.pinWalletSecretEncrypted || !sender.pinWalletSecretSalt || !sender.pinWalletSecretIv || !sender.walletPublic) {
-          log('warn', 'sms', `Sender doc ${sender.id} has no pinWalletSecretEncrypted — log in to the app once to set up SMS payments.`);
+        if (!sender.smsPinHash || !sender.smsPinSalt || !sender.walletPublic) {
+          log('warn', 'sms', `Sender doc ${sender.id} has no SMS PIN record — log in to the app once to set up SMS payments.`);
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'wallet-not-setup' });
           await sendSms(senderPhone, 'OmniPay: SMS payments are not enabled for your wallet yet. Log in to the app to set it up.');
           return;
         }
-        const walletSecret = decryptWalletSecretByPin(
-          sender.pinWalletSecretEncrypted,
-          sender.pinWalletSecretSalt,
-          sender.pinWalletSecretIv,
-          pin
-        );
-        if (!walletSecret) {
+        if (!verifyPinHash(pin, sender.smsPinHash, sender.smsPinSalt)) {
           registerPinFailure(senderPhone);
           await logEvent(sender.id, '❌', 'SMS payment blocked: incorrect PIN', 'error');
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'incorrect-pin' });
@@ -859,19 +989,33 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
           return;
         }
 
-        const result = await executeSend({ sender, recipient, amount, walletSecret, mode: 'sms', relayId });
+        requestOutcome = 'failed';
+        const result = await executeSend({
+          sender,
+          recipient,
+          amount,
+          mode: 'sms',
+          relayId,
+          requestId: sig ? sig.requestId : relayId,
+        });
 
         if (!result.ok) {
+          requestOutcome = REJECTED_SEND_CODES.includes(result.code) ? 'rejected' : 'failed';
+          requestExtra = { detail: result.code };
           if (result.code === 'insufficient-balance') {
             await sendSms(senderPhone, `OmniPay: Insufficient balance. You have ${result.senderBalance.toFixed(4)} ${ASSET_LABEL}.`);
           } else if (result.code === 'self-send') {
             await sendSms(senderPhone, "OmniPay: You can't send money to yourself.");
+          } else if (result.code === 'signer-not-enabled') {
+            await sendSms(senderPhone, 'OmniPay: SMS payments are not enabled for your wallet yet. Open the app and prepare an SMS payment once to enable it.');
           } else {
             await sendSms(senderPhone, `OmniPay: Payment failed (${JSON.stringify(result.detail)}). Nothing was deducted.`);
           }
           return;
         }
 
+        requestOutcome = 'processed';
+        requestExtra = { txHash: result.txHash, sorobanTxHash: result.sorobanTxHash };
         const recipientName = recipient.username || recipient.id;
         const senderName = sender.username || sender.id;
         await sendSms(
@@ -885,9 +1029,21 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
           );
         }
       } finally {
-        if (sig) await finishSignedRequest(sig.requestId, 'processed');
+        if (sig) await finishSignedRequest(sig.requestId, requestOutcome, requestExtra);
       }
       return;
+    }
+    if (/^\s*SEND\b/i.test(messageText)) {
+      const malformedRelayId = await createRelayRecord({
+        channel: 'sms',
+        senderPhone: normalizePhone(senderPhone),
+        senderId: sender.id,
+        recipient: null,
+        amount: null,
+        signedPayload: null,
+      });
+      await updateRelayStatus(malformedRelayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'malformed-command' });
+      log('warn', 'sms', `REJECTED (malformed SEND command) | sender=${sender.id} relayId=${malformedRelayId}`);
     }
     await sendSms(
       senderPhone,
@@ -909,13 +1065,16 @@ app.use(
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
+        upgradeInsecureRequests: null,
         scriptSrc: [
           "'self'",
           'https://www.gstatic.com',
           'https://cdnjs.cloudflare.com',
           'https://cdn.jsdelivr.net',
         ],
-        styleSrc: ["'self'", "'unsafe-inline'"],
+        scriptSrcAttr: ["'unsafe-inline'"],
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+        fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
         imgSrc: ["'self'", 'data:'],
         connectSrc: [
           "'self'",
@@ -938,7 +1097,12 @@ app.use(
 
 app.use(
   cors({
-    origin: ALLOWED_ORIGINS.length > 0 ? ALLOWED_ORIGINS : false,
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+      if (origin === 'null' && process.env.NODE_ENV !== 'production') return callback(null, true);
+      return callback(null, false);
+    },
     methods: ['GET', 'POST'],
   })
 );
@@ -964,6 +1128,23 @@ if (fs.existsSync(PUBLIC_DIR)) {
     });
   });
 }
+const BRAND_ASSETS = ['OMNIPAY LOGO 4.png', 'OMNIPAY LOGO 5.png', 'OMNIPAYLOGO.ico'];
+BRAND_ASSETS.forEach((name) => {
+  const filePath = path.join(__dirname, name);
+  const routePath = encodeURIComponent(name).replace(/%2F/g, '/');
+  app.get('/' + routePath, (_req, res) => {
+    if (!fs.existsSync(filePath)) return res.status(404).end();
+    res.sendFile(filePath);
+  });
+});
+const paymentEndpointLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too many requests, please try again later' },
+});
+
 function withTimeout(promise, ms) {
   let timer;
   const timeout = new Promise((_resolve, reject) => {
@@ -993,15 +1174,38 @@ async function checkHorizon() {
   }
 }
 
+async function checkSoroban() {
+  const started = Date.now();
+  try {
+    await withTimeout(sorobanServer.getHealth(), 4000);
+    return { status: 'ok', latencyMs: Date.now() - started };
+  } catch (err) {
+    return { status: 'error', latencyMs: Date.now() - started, message: err.message };
+  }
+}
+
 app.get('/health', async (_req, res) => {
-  const [firestoreCheck, horizonCheck] = await Promise.all([checkFirestore(), checkHorizon()]);
-  const allOk = firestoreCheck.status === 'ok' && horizonCheck.status === 'ok';
+  const [firestoreCheck, horizonCheck, sorobanCheck] = await Promise.all([
+    checkFirestore(),
+    checkHorizon(),
+    SOROBAN_ENABLED ? checkSoroban() : Promise.resolve(null),
+  ]);
+  const services = { firestore: firestoreCheck, horizon: horizonCheck };
+  if (sorobanCheck) services.soroban = sorobanCheck;
+  const allOk = Object.values(services).every((svc) => svc.status === 'ok');
   res.status(allOk ? 200 : 503).json({
     ok: allOk,
     timestamp: new Date().toISOString(),
-    services: { firestore: firestoreCheck, horizon: horizonCheck },
+    services,
   });
 });
+app.get('/api/settlement-signer', (_req, res) => {
+  if (!settlementKeypair) {
+    return res.status(503).json({ error: 'settlement signer not configured' });
+  }
+  return res.json({ publicKey: settlementKeypair.publicKey(), networkPassphrase: NETWORK_PASSPHRASE });
+});
+
 function requireAdminKey(req, res, next) {
   if (!ADMIN_API_KEY) {
     return res.status(503).json({ error: 'admin endpoints disabled — set ADMIN_API_KEY' });
@@ -1034,8 +1238,13 @@ app.post('/webhook/sms-received', async (req, res) => {
     log('warn', 'webhook', 'Rejected: missing sender/message');
     return res.status(400).json({ error: 'missing sender/message' });
   }
+  if (!/^\+?\d{7,15}$/.test(String(senderPhone).replace(/[\s-]/g, ''))) {
+    log('info', 'webhook', `Ignored non-phone sender: ${senderPhone}`);
+    return res.status(200).json({ ignored: true });
+  }
   log('ok', 'webhook', `SMS received from ${senderPhone}`);
   const eventKey = buildSmsEventKey(senderPhone, message, payload);
+  log('info', 'webhook', `key=${eventKey.slice(0, 20)} id=${payload.id || payload.messageId || '-'} webhookId=${(req.body && req.body.webhookId) || '-'}`);
   res.status(200).json({ received: true });
 
   handleIncomingSms(senderPhone, message, eventKey).catch((err) => {
@@ -1072,7 +1281,7 @@ function crossCheckSignedXdr({ tx, senderPublicKey, recipientPublicKey, amount }
   return { ok: true };
 }
 
-app.post('/api/submit-payment', async (req, res) => {
+app.post('/api/submit-payment', paymentEndpointLimiter, async (req, res) => {
   const { senderId, recipientId, amount, signedXdr } = req.body || {};
 
   if (!senderId || !recipientId || !signedXdr) {
@@ -1143,7 +1352,7 @@ app.post('/api/submit-payment', async (req, res) => {
   }
 });
 
-app.post('/api/send', async (req, res) => {
+app.post('/api/send', paymentEndpointLimiter, async (req, res) => {
   const { senderId, recipientId, amount, timestamp, nonce, requestId, signature, pin } = req.body || {};
 
   if (!senderId || !recipientId || !timestamp || !nonce || !requestId || !signature) {
@@ -1167,10 +1376,17 @@ app.post('/api/send', async (req, res) => {
 
   const senderDoc = await usersCol().doc(String(senderId)).get();
   if (!senderDoc.exists) {
-    await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'sender-not-found' });
-    return res.status(404).json({ error: 'sender not found', relayId });
+    await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'unknown-sender' });
+    return res.status(401).json({ error: 'unauthorized sender', relayId });
   }
   const sender = { id: senderDoc.id, ...senderDoc.data() };
+
+  const signingKey = getRegisteredSigningKey(sender);
+  if (!signingKey) {
+    log('warn', 'api/send', `No registered signing key (sender: ${senderId})`);
+    await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'no-registered-signing-key' });
+    return res.status(401).json({ error: 'unauthorized sender', relayId });
+  }
 
   const verifyResult = verifySignature({
     senderId,
@@ -1180,7 +1396,7 @@ app.post('/api/send', async (req, res) => {
     nonce,
     requestId,
     signature,
-    senderPublicKey: sender.walletPublic,
+    senderPublicKey: signingKey,
   });
   if (!verifyResult.ok) {
     log('warn', 'api/send', `Signature rejected: ${verifyResult.reason} (sender: ${senderId})`);
@@ -1188,11 +1404,20 @@ app.post('/api/send', async (req, res) => {
     return res.status(401).json({ error: 'invalid signature', reason: verifyResult.reason, relayId });
   }
 
-  const claim = await claimSignedRequest(requestId, nonce, senderId);
+  const claim = await claimSignedRequest(requestId, nonce, senderId, { channel: 'api', relayId });
   if (!claim.claimed) {
     await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: claim.reason || 'claim-error' });
-    const status = ['duplicate-request', 'nonce-reused'].includes(claim.reason) ? 409 : 500;
-    return res.status(status).json({ error: claim.reason || 'could not process request', relayId });
+    let status = 500;
+    if (['duplicate-request', 'nonce-reused'].includes(claim.reason)) status = 409;
+    else if (claim.reason === 'invalid-requestid') status = 400;
+    const replayed = ['duplicate-request', 'nonce-reused'].includes(claim.reason);
+    return res.status(status).json({
+      error: claim.reason || 'could not process request',
+      previousStatus: claim.previousStatus || undefined,
+      originalTxHash: replayed ? claim.originalTxHash || null : undefined,
+      settlementCreated: replayed ? false : undefined,
+      relayId,
+    });
   }
 
   try {
@@ -1202,19 +1427,13 @@ app.post('/api/send', async (req, res) => {
       await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'pin-locked' });
       return res.status(423).json({ error: 'too many wrong PIN attempts, try again later', relayId });
     }
-    if (!sender.pinWalletSecretEncrypted || !sender.pinWalletSecretSalt || !sender.pinWalletSecretIv) {
+    if (!sender.smsPinHash || !sender.smsPinSalt) {
       await finishSignedRequest(requestId, 'rejected');
       await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: 'wallet-not-setup' });
       return res.status(400).json({ error: 'wallet not set up for signed payments — log in to the app once', relayId });
     }
 
-    const walletSecret = decryptWalletSecretByPin(
-      sender.pinWalletSecretEncrypted,
-      sender.pinWalletSecretSalt,
-      sender.pinWalletSecretIv,
-      pin
-    );
-    if (!walletSecret) {
+    if (!verifyPinHash(pin, sender.smsPinHash, sender.smsPinSalt)) {
       registerPinFailure(lockKey);
       await logEvent(sender.id, '❌', 'Signed API payment blocked: incorrect PIN', 'error');
       await finishSignedRequest(requestId, 'rejected');
@@ -1229,22 +1448,23 @@ app.post('/api/send', async (req, res) => {
       return res.status(404).json({ error: 'recipient not found', relayId });
     }
 
-    const result = await executeSend({ sender, recipient, amount: amt, walletSecret, mode: 'api', relayId });
+    const result = await executeSend({ sender, recipient, amount: amt, mode: 'api', relayId, requestId });
     if (!result.ok) {
-      await finishSignedRequest(requestId, 'failed');
+      await finishSignedRequest(requestId, REJECTED_SEND_CODES.includes(result.code) ? 'rejected' : 'failed', { detail: result.code });
       return res.status(422).json({ error: result.code, detail: result.detail, relayId });
     }
 
-    await finishSignedRequest(requestId, 'processed');
+    await finishSignedRequest(requestId, 'processed', { txHash: result.txHash, sorobanTxHash: result.sorobanTxHash });
     return res.json({
       ok: true,
       txHash: result.txHash,
+      sorobanTxHash: result.sorobanTxHash || null,
       newSenderBalance: result.newSenderBal,
       relayId,
     });
   } catch (err) {
     console.error('[api/send] unhandled error:', err);
-    await finishSignedRequest(requestId, 'failed');
+    await finishSignedRequest(requestId, 'failed', { detail: 'internal-error' });
     await updateRelayStatus(relayId, RELAY_STATUS.FAILED, { detail: 'internal-error' });
     return res.status(500).json({ error: 'internal error', relayId });
   }
@@ -1286,6 +1506,27 @@ app.get('/api/relay-transactions', requireAdminKey, async (req, res) => {
     res.status(500).json({ error: 'internal error' });
   }
 });
+app.get('/api/replay-audit/:requestId', requireAdminKey, async (req, res) => {
+  try {
+    const doc = await signedRequestsCol().doc(String(req.params.requestId)).get();
+    if (!doc.exists) return res.status(404).json({ error: 'not found' });
+    const data = doc.data() || {};
+    res.json({
+      requestId: doc.id,
+      status: data.status || null,
+      channel: data.channel || null,
+      txHash: data.txHash || null,
+      settlements: data.txHash ? 1 : 0,
+      replayCount: data.replayCount || 0,
+      lastReplayAt: data.lastReplayAt && data.lastReplayAt.toDate ? data.lastReplayAt.toDate().toISOString() : null,
+      lastReplayChannel: data.lastReplayChannel || null,
+    });
+  } catch (err) {
+    console.error('[api/replay-audit] failed:', err.message);
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
 app.post('/api/reconcile-balance/:userId', requireAdminKey, async (req, res) => {
   try {
     const userDoc = await usersCol().doc(req.params.userId).get();
@@ -1316,6 +1557,351 @@ app.use((err, req, res, next) => {
   });
 });
 
+async function runReplayCheck() {
+  const REPLAYS = 3;
+  const suffix = crypto.randomBytes(6).toString('hex');
+  const requestId = `replaycheck_${Date.now().toString(36)}_${suffix}`;
+  const nonce = `nonce_${Date.now().toString(36)}_${suffix}`;
+  const senderId = 'replay-check';
+  const nonceDocId = `${senderId}:${nonce}`;
+  const txHash = crypto.randomBytes(32).toString('hex');
+  const startingBalance = 100;
+  const amount = 10;
+  let balance = startingBalance;
+  let settlements = 0;
+  const evidence = { requestId, startedAt: new Date().toISOString(), steps: [], checks: [] };
+
+  const settle = async () => {
+    settlements += 1;
+    balance -= amount;
+    await finishSignedRequest(requestId, 'processed', { txHash });
+  };
+  const check = (name, pass, detail) => {
+    evidence.checks.push({ name, pass, detail });
+    log(pass ? 'ok' : 'error', 'replay-check', `${pass ? 'PASS' : 'FAIL'} | ${name} | ${detail}`);
+  };
+
+  log('info', 'replay-check', `Started | requestId=${shortRef(requestId)} replays=${REPLAYS}`);
+  try {
+    const first = await claimSignedRequest(requestId, nonce, senderId, { channel: 'replay-check' });
+    evidence.steps.push({ step: 'original', claimed: first.claimed, reason: first.reason || null });
+    if (first.claimed) await settle();
+    const balanceAfterOriginal = balance;
+
+    for (let i = 1; i <= REPLAYS; i += 1) {
+      const replay = await claimSignedRequest(requestId, nonce, senderId, { channel: 'replay-check' });
+      evidence.steps.push({
+        step: `replay-${i}`,
+        claimed: replay.claimed,
+        reason: replay.reason || null,
+        originalTxHash: replay.originalTxHash || null,
+      });
+      if (replay.claimed) await settle();
+    }
+
+    const otherId = `${requestId}_b`;
+    const nonceReplay = await claimSignedRequest(otherId, nonce, senderId, { channel: 'replay-check' });
+    evidence.steps.push({ step: 'nonce-reuse', claimed: nonceReplay.claimed, reason: nonceReplay.reason || null });
+    if (nonceReplay.claimed) await settle();
+
+    const snap = await signedRequestsCol().doc(requestId).get();
+    const record = snap.exists ? snap.data() : {};
+    const replaySteps = evidence.steps.filter((s) => s.step.startsWith('replay-'));
+
+    check('Original request accepted', first.claimed === true, `claimed=${first.claimed}`);
+    check(
+      'Replayed request rejected',
+      replaySteps.length === REPLAYS && replaySteps.every((s) => !s.claimed && s.reason === 'duplicate-request'),
+      `${replaySteps.filter((s) => !s.claimed).length}/${REPLAYS} rejected`
+    );
+    check('Reused nonce rejected', !nonceReplay.claimed && nonceReplay.reason === 'nonce-reused', `reason=${nonceReplay.reason || 'none'}`);
+    check('Single settlement only', settlements === 1, `settlements=${settlements}`);
+    check('Single tx hash', record.txHash === txHash && replaySteps.every((s) => s.originalTxHash === txHash), `tx=${shortRef(record.txHash || 'none')}`);
+    check('Balance unchanged after replays', balance === balanceAfterOriginal, `before=${balanceAfterOriginal} after=${balance}`);
+    check('Replay attempts recorded', record.replayCount === REPLAYS + 1, `replayCount=${record.replayCount || 0}`);
+
+    evidence.txHash = txHash;
+    evidence.settlements = settlements;
+    evidence.balance = { start: startingBalance, afterOriginal: balanceAfterOriginal, final: balance };
+    evidence.replayCount = record.replayCount || 0;
+  } catch (err) {
+    check('Replay check completed', false, err.message);
+  } finally {
+    try {
+      await signedRequestsCol().doc(requestId).delete();
+      await usedNoncesCol().doc(nonceDocId).delete();
+    } catch (err) {
+      log('warn', 'replay-check', `Cleanup failed: ${err.message}`);
+    }
+  }
+
+  const passed = evidence.checks.length > 0 && evidence.checks.every((c) => c.pass);
+  evidence.result = passed ? 'PASS' : 'FAIL';
+  evidence.finishedAt = new Date().toISOString();
+  try {
+    fs.writeFileSync(path.join(__dirname, 'replay-evidence.json'), JSON.stringify(evidence, null, 2));
+    log('info', 'replay-check', 'Evidence saved to replay-evidence.json');
+  } catch (err) {
+    log('error', 'replay-check', `Could not save evidence: ${err.message}`);
+  }
+  log(passed ? 'ok' : 'error', 'replay-check', `RESULT: ${evidence.result} | settlements=${settlements} | replayCount=${evidence.replayCount || 0}`);
+}
+
+async function runSettlementProof() {
+  const EXPLORER = process.env.EXPLORER_BASE_URL || 'https://stellar.expert/explorer/testnet';
+  const SENDER_ID = process.env.TEST_SENDER_ID;
+  const SENDER_SECRET = process.env.TEST_SENDER_SECRET;
+  const SENDER_PIN = process.env.TEST_SENDER_PIN;
+  const RECIPIENT = process.env.TEST_RECIPIENT;
+  const RECIPIENT_PUBLIC = process.env.TEST_RECIPIENT_PUBLIC || '';
+  const UNAUTHORIZED_ID = process.env.TEST_UNAUTHORIZED_ID || 'proof_unauthorized_sender';
+  const PROOF_AMOUNT = Number(process.env.TEST_AMOUNT || 1).toFixed(7);
+  const WAIT_MS = parseInt(process.env.PROOF_SETTLE_WAIT_MS, 10) || 6000;
+
+  const missing = ['TEST_SENDER_ID', 'TEST_SENDER_SECRET', 'TEST_SENDER_PIN', 'TEST_RECIPIENT'].filter((k) => !process.env[k]);
+  if (missing.length) {
+    log('error', 'proof', `Missing environment variables: ${missing.join(', ')}`);
+    return;
+  }
+
+  const senderKeypair = StellarSdk.Keypair.fromSecret(SENDER_SECRET);
+  const senderPublic = senderKeypair.publicKey();
+  const txLink = (hash) => (hash ? `${EXPLORER}/tx/${hash}` : null);
+  const randomHex = () => crypto.randomBytes(16).toString('hex');
+  const evidence = {
+    startedAt: new Date().toISOString(),
+    network: { horizon: HORIZON_URL, sorobanRpc: SOROBAN_RPC_URL, passphrase: NETWORK_PASSPHRASE },
+    contractId: SOROBAN_CONTRACT_ID || null,
+    sender: senderPublic,
+    success: null,
+    sorobanIdempotency: null,
+    noSettlement: [],
+  };
+  let failures = 0;
+  const report = (pass, label, detail) => {
+    if (!pass) failures += 1;
+    log(pass ? 'ok' : 'error', 'proof', `${pass ? 'PASS' : 'FAIL'} | ${label}${detail ? ` | ${detail}` : ''}`);
+  };
+
+  const signedBody = ({ signer = senderKeypair, senderId = SENDER_ID, overrides = {}, tamper = false } = {}) => {
+    const base = {
+      senderId,
+      recipientId: RECIPIENT,
+      amount: PROOF_AMOUNT,
+      timestamp: Date.now(),
+      nonce: randomHex(),
+      requestId: randomHex(),
+      ...overrides,
+    };
+    const sig = Buffer.from(signer.sign(Buffer.from(buildSignedPayloadString(base), 'utf8')));
+    if (tamper) sig[0] ^= 0xff;
+    return { ...base, signature: sig.toString('base64'), pin: SENDER_PIN };
+  };
+
+  const send = async (body) => {
+    const res = await fetch(`http://127.0.0.1:${PORT}/api/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    let json = {};
+    try {
+      json = await res.json();
+    } catch (err) {
+      json = {};
+    }
+    return { status: res.status, body: json };
+  };
+
+  const snapshot = async () => {
+    const account = await withHorizonRetry(() => horizon.loadAccount(senderPublic));
+    const native = account.balances.find((b) => b.asset_type === 'native');
+    const latest = await withHorizonRetry(() => horizon.transactions().forAccount(senderPublic).order('desc').limit(1).call());
+    let recipientBalance = null;
+    if (RECIPIENT_PUBLIC) {
+      const recipientAccount = await withHorizonRetry(() => horizon.loadAccount(RECIPIENT_PUBLIC));
+      const rn = recipientAccount.balances.find((b) => b.asset_type === 'native');
+      recipientBalance = rn ? rn.balance : '0';
+    }
+    return {
+      senderBalance: native ? native.balance : '0',
+      senderSequence: account.sequence,
+      latestTxHash: latest.records.length ? latest.records[0].hash : null,
+      recipientBalance,
+    };
+  };
+  const unchanged = (a, b) =>
+    a.senderBalance === b.senderBalance &&
+    a.senderSequence === b.senderSequence &&
+    a.latestTxHash === b.latestTxHash &&
+    a.recipientBalance === b.recipientBalance;
+
+  const sorobanDuplicateCheck = async (requestId) => {
+    if (!SOROBAN_ENABLED || !sorobanServer) return { skipped: true };
+    const account = await sorobanServer.getAccount(senderPublic);
+    const tx = new StellarSdk.TransactionBuilder(account, { fee: StellarSdk.BASE_FEE, networkPassphrase: NETWORK_PASSPHRASE })
+      .addOperation(
+        new StellarSdk.Contract(SOROBAN_CONTRACT_ID).call(
+          SOROBAN_SETTLE_FUNCTION,
+          StellarSdk.nativeToScVal(String(requestId), { type: 'string' }),
+          new StellarSdk.Address(senderPublic).toScVal(),
+          new StellarSdk.Address(RECIPIENT_PUBLIC || senderPublic).toScVal(),
+          StellarSdk.nativeToScVal(amountToStroops(PROOF_AMOUNT), { type: 'i128' })
+        )
+      )
+      .setTimeout(60)
+      .build();
+    const sim = await sorobanServer.simulateTransaction(tx);
+    return { skipped: false, rejected: Boolean(sim.error), detail: sim.error || 'accepted' };
+  };
+
+  log('info', 'proof', `Started | sender=${SENDER_ID} amount=${PROOF_AMOUNT}`);
+  try {
+    const before = await snapshot();
+    const successBody = signedBody();
+    const success = await send(successBody);
+    const settled = success.status === 200 && success.body.ok === true && Boolean(success.body.txHash);
+    report(settled, 'Signed request settled', `status=${success.status} tx=${shortRef(success.body.txHash || 'none')}`);
+
+    if (settled) {
+      await delay(WAIT_MS);
+      const afterSuccess = await snapshot();
+      let horizonTx = null;
+      try {
+        horizonTx = await withHorizonRetry(() => horizon.transactions().transaction(success.body.txHash).call());
+      } catch (err) {
+        horizonTx = null;
+      }
+      report(Boolean(horizonTx && horizonTx.successful), 'Transaction confirmed on Horizon', txLink(success.body.txHash));
+      report(
+        Number(before.senderBalance) - Number(afterSuccess.senderBalance) >= Number(PROOF_AMOUNT),
+        'Sender balance decreased',
+        `${before.senderBalance} -> ${afterSuccess.senderBalance}`
+      );
+      if (before.recipientBalance !== null) {
+        report(
+          Math.abs(Number(afterSuccess.recipientBalance) - Number(before.recipientBalance) - Number(PROOF_AMOUNT)) < 1e-6,
+          'Recipient balance increased',
+          `${before.recipientBalance} -> ${afterSuccess.recipientBalance}`
+        );
+      }
+
+      let sorobanStatus = null;
+      if (success.body.sorobanTxHash && sorobanServer) {
+        const sorobanTx = await sorobanServer.getTransaction(success.body.sorobanTxHash);
+        sorobanStatus = sorobanTx.status;
+        report(sorobanStatus === 'SUCCESS', 'Soroban contract call confirmed', txLink(success.body.sorobanTxHash));
+      }
+      evidence.success = {
+        requestId: successBody.requestId,
+        nonce: successBody.nonce,
+        amount: PROOF_AMOUNT,
+        txHash: success.body.txHash,
+        txLink: txLink(success.body.txHash),
+        sorobanTxHash: success.body.sorobanTxHash || null,
+        sorobanTxLink: txLink(success.body.sorobanTxHash),
+        sorobanStatus,
+        before,
+        after: afterSuccess,
+      };
+
+      const dup = await sorobanDuplicateCheck(successBody.requestId);
+      if (dup.skipped) {
+        log('warn', 'proof', 'SKIP | Soroban idempotency check (SOROBAN_CONTRACT_ID is not set)');
+      } else {
+        report(dup.rejected, 'Contract rejects a repeated requestId', String(dup.detail).slice(0, 120));
+      }
+      evidence.sorobanIdempotency = dup;
+
+      const outsider = StellarSdk.Keypair.random();
+      const cases = [
+        {
+          name: 'Invalid signature',
+          body: () => signedBody({ tamper: true }),
+          expect: (r) => r.status === 401 && r.body.reason === 'signature-mismatch',
+        },
+        {
+          name: 'Expired timestamp',
+          body: () => signedBody({ overrides: { timestamp: Date.now() - SIGNATURE_MAX_SKEW_MS - 60000 } }),
+          expect: (r) => r.status === 401 && r.body.reason === 'timestamp-out-of-window',
+        },
+        {
+          name: 'Reused nonce',
+          body: () => signedBody({ overrides: { nonce: successBody.nonce } }),
+          expect: (r) => r.status === 409 && r.body.error === 'nonce-reused',
+        },
+        {
+          name: 'Duplicate request ID',
+          body: () => ({ ...successBody }),
+          expect: (r) => r.status === 409 && r.body.error === 'duplicate-request',
+        },
+        {
+          name: 'Unauthorized sender',
+          body: () => signedBody({ signer: outsider, senderId: UNAUTHORIZED_ID }),
+          expect: (r) => r.status === 401 && r.body.error === 'unauthorized sender',
+        },
+      ];
+
+      for (const testCase of cases) {
+        const pre = await snapshot();
+        const result = await send(testCase.body());
+        await delay(1500);
+        const post = await snapshot();
+        const rejected = testCase.expect(result);
+        const noNewTx = unchanged(pre, post);
+        report(
+          rejected && noNewTx && !result.body.txHash,
+          testCase.name,
+          `status=${result.status} error=${result.body.reason || result.body.error || 'none'} newTx=${noNewTx ? 'no' : 'YES'}`
+        );
+        evidence.noSettlement.push({
+          case: testCase.name,
+          httpStatus: result.status,
+          response: result.body,
+          rejected,
+          noNewTransaction: noNewTx,
+          before: pre,
+          after: post,
+        });
+      }
+    }
+  } catch (err) {
+    failures += 1;
+    log('error', 'proof', `Run failed: ${err.message}`);
+  }
+
+  evidence.finishedAt = new Date().toISOString();
+  evidence.result = failures === 0 ? 'PASS' : 'FAIL';
+  try {
+    fs.writeFileSync(path.join(__dirname, 'proof-evidence.json'), JSON.stringify(evidence, null, 2));
+    log('info', 'proof', 'Evidence saved to proof-evidence.json');
+  } catch (err) {
+    log('error', 'proof', `Could not save evidence: ${err.message}`);
+  }
+  log(failures === 0 ? 'ok' : 'error', 'proof', `RESULT: ${evidence.result}`);
+}
+
+async function purgeLegacyPinSecrets() {
+  try {
+    const snap = await usersCol().where('pinWalletSecretEncrypted', '>', '').get();
+    if (snap.empty) return;
+    for (let i = 0; i < snap.docs.length; i += 400) {
+      const batch = db.batch();
+      snap.docs.slice(i, i + 400).forEach((doc) => {
+        batch.update(doc.ref, {
+          pinWalletSecretEncrypted: FieldValue.delete(),
+          pinWalletSecretSalt: FieldValue.delete(),
+          pinWalletSecretIv: FieldValue.delete(),
+        });
+      });
+      await batch.commit();
+    }
+    log('ok', 'security', `Removed PIN-encrypted wallet keys from ${snap.size} user record(s).`);
+  } catch (err) {
+    log('error', 'security', `Legacy key cleanup failed: ${err.message}`);
+  }
+}
+
 app.listen(PORT, () => {
   const rule = paint('90', '-'.repeat(64));
   console.log('');
@@ -1327,6 +1913,7 @@ app.listen(PORT, () => {
   console.log(`  ${paint('90', 'Send path  ')} ${GATEWAY_MESSAGE_PATH}`);
   console.log(`  ${paint('90', 'Webhook    ')} POST /webhook/sms-received`);
   console.log(`  ${paint('90', 'Signed SMS ')} ${REQUIRE_SIGNED_SMS ? 'required' : 'optional (PIN-only accepted)'}`);
+  console.log(`  ${paint('90', 'Soroban    ')} ${SOROBAN_ENABLED ? `${SOROBAN_CONTRACT_ID.slice(0, 8)}...${SOROBAN_CONTRACT_ID.slice(-4)}  ${SOROBAN_RPC_URL}` : '(contract not configured)'}`);
   console.log(rule);
   console.log('');
   if (!GATEWAY_USER || !GATEWAY_PASS) {
@@ -1335,8 +1922,14 @@ app.listen(PORT, () => {
   if (!GATEWAY_WEBHOOK_SECRET) {
     log('warn', 'auth', 'SMS_GATEWAY_WEBHOOK_SECRET is not set — /webhook/sms-received will reject all requests until it is configured.');
   }
+  if (!settlementKeypair) {
+    log('warn', 'settlement', 'SETTLEMENT_SIGNER_SECRET is not set — SMS and signed API payments cannot be settled until it is configured.');
+  }
   if (!ADMIN_API_KEY) {
     log('warn', 'auth', 'ADMIN_API_KEY is not set — /api/relay-transactions* and /api/reconcile-balance are disabled until it is configured.');
+  }
+  if (!SOROBAN_ENABLED) {
+    log('warn', 'soroban', 'SOROBAN_CONTRACT_ID is not set — payments settle on Horizon only, without contract-level settlement recording.');
   }
   if (REQUIRE_SIGNED_SMS) {
     log('info', 'auth', 'REQUIRE_SIGNED_SMS=true -> plain unsigned "SEND" SMS commands are REJECTED. Only signed SMS (SIG <ts> <nonce> <reqId> <sig>) is accepted.');
@@ -1344,4 +1937,7 @@ app.listen(PORT, () => {
     log('warn', 'auth', 'REQUIRE_SIGNED_SMS=false -> plain unsigned "SEND <amount> <recipient> <pin>" SMS is still ACCEPTED (PIN-only auth). Set REQUIRE_SIGNED_SMS=true in .env once the signing app has rolled out.');
   }
   log('info', 'ready', 'Waiting for incoming SMS. Every webhook hit and SMS reply will be logged here.');
+  purgeLegacyPinSecrets();
+  if (REPLAY_CHECK_ENABLED) runReplayCheck();
+  if (PROOF_CHECK_ENABLED) runSettlementProof();
 });

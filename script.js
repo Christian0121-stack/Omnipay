@@ -9,6 +9,7 @@ var firebaseConfig = {
 };
 
 var fbApp, auth, db;
+var API_BASE = (window.location.protocol === 'file:' || !window.location.host) ? 'http://localhost:3000' : '';
 var USERS_COLLECTION = 'users';
 var USERNAME_LOOKUP_COLLECTION = 'usernames';
 try {
@@ -505,6 +506,7 @@ async function doSaveProfile() {
 }
 
 function onRegCountryChange(sel) {
+  syncRegPhoneToCountry();
 }
 
 function _getCountryConfig(country) {
@@ -576,10 +578,124 @@ async function _updateXLMConversion(xlmAmt) {
   }
 }
 
+var OFFLINE_VAULT_KEY = 'omnipay_offline_vault_v1';
+
+function readOfflineVaults() {
+  try { return JSON.parse(localStorage.getItem(OFFLINE_VAULT_KEY)) || {}; } catch (e) { return {}; }
+}
+
+function writeOfflineVaults(map) {
+  try { localStorage.setItem(OFFLINE_VAULT_KEY, JSON.stringify(map)); } catch (e) {}
+}
+
+function saveOfflineVault(username, account, email) {
+  var map = readOfflineVaults();
+  var key = String(username).toLowerCase();
+  var prev = map[key] || {};
+  map[key] = {
+    uid: account.uid,
+    username: account.username || username,
+    name: account.name || username,
+    phone: account.phone || '',
+    email: email || account.email || '',
+    type: account.type || 'personal',
+    country: account.country || '',
+    walletPublic: account.walletPublic || '',
+    walletSecretEncrypted: account.walletSecretEncrypted,
+    walletSecretSalt: account.walletSecretSalt,
+    walletSecretIv: account.walletSecretIv,
+    signerReady: !!prev.signerReady
+  };
+  writeOfflineVaults(map);
+}
+
+function markOfflineSignerReady() {
+  var key = STATE._vaultKey;
+  if (!key) return;
+  var map = readOfflineVaults();
+  if (map[key]) { map[key].signerReady = true; writeOfflineVaults(map); }
+}
+
+function isNetworkFailure(err) {
+  var code = err && err.code ? String(err.code) : '';
+  var msg  = err && err.message ? String(err.message).toLowerCase() : '';
+  return code === 'auth/network-request-failed' || code === 'unavailable' ||
+    msg.indexOf('offline') !== -1 || msg.indexOf('network') !== -1 || msg.indexOf('failed to fetch') !== -1;
+}
+
+async function doOfflineLogin(username, password) {
+  var key   = username.toLowerCase();
+  var vault = readOfflineVaults()[key];
+  if (!vault || !vault.walletSecretEncrypted) {
+    showAlert('red','📴 Offline access is not set up on this device. Sign in once while online.');
+    return false;
+  }
+  showLoading(true, 'Unlocking wallet…');
+  var secret = await decryptWalletSecret(vault.walletSecretEncrypted, vault.walletSecretSalt, vault.walletSecretIv, password);
+  showLoading(false);
+  if (!secret) {
+    showAlert('red','❌ Invalid username or password');
+    var passEl = document.getElementById('loginPass');
+    passEl.classList.add('error');
+    setTimeout(function(){ passEl.classList.remove('error'); }, 2000);
+    return false;
+  }
+  STATE.isLoggedIn  = true;
+  STATE.offlineMode = true;
+  STATE.uid         = vault.uid;
+  STATE._vaultKey   = key;
+  STATE.user = {
+    username: vault.username,
+    name:     vault.name,
+    phone:    vault.phone,
+    email:    vault.email,
+    type:     vault.type,
+    country:  vault.country || '🇵🇭 Philippines'
+  };
+  STATE.wallet = {
+    publicKey:       vault.walletPublic,
+    secretKey:       secret,
+    xlmBalance:      0,
+    contractAddress: ''
+  };
+  if (!Array.isArray(STATE.wallets) || STATE.wallets.length === 0) {
+    STATE.wallets = [{ publicKey: vault.walletPublic, label: 'Primary Wallet', xlmBalance: 0, addedAt: Date.now() }];
+  }
+  STATE.activeWalletIndex = 0;
+  document.getElementById('bottomNav').style.display = 'flex';
+  navTo('pay');
+  setTimeout(function(){
+    var tabs = document.querySelectorAll('.pay-tab');
+    for (var i = 0; i < tabs.length; i++) {
+      if (tabs[i].textContent.indexOf('SMS Pay') !== -1) { switchPayTab('sms', tabs[i]); break; }
+    }
+  }, 60);
+  setFbStatus('', '📴 Offline mode');
+  showAlert('yellow','📴 Offline mode: you can sign and send SMS payments.');
+  return true;
+}
+
+async function prepareSettlementSigner(secretKey) {
+  var vault = readOfflineVaults()[STATE._vaultKey];
+  var ready = !!(vault && vault.signerReady) || !!STATE._settlementSignerReady;
+  if (!navigator.onLine) {
+    if (!ready) showAlert('yellow','⚠️ Signer setup not confirmed on this device. The payment may be rejected until you sign once while online.');
+    return;
+  }
+  try {
+    await ensureSettlementSigner(secretKey);
+    markOfflineSignerReady();
+  } catch (err) {
+    if (ready && isNetworkFailure(err)) return;
+    throw err;
+  }
+}
+
 async function doLogin() {
   var username = document.getElementById('loginUser').value.trim();
   var password = document.getElementById('loginPass').value;
   if (!username || !password) { showAlert('red','⚠️ Enter username and password'); return; }
+  if (!navigator.onLine) { await doOfflineLogin(username, password); return; }
   if (!auth || !db) { showAlert('red','❌ Authentication is unavailable. Refresh and try again.'); return; }
 
   var btn = document.getElementById('loginBtn');
@@ -613,7 +729,15 @@ async function doLogin() {
   showLoading(false);
   if (btn) { btn.disabled = false; btn.textContent = 'Sign In →'; }
 
+  if (!account && loginError && isNetworkFailure(loginError)) {
+    await doOfflineLogin(username, password);
+    return;
+  }
+
   if (account) {
+    saveOfflineVault(username, account, credential.user.email);
+    STATE._vaultKey   = username.toLowerCase();
+    STATE.offlineMode = false;
     STATE.isLoggedIn = true;
     STATE.uid  = credential.user.uid;
     STATE.user = {
@@ -728,6 +852,13 @@ async function doRegister() {
   if (firstEmpty) {
     showAlert('red','⚠️ ' + firstEmpty.label + ' is required');
     if (firstEmpty.el) { firstEmpty.el.focus(); firstEmpty.el.scrollIntoView({ behavior:'smooth', block:'center' }); }
+    return;
+  }
+  var phoneIssue = validateRegPhone(phone);
+  if (phoneIssue) {
+    var phoneEl = document.getElementById('regPhone');
+    if (phoneEl) { phoneEl.classList.add('error'); phoneEl.focus(); phoneEl.scrollIntoView({ behavior:'smooth', block:'center' }); }
+    showAlert('red','⚠️ ' + phoneIssue);
     return;
   }
   if (!terms) { showAlert('orange','📋 Please accept the Terms of Service'); return; }
@@ -1014,6 +1145,7 @@ async function finishWalletSetup() {
     var el = document.getElementById(id);
     if (el) el.value = '';
   });
+  syncRegPhoneToCountry();
   var terms = document.getElementById('regTerms');
   if (terms) terms.checked = false;
 
@@ -1489,7 +1621,7 @@ async function doSendMoney() {
   var amt       = parseFloat(document.getElementById('sendAmount').value);
   var note      = (document.getElementById('sendNote') || {}).value || '';
 
-  if (!recipient)                 { showAlert('red','⚠️ Enter a Stellar recipient address (G…)'); return; }
+  if (!recipient)                 { showAlert('red','⚠️ Search and select a recipient'); return; }
   if (!isFinite(amt) || amt <= 0) { showAlert('red','⚠️ Enter a valid amount'); return; }
   if (amt > STATE.balance)        { showAlert('red','❌ Insufficient balance'); return; }
 
@@ -1600,7 +1732,7 @@ async function executeSendMoney(signedAuth) {
   var amt       = parseFloat(document.getElementById('sendAmount').value);
   var note      = (document.getElementById('sendNote') || {}).value || 'Online payment';
 
-  if (!recipient)          { showAlert('red','⚠️ Enter a Stellar recipient address (G…)'); return; }
+  if (!recipient)          { showAlert('red','⚠️ Search and select a recipient'); return; }
   if (!isFinite(amt) || amt <= 0)    { showAlert('red','⚠️ Enter a valid amount'); return; }
   if (amt > STATE.balance) { showAlert('red','❌ Insufficient balance'); return; }
 
@@ -1713,7 +1845,7 @@ async function executeSendMoney(signedAuth) {
       txXdr = tx.toEnvelope().toXDR('base64');
     }
 
-    var submitResp = await fetch('/api/submit-payment', {
+    var submitResp = await fetch(API_BASE + '/api/submit-payment', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1784,7 +1916,7 @@ async function executeSendMoney(signedAuth) {
 
     var sendBal = document.getElementById('sendBal');
     if (sendBal) sendBal.textContent = (STATE.balance || 0).toFixed(6) + ' XLM';
-    document.getElementById('sendRecipient').value = '';
+    resetSendRecipient();
     document.getElementById('sendAmount').value    = '';
     if (document.getElementById('sendNote')) document.getElementById('sendNote').value = '';
 
@@ -1824,7 +1956,7 @@ async function executeSendMoney(signedAuth) {
 
 async function ensureSettlementSigner(secretKey) {
   if (STATE._settlementSignerReady) return;
-  var cfgResp = await fetch('/api/settlement-signer');
+  var cfgResp = await fetch(API_BASE + '/api/settlement-signer');
   if (!cfgResp.ok) throw new Error('SMS settlement is not available right now.');
   var cfg = await cfgResp.json();
   var keypair = StellarSdk.Keypair.fromSecret(secretKey);
@@ -1873,7 +2005,7 @@ async function doSignAndPrepareSms() {
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Signing…'; }
 
   try {
-    await ensureSettlementSigner(secretKey);
+    await prepareSettlementSigner(secretKey);
 
     var amtStr      = amt.toFixed(7);
     var timestamp   = Date.now();
@@ -2001,7 +2133,7 @@ function doPaymentSuccess(amt, merchant, mode, nonce) {
     });
     var sendR = document.getElementById('sendRecipient');
     var sendN = document.getElementById('sendNote');
-    if (sendR) sendR.value = '';
+    if (sendR) resetSendRecipient();
     if (sendN) sendN.value = '';
   }
   saveSession();
@@ -3003,7 +3135,7 @@ function handleQRResult(data) {
       var rEl = document.getElementById('sendRecipient');
       var aEl = document.getElementById('sendAmount');
       var nEl = document.getElementById('sendNote');
-      if (rEl) { rEl.value = address; rEl.style.borderColor = 'var(--success)'; }
+      if (rEl) { setSendRecipientFromAddress(address); }
       if (aEl && amount) {
         aEl.value = amount.toFixed(7);
         aEl.style.borderColor = 'var(--success)';
@@ -3160,9 +3292,10 @@ function nextRegStep() {
   var ok = true;
   if (!first)  { document.getElementById('regFirst').classList.add('error'); ok = false; }
   if (!last)   { document.getElementById('regLast').classList.add('error');  ok = false; }
-  if (!phone)  { document.getElementById('regPhone').classList.add('error'); ok = false; }
+  var phoneError = phone ? validateRegPhone(phone) : '';
+  if (!phone || phoneError) { document.getElementById('regPhone').classList.add('error'); ok = false; }
   if (!email || !email.includes('@')) { document.getElementById('regEmail').classList.add('error'); ok = false; }
-  if (!ok) { showAlert('red','⚠️ Please fill in all Personal Information fields correctly'); return; }
+  if (!ok) { showAlert('red', phoneError ? '⚠️ ' + phoneError : '⚠️ Please fill in all Personal Information fields correctly'); return; }
 
   document.getElementById('regStep1').style.display = 'none';
   document.getElementById('regStep2').style.display = 'block';
@@ -3605,4 +3738,262 @@ function showOmniLinkDetails() {
 
 function renderVault() {
   updateOmniCardUI();
+}
+
+window.addEventListener('offline', function(){ showAlert('yellow','📴 You are offline'); });
+window.addEventListener('online', function(){ showAlert('green','🟢 Back online'); });
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function(){
+    navigator.serviceWorker.register('sw.js').catch(function(){});
+  });
+}
+
+/* ---------- Mobile number (registration) ---------- */
+var PH_PHONE_PREFIX = '+63 9';
+
+function isRegPhilippines() {
+  var sel = document.getElementById('regCountry');
+  return !!sel && /philippines/i.test(sel.value || '');
+}
+
+function formatPhPhone(raw) {
+  var digits = String(raw || '').replace(/\D/g, '');
+  if (digits.indexOf('63') === 0) digits = digits.slice(2);
+  else if (digits.charAt(0) === '0') digits = digits.slice(1);
+  if (digits.charAt(0) === '9') digits = digits.slice(1);
+  var rest = digits.slice(0, 9);
+  var out = PH_PHONE_PREFIX + rest.slice(0, 2);
+  if (rest.length > 2) out += ' ' + rest.slice(2, 5);
+  if (rest.length > 5) out += ' ' + rest.slice(5, 9);
+  return out;
+}
+
+function onRegPhoneInput(el) {
+  if (!el) return;
+  var next;
+  if (isRegPhilippines()) {
+    next = formatPhPhone(el.value);
+  } else {
+    next = String(el.value || '').replace(/[^\d+\s()-]/g, '');
+  }
+  if (next !== el.value) el.value = next;
+}
+
+function onRegPhoneFocus(el) {
+  if (!el || !isRegPhilippines()) return;
+  setTimeout(function () {
+    try { el.setSelectionRange(el.value.length, el.value.length); } catch (e) {}
+  }, 0);
+}
+
+function syncRegPhoneToCountry() {
+  var el = document.getElementById('regPhone');
+  if (!el) return;
+  if (isRegPhilippines()) {
+    el.placeholder = '+63 9XX XXX XXXX';
+    el.maxLength = 20;
+    var current = String(el.value || '').replace(/\s/g, '');
+    el.value = /^(\+?63|0?9)/.test(current) ? formatPhPhone(el.value) : PH_PHONE_PREFIX;
+  } else {
+    el.placeholder = 'e.g. +1 555 123 4567';
+    el.maxLength = 24;
+    if (String(el.value || '').trim() === PH_PHONE_PREFIX) el.value = '';
+  }
+}
+
+function validateRegPhone(phone) {
+  var value = String(phone || '').trim();
+  if (isRegPhilippines()) {
+    if (!/^\+63 9\d{2} \d{3} \d{4}$/.test(value)) return 'Enter your complete mobile number (+63 9XX XXX XXXX)';
+    return '';
+  }
+  var digits = value.replace(/\D/g, '');
+  if (digits.length < 7 || digits.length > 15) return 'Enter a valid mobile number with country code';
+  return '';
+}
+
+(function () {
+  function initRegPhone() { syncRegPhoneToCountry(); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initRegPhone);
+  else initRegPhone();
+})();
+
+/* ---------- Recipient search ---------- */
+var RECIPIENT_SEARCH = { timers: {}, seq: {} };
+
+function recipientInitials(name) {
+  var parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  var first = parts[0].charAt(0);
+  var last = parts.length > 1 ? parts[parts.length - 1].charAt(0) : '';
+  return (first + last).toUpperCase();
+}
+
+function recipientShortKey(key) {
+  var k = String(key || '');
+  return k.length > 14 ? k.slice(0, 6) + '…' + k.slice(-6) : k;
+}
+
+async function fetchRecipientMatches(query) {
+  if (!navigator.onLine) throw new Error('offline');
+  if (!auth || !auth.currentUser) throw new Error('signed-out');
+  var token = await auth.currentUser.getIdToken();
+  var resp = await fetch(API_BASE + '/api/search-recipients?q=' + encodeURIComponent(query), {
+    headers: { 'Authorization': 'Bearer ' + token }
+  });
+  if (!resp.ok) throw new Error('http-' + resp.status);
+  var data = await resp.json();
+  return { results: Array.isArray(data.results) ? data.results : [], selfMatch: !!data.selfMatch };
+}
+
+function recipientSearchError(err, offlineHint) {
+  var msg = err && err.message;
+  if (msg === 'offline') return offlineHint;
+  if (msg === 'signed-out') return 'Sign in online to search for recipients.';
+  return 'Search is unavailable right now. Please try again.';
+}
+
+function hideRecipientResults(boxId) {
+  var box = document.getElementById(boxId);
+  if (!box) return;
+  box.innerHTML = '';
+  box.style.display = 'none';
+}
+
+function renderRecipientResults(boxId, results, message, onPick) {
+  var box = document.getElementById(boxId);
+  if (!box) return;
+  box.innerHTML = '';
+  box.style.display = 'block';
+  if (message) {
+    var note = document.createElement('div');
+    note.className = 'recipient-empty';
+    note.textContent = message;
+    box.appendChild(note);
+  }
+  results.forEach(function (r) {
+    var displayName = r.name || r.username || 'OmniPay user';
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'recipient-item';
+    btn.setAttribute('role', 'option');
+
+    var avatar = document.createElement('div');
+    avatar.className = 'recipient-avatar';
+    avatar.textContent = recipientInitials(displayName);
+
+    var info = document.createElement('div');
+    info.className = 'recipient-info';
+    var nameEl = document.createElement('div');
+    nameEl.className = 'recipient-name';
+    nameEl.textContent = displayName;
+    var subEl = document.createElement('div');
+    subEl.className = 'recipient-sub';
+    var subParts = [];
+    if (r.username) subParts.push('@' + r.username);
+    if (r.phone) subParts.push(r.phone);
+    subEl.textContent = subParts.join(' · ');
+    info.appendChild(nameEl);
+    info.appendChild(subEl);
+
+    btn.appendChild(avatar);
+    btn.appendChild(info);
+    btn.addEventListener('click', function () { onPick(r); });
+    box.appendChild(btn);
+  });
+}
+
+function scheduleRecipientSearch(key, boxId, value, onPick, offlineHint) {
+  clearTimeout(RECIPIENT_SEARCH.timers[key]);
+  var q = String(value || '').trim();
+  RECIPIENT_SEARCH.seq[key] = (RECIPIENT_SEARCH.seq[key] || 0) + 1;
+  if (q.length < 2) { hideRecipientResults(boxId); return; }
+  var seq = RECIPIENT_SEARCH.seq[key];
+  RECIPIENT_SEARCH.timers[key] = setTimeout(async function () {
+    renderRecipientResults(boxId, [], 'Searching…', onPick);
+    try {
+      var found = await fetchRecipientMatches(q);
+      var results = found.results;
+      if (seq !== RECIPIENT_SEARCH.seq[key]) return;
+      var emptyMsg = found.selfMatch
+        ? 'That is your own account. Search for someone else to send to.'
+        : 'No users found. Check the spelling or try a username or mobile number.';
+      renderRecipientResults(boxId, results, results.length ? '' : emptyMsg, onPick);
+    } catch (err) {
+      if (seq !== RECIPIENT_SEARCH.seq[key]) return;
+      renderRecipientResults(boxId, [], recipientSearchError(err, offlineHint), onPick);
+    }
+  }, 300);
+}
+
+function fillSendRecipientChip(name, sub, initials) {
+  var wrap = document.getElementById('sendRecipientSearchWrap');
+  var chip = document.getElementById('sendRecipientChip');
+  var nameEl = document.getElementById('sendRecipientName');
+  var subEl = document.getElementById('sendRecipientSub');
+  var avatar = document.getElementById('sendRecipientAvatar');
+  if (nameEl) nameEl.textContent = name;
+  if (subEl) subEl.textContent = sub;
+  if (avatar) avatar.textContent = initials;
+  if (wrap) wrap.style.display = 'none';
+  if (chip) chip.style.display = 'flex';
+}
+
+function onSendRecipientSearch(input) {
+  if (input) input.classList.remove('error');
+  scheduleRecipientSearch('send', 'sendRecipientResults', input ? input.value : '', pickSendRecipient, 'Search needs an internet connection.');
+}
+
+function pickSendRecipient(r) {
+  var hidden = document.getElementById('sendRecipient');
+  if (hidden) hidden.value = normalizeStellarPublicKey(r.walletPublic);
+  var displayName = r.name || r.username || 'OmniPay user';
+  var sub = (r.username ? '@' + r.username + ' · ' : '') + recipientShortKey(r.walletPublic);
+  fillSendRecipientChip(displayName, sub, recipientInitials(displayName));
+  hideRecipientResults('sendRecipientResults');
+}
+
+function resetSendRecipient() {
+  var hidden = document.getElementById('sendRecipient');
+  var search = document.getElementById('sendRecipientSearch');
+  var wrap = document.getElementById('sendRecipientSearchWrap');
+  var chip = document.getElementById('sendRecipientChip');
+  if (hidden) hidden.value = '';
+  if (search) { search.value = ''; search.classList.remove('error'); }
+  if (chip) chip.style.display = 'none';
+  if (wrap) wrap.style.display = '';
+  RECIPIENT_SEARCH.seq.send = (RECIPIENT_SEARCH.seq.send || 0) + 1;
+  hideRecipientResults('sendRecipientResults');
+}
+
+function changeSendRecipient() {
+  resetSendRecipient();
+  var search = document.getElementById('sendRecipientSearch');
+  if (search) search.focus();
+}
+
+function setSendRecipientFromAddress(address) {
+  var addr = normalizeStellarPublicKey(address);
+  var hidden = document.getElementById('sendRecipient');
+  if (!hidden || !addr) return;
+  hidden.value = addr;
+  fillSendRecipientChip('Wallet address', recipientShortKey(addr), '⭐');
+  fetchRecipientMatches(addr).then(function (found) {
+    if (hidden.value !== addr) return;
+    var match = found.results.filter(function (r) { return r.walletPublic === addr; })[0];
+    if (!match) return;
+    var displayName = match.name || match.username || 'OmniPay user';
+    fillSendRecipientChip(displayName, (match.username ? '@' + match.username + ' · ' : '') + recipientShortKey(addr), recipientInitials(displayName));
+  }).catch(function () {});
+}
+
+function onSmsRecipientSearch(input) {
+  scheduleRecipientSearch('sms', 'smsRecipientResults', input ? input.value : '', pickSmsRecipient, 'Search is unavailable offline. Type the username or mobile number instead.');
+}
+
+function pickSmsRecipient(r) {
+  var input = document.getElementById('smsRecipient');
+  if (input) input.value = r.username || '';
+  hideRecipientResults('smsRecipientResults');
 }

@@ -20,6 +20,7 @@ const axios = require('axios');
 const crypto = require('crypto');
 const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
+const { getAuth } = require('firebase-admin/auth');
 const StellarSdk = require('stellar-sdk');
 
 const COLOR_ENABLED = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
@@ -1246,6 +1247,123 @@ function requireAdminKey(req, res, next) {
   }
   next();
 }
+const RECIPIENT_DIRECTORY_TTL_MS = 30 * 1000;
+let recipientDirectory = { loadedAt: 0, rows: [] };
+
+const recipientSearchLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too many requests, please try again later' },
+});
+
+async function requireUserToken(req, res, next) {
+  const match = String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
+  if (!match) return res.status(401).json({ error: 'authentication required' });
+  try {
+    const decoded = await getAuth().verifyIdToken(match[1]);
+    req.authUid = decoded.uid;
+    return next();
+  } catch (err) {
+    return res.status(401).json({ error: 'invalid or expired session' });
+  }
+}
+
+async function loadRecipientDirectory(force = false) {
+  if (!force && Date.now() - recipientDirectory.loadedAt < RECIPIENT_DIRECTORY_TTL_MS) return recipientDirectory.rows;
+  const snap = await usersCol().select('name', 'username', 'phone', 'walletPublic').get();
+  const rows = snap.docs
+    .map((doc) => {
+      const u = doc.data() || {};
+      const name = String(u.name || '').trim();
+      const username = String(u.username || '').trim();
+      const phone = String(u.phone || '').trim();
+      return {
+        uid: doc.id,
+        name,
+        nameLower: name.toLowerCase(),
+        username,
+        usernameLower: username.toLowerCase(),
+        phone,
+        phoneDigits: phone.replace(/\D/g, ''),
+        phoneNational: phone.replace(/\D/g, '').replace(/^(63|0)/, ''),
+        walletPublic: String(u.walletPublic || '').trim(),
+      };
+    })
+    .filter((row) => StellarSdk.StrKey.isValidEd25519PublicKey(row.walletPublic));
+  recipientDirectory = { loadedAt: Date.now(), rows };
+  return rows;
+}
+
+function maskPhone(phone) {
+  const s = String(phone || '').replace(/\s/g, '');
+  if (s.length <= 6) return s;
+  return s.slice(0, 4) + '•'.repeat(s.length - 7) + s.slice(-3);
+}
+
+function searchRecipientRows(rows, q) {
+  const needle = q.replace(/^@/, '').toLowerCase();
+  const tokens = needle.split(/\s+/).filter(Boolean);
+  const phoneLike = /^[+\d\s().-]+$/.test(q);
+  const qDigits = phoneLike ? q.replace(/\D/g, '') : '';
+  const qNational = qDigits.replace(/^(63|0)/, '');
+  const walletQuery = StellarSdk.StrKey.isValidEd25519PublicKey(q.toUpperCase()) ? q.toUpperCase() : '';
+
+  const scored = [];
+  for (const row of rows) {
+    let score = null;
+    const consider = (value) => { if (score === null || value < score) score = value; };
+
+    if (walletQuery && row.walletPublic === walletQuery) consider(0);
+    if (row.usernameLower) {
+      if (row.usernameLower === needle) consider(1);
+      else if (row.usernameLower.startsWith(needle)) consider(2);
+      else if (row.usernameLower.includes(needle)) consider(4);
+    }
+    if (row.nameLower) {
+      if (row.nameLower === needle) consider(1);
+      else if (row.nameLower.startsWith(needle)) consider(2);
+      else if (tokens.length && tokens.every((t) => row.nameLower.includes(t))) consider(3);
+    }
+    if (qDigits.length >= 3 && row.phoneDigits) {
+      if (row.phoneDigits.includes(qDigits) || (qNational.length >= 3 && row.phoneNational.includes(qNational))) {
+        consider(row.phoneNational === qNational || row.phoneDigits === qDigits ? 1 : 3);
+      }
+    }
+    if (score !== null) scored.push({ score, row });
+  }
+  scored.sort((a, b) => a.score - b.score || a.row.nameLower.localeCompare(b.row.nameLower));
+  return { matches: scored.map((s) => s.row), revealPhone: qDigits.length >= 7 };
+}
+
+app.get('/api/search-recipients', recipientSearchLimiter, requireUserToken, async (req, res) => {
+  const q = String(req.query.q || '').trim().slice(0, 64);
+  if (q.length < 2) return res.json({ results: [] });
+
+  try {
+    let rows = await loadRecipientDirectory();
+    let found = searchRecipientRows(rows, q);
+    if (!found.matches.length) {
+      rows = await loadRecipientDirectory(true);
+      found = searchRecipientRows(rows, q);
+    }
+    const others = found.matches.filter((row) => row.uid !== req.authUid);
+    const selfMatch = others.length === 0 && found.matches.length > 0;
+    const results = others.slice(0, 8).map((row) => ({
+      uid: row.uid,
+      name: row.name || row.username,
+      username: row.username,
+      phone: found.revealPhone ? row.phone : maskPhone(row.phone),
+      walletPublic: row.walletPublic,
+    }));
+    return res.json({ results, selfMatch });
+  } catch (err) {
+    log('error', 'search', `Recipient search failed: ${err.message}`);
+    return res.status(500).json({ error: 'search unavailable' });
+  }
+});
+
 app.post('/webhook/sms-received', async (req, res) => {
   log('info', 'webhook', `Request received from ${req.ip}`);
 

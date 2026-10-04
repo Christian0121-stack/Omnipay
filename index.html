@@ -4,6 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="theme-color" content="#2563EB">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="OMNIPAY%20LOGO%204.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="OmniPay">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <script>try{if(localStorage.getItem('omnipay_theme_v2')!=='light')document.documentElement.style.background='#04091A';}catch(e){document.documentElement.style.background='#04091A';}</script>
 <title>OmniPay — Disaster-Resilient Payments</title>
@@ -165,7 +171,7 @@
         </div>
         <div class="input-group">
           <label>Mobile Number</label>
-          <input type="tel" id="regPhone" placeholder="+63 9XX XXX XXXX" oninput="this.classList.remove('error')">
+          <input type="tel" id="regPhone" value="+63 9" placeholder="+63 9XX XXX XXXX" inputmode="tel" autocomplete="tel" maxlength="20" oninput="this.classList.remove('error');onRegPhoneInput(this)" onfocus="onRegPhoneFocus(this)">
         </div>
         <div class="input-group">
           <label>Email Address</label>
@@ -496,12 +502,24 @@
 
     <div class="pay-panel" id="panel-send">
       <div class="input-group">
-        <label>Recipient Wallet Address</label>
-        <div class="input-wrapper">
-        <input type="text" id="sendRecipient" placeholder="G… (56 characters)" aria-label="Recipient Stellar public address" style="font-family:'Courier New',monospace;font-size:12px;letter-spacing:0.3px;" autocomplete="off" spellcheck="false" oninput="this.classList.remove('error')">
-          <button class="input-toggle" title="Paste" onclick="navigator.clipboard.readText().then(function(t){document.getElementById('sendRecipient').value=t;}).catch(function(){showAlert('yellow','Use long-press to paste');});" style="font-size:13px;">📋</button>
+        <label>Recipient</label>
+        <input type="hidden" id="sendRecipient" value="">
+        <div id="sendRecipientSearchWrap">
+          <div class="recipient-search">
+            <span class="recipient-search-icon" aria-hidden="true">🔍</span>
+            <input type="text" id="sendRecipientSearch" placeholder="Search name, username or mobile number" aria-label="Search recipient by full name, username or mobile number" autocomplete="off" spellcheck="false" oninput="onSendRecipientSearch(this)">
+          </div>
+          <div class="recipient-results" id="sendRecipientResults" style="display:none;" role="listbox"></div>
+          <div class="recipient-hint">Search by full name, username or mobile number</div>
         </div>
-        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;font-weight:500;">Starts with G · exactly 56 characters · Testnet account must be funded</div>
+        <div class="recipient-chip" id="sendRecipientChip" style="display:none;">
+          <div class="recipient-avatar" id="sendRecipientAvatar">?</div>
+          <div class="recipient-info">
+            <div class="recipient-name" id="sendRecipientName"></div>
+            <div class="recipient-sub" id="sendRecipientSub"></div>
+          </div>
+          <button type="button" class="recipient-change" onclick="changeSendRecipient()">Change</button>
+        </div>
       </div>
       <div style="margin-top:20px; text-align:center;">
         <div class="amount-currency">Amount · XLM</div>
@@ -542,8 +560,9 @@
         <input type="tel" id="smsRelayNumber" placeholder="e.g. +639171234567" autocomplete="off" spellcheck="false">
       </div>
       <div class="input-group mt-16">
-        <label>Recipient (Username or Phone)</label>
-        <input type="text" id="smsRecipient" placeholder="e.g. juan or +639171234567" autocomplete="off" spellcheck="false">
+        <label>Recipient (Name, Username or Phone)</label>
+        <input type="text" id="smsRecipient" placeholder="Search name, username or phone" autocomplete="off" spellcheck="false" oninput="onSmsRecipientSearch(this)">
+        <div class="recipient-results" id="smsRecipientResults" style="display:none;" role="listbox"></div>
       </div>
       <div style="margin-top:20px; text-align:center;">
         <div class="amount-currency">Amount · XLM</div>

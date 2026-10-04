@@ -2281,3 +2281,67 @@
     html { scroll-behavior: auto; }
     .card, .tx-item, .settings-item, .wallet-row, .btn, .pay-tab { transition: none; }
   }
+
+  .recipient-search { position: relative; }
+  .input-group .recipient-search input { padding-left: 44px; padding-right: 17px; }
+  .recipient-search-icon {
+    position: absolute; left: 16px; top: 50%; transform: translateY(-50%);
+    font-size: 15px; opacity: 0.7; pointer-events: none;
+  }
+  .recipient-hint { font-size: 11px; color: var(--text-muted); margin-top: 6px; font-weight: 500; }
+  .recipient-results {
+    margin-top: 8px;
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--card);
+    box-shadow: var(--shadow);
+    max-height: 252px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .recipient-item {
+    display: flex; align-items: center; gap: 12px;
+    width: 100%; min-height: 58px;
+    padding: 10px 14px;
+    background: none; border: none; border-bottom: 1px solid var(--border);
+    text-align: left; cursor: pointer;
+    font-family: inherit; color: var(--text);
+    transition: background 0.18s;
+  }
+  .recipient-item:last-child { border-bottom: none; }
+  .recipient-item:hover,
+  .recipient-item:focus-visible { background: var(--primary-light); outline: none; }
+  .recipient-avatar {
+    flex: 0 0 38px; width: 38px; height: 38px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 800; color: #fff;
+    background: linear-gradient(135deg, var(--primary), var(--accent));
+  }
+  .recipient-info { min-width: 0; flex: 1; }
+  .recipient-name {
+    font-size: 14px; font-weight: 700; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .recipient-sub {
+    font-size: 12px; color: var(--text-muted); margin-top: 2px; font-weight: 500;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .recipient-empty {
+    padding: 14px 16px; font-size: 13px; font-weight: 500;
+    color: var(--text-muted); text-align: center; line-height: 1.5;
+  }
+  .recipient-chip {
+    align-items: center; gap: 12px;
+    padding: 12px 14px;
+    border: 1.5px solid var(--success);
+    border-radius: var(--radius-sm);
+    background: var(--card);
+  }
+  .recipient-change {
+    flex: 0 0 auto;
+    background: none; border: 1.5px solid var(--border);
+    color: var(--primary); font-size: 12px; font-weight: 700;
+    padding: 8px 14px; border-radius: 99px; cursor: pointer;
+    font-family: inherit; transition: border-color 0.2s, background 0.2s;
+  }
+  .recipient-change:hover { border-color: var(--primary); background: var(--primary-light); }

@@ -65,6 +65,8 @@ const SOROBAN_CONTRACT_ID = (process.env.SOROBAN_CONTRACT_ID || '').trim();
 const SOROBAN_SETTLE_FUNCTION = (process.env.SOROBAN_SETTLE_FUNCTION || 'settle').trim();
 const SOROBAN_POLL_ATTEMPTS = parseInt(process.env.SOROBAN_POLL_ATTEMPTS, 10) || 30;
 const SOROBAN_POLL_INTERVAL_MS = parseInt(process.env.SOROBAN_POLL_INTERVAL_MS, 10) || 1000;
+const SOROBAN_SEND_ATTEMPTS = parseInt(process.env.SOROBAN_SEND_ATTEMPTS, 10) || 3;
+const SOROBAN_SEND_RETRY_DELAY_MS = parseInt(process.env.SOROBAN_SEND_RETRY_DELAY_MS, 10) || 1500;
 const SOROBAN_ENABLED = Boolean(SOROBAN_CONTRACT_ID);
 const SETTLEMENT_SIGNER_SECRET = (process.env.SETTLEMENT_SIGNER_SECRET || '').trim();
 let settlementKeypair = null;
@@ -253,7 +255,11 @@ async function invokeSorobanSettlement(senderPublicKey, recipientPublicKey, amou
   const prepared = await sorobanServer.prepareTransaction(tx);
   prepared.sign(requireSettlementSigner());
 
-  const submission = await sorobanServer.sendTransaction(prepared);
+  let submission = await sorobanServer.sendTransaction(prepared);
+  for (let attempt = 1; submission.status === 'TRY_AGAIN_LATER' && attempt < SOROBAN_SEND_ATTEMPTS; attempt += 1) {
+    await delay(SOROBAN_SEND_RETRY_DELAY_MS * attempt);
+    submission = await sorobanServer.sendTransaction(prepared);
+  }
   if (submission.status === 'ERROR' || submission.status === 'TRY_AGAIN_LATER') {
     throw new Error(`soroban-submit-${String(submission.status).toLowerCase()}`);
   }
@@ -947,7 +953,7 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: claim.reason || 'duplicate-request' });
           if (claim.reason === 'claim-error') {
             await sendSms(senderPhone, 'OmniPay: Could not process your request right now. Nothing was deducted. Please try again.');
-          } else if (claim.reason === 'invalid-requestid') {
+          } else if (['invalid-requestid', 'invalid-nonce'].includes(claim.reason)) {
             await sendSms(senderPhone, 'OmniPay: Invalid request. Payment not sent.');
           } else if (['duplicate-request', 'nonce-reused'].includes(claim.reason)) {
             await sendSms(senderPhone, 'OmniPay: Duplicate request ignored. No additional payment was made.');
@@ -1085,7 +1091,14 @@ app.use(
           'https://firestore.googleapis.com',
           'https://identitytoolkit.googleapis.com',
           'https://securetoken.googleapis.com',
+          'https://www.gstatic.com',
+          'https://cdnjs.cloudflare.com',
+          'https://cdn.jsdelivr.net',
+          'https://fonts.googleapis.com',
+          'https://fonts.gstatic.com',
         ],
+        workerSrc: ["'self'"],
+        manifestSrc: ["'self'"],
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
         frameAncestors: ["'none'"],
@@ -1116,6 +1129,21 @@ app.use(
   })
 );
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const PWA_FILES = {
+  'sw.js': 'application/javascript; charset=utf-8',
+  'manifest.webmanifest': 'application/manifest+json; charset=utf-8',
+};
+Object.keys(PWA_FILES).forEach((name) => {
+  app.get('/' + name, (_req, res) => {
+    const inPublic = path.join(PUBLIC_DIR, name);
+    const filePath = fs.existsSync(inPublic) ? inPublic : path.join(__dirname, name);
+    if (!fs.existsSync(filePath)) return res.status(404).end();
+    res.set('Content-Type', PWA_FILES[name]);
+    res.set('Cache-Control', 'no-cache');
+    if (name === 'sw.js') res.set('Service-Worker-Allowed', '/');
+    return res.sendFile(filePath);
+  });
+});
 if (fs.existsSync(PUBLIC_DIR)) {
   app.use(express.static(PUBLIC_DIR, { index: 'index.html', dotfiles: 'ignore' }));
 } else {
@@ -1409,7 +1437,7 @@ app.post('/api/send', paymentEndpointLimiter, async (req, res) => {
     await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: claim.reason || 'claim-error' });
     let status = 500;
     if (['duplicate-request', 'nonce-reused'].includes(claim.reason)) status = 409;
-    else if (claim.reason === 'invalid-requestid') status = 400;
+    else if (['invalid-requestid', 'invalid-nonce'].includes(claim.reason)) status = 400;
     const replayed = ['duplicate-request', 'nonce-reused'].includes(claim.reason);
     return res.status(status).json({
       error: claim.reason || 'could not process request',

@@ -269,6 +269,28 @@ async function invokeSorobanSettlement(senderPublicKey, recipientPublicKey, amou
   return submission.hash;
 }
 
+const SOROBAN_NON_RETRYABLE = ['soroban-confirmation-timeout', 'soroban-transaction-failed'];
+
+const SOROBAN_ALREADY_RECORDED = /Error\(Contract, #2\)|AlreadyRecorded/;
+
+async function recordSettlementWithRetry(senderPublicKey, destinationPublicKey, amount, requestId) {
+  let lastErr = null;
+  for (let attempt = 1; attempt <= SOROBAN_SEND_ATTEMPTS; attempt += 1) {
+    try {
+      return await invokeSorobanSettlement(senderPublicKey, destinationPublicKey, amount, requestId);
+    } catch (err) {
+      if (SOROBAN_ALREADY_RECORDED.test(String(err.message))) {
+        log('info', 'soroban', `Request ${requestId} is already recorded on the contract.`);
+        return null;
+      }
+      lastErr = err;
+      if (SOROBAN_NON_RETRYABLE.includes(err.message) || attempt === SOROBAN_SEND_ATTEMPTS) break;
+      await delay(SOROBAN_SEND_RETRY_DELAY_MS * attempt);
+    }
+  }
+  throw lastErr;
+}
+
 const OmniPayBackend = {
   async settlePayment(senderPublicKey, destinationPublicKey, amount) {
     return sendStellarPayment(senderPublicKey, destinationPublicKey, amount);
@@ -751,10 +773,13 @@ async function executeSend({ sender, recipient, amount, mode, relayId, requestId
   try {
     await updateRelayStatus(relayId, RELAY_STATUS.SUBMITTED);
 
+    const txHash = await OmniPayBackend.settlePayment(sender.walletPublic, recipient.walletPublic, amount);
+    await updateRelayStatus(relayId, RELAY_STATUS.CONFIRMED, { txHash });
+
     let sorobanTxHash = null;
     if (SOROBAN_ENABLED) {
       try {
-        sorobanTxHash = await OmniPayBackend.recordSettlement(
+        sorobanTxHash = await recordSettlementWithRetry(
           sender.walletPublic,
           recipient.walletPublic,
           amount,
@@ -763,19 +788,19 @@ async function executeSend({ sender, recipient, amount, mode, relayId, requestId
         await updateRelayFields(relayId, {
           sorobanTxHash,
           sorobanContractId: SOROBAN_CONTRACT_ID,
+          sorobanRecordStatus: 'recorded',
         });
-       /* log('ok', 'soroban', `Settlement recorded on contract ${SOROBAN_CONTRACT_ID.slice(0, 8)}... | tx ${sorobanTxHash.slice(0, 12)}...`);*/
       } catch (sorobanErr) {
-        const sorobanDetail = `soroban:${sorobanErr.message}`;
-        log('error', 'soroban', `Contract invocation failed: ${sorobanErr.message}`);
-        await logEvent(sender.id, '❌', `${channelNote} payment blocked: contract settlement failed`, 'error');
-        await updateRelayStatus(relayId, RELAY_STATUS.FAILED, { detail: sorobanDetail });
-        return { ok: false, code: 'soroban-failed', detail: sorobanDetail, relayId };
+        log('error', 'soroban', `Contract record failed after payment ${txHash.slice(0, 12)}... settled: ${sorobanErr.message}`);
+        await updateRelayFields(relayId, {
+          sorobanContractId: SOROBAN_CONTRACT_ID,
+          sorobanRecordStatus: 'failed',
+          sorobanRecordError: `soroban:${sorobanErr.message}`,
+        });
+        await logEvent(sender.id, '⚠️', `${channelNote} payment settled; contract record pending`, 'warn');
       }
     }
 
-    const txHash = await OmniPayBackend.settlePayment(sender.walletPublic, recipient.walletPublic, amount);
-    await updateRelayStatus(relayId, RELAY_STATUS.CONFIRMED, { txHash });
     const senderPublicKey = sender.walletPublic;
     const [chainSenderBal, chainRecipientBal] = await Promise.all([
       getStellarNativeBalance(senderPublicKey),

@@ -4,14 +4,14 @@ Node.js service that lets an OmniPay user send a Stellar Testnet payment by
 plain SMS — no internet connection needed on the sender's phone. An Android
 device running the [android-sms-gateway](https://docs.sms-gate.app) app
 receives the SMS and forwards it to this server over a webhook; this server
-validates the request, records the settlement through a Soroban smart contract,
-executes the payment on the Stellar Testnet, records every step in Firestore
+validates the request, executes the payment on the Stellar Testnet, records the
+settlement through a Soroban smart contract, records every step in Firestore
 for the monitoring dashboard, and texts a confirmation back.
 
 ```
 Phone A (no internet) --SMS--> Gateway Phone (android-sms-gateway)
      --HTTP webhook--> THIS SERVER --> Firestore (lookup + record)
-     --> Soroban settle() + Stellar Testnet payment --> Firestore (update)
+     --> Stellar Testnet payment + Soroban settle() --> Firestore (update)
      --HTTP (Basic Auth)--> Gateway Phone --SMS--> Recipient (confirmation)
 ```
 
@@ -21,6 +21,10 @@ Instaward SOW — OmniPay (THE MOON PROJECT), Week 2 deliverable: *"Functional
 SMS Relay with authenticated request validation, replay protection, Soroban
 integration, and successful SMS transaction testing."* See [Status](#status)
 for what is done and what is still open.
+
+Week 3 deliverable: Soroban settlement contract deployed on Stellar Testnet,
+with the contract ID, source code in this repo and a settlement order review.
+See [Soroban settlement contract](#soroban-settlement-contract).
 
 ## Requirements
 
@@ -75,6 +79,8 @@ Set each variable **once** in `.env`.
 | `SOROBAN_SETTLE_FUNCTION` | no | Contract function invoked for settlement. Default `settle`. |
 | `SOROBAN_POLL_ATTEMPTS` | no | Confirmation polling attempts. Default `30`. |
 | `SOROBAN_POLL_INTERVAL_MS` | no | Delay between polling attempts. Default `1000`. |
+| `SOROBAN_SEND_ATTEMPTS` | no | Attempts when submitting the contract call. Default `3`. |
+| `SOROBAN_SEND_RETRY_DELAY_MS` | no | Base delay between submit retries. Default `1500`. |
 | `SMS_ASSET_LABEL` | no | Display label for the asset in SMS replies. Default `XLM`. |
 | `REQUIRE_SIGNED_SMS` | no | `true`/`false`. When `true`, plain unsigned `SEND` SMS commands are rejected — see [Authentication](#authentication). Default `true`. |
 | `ALLOWED_ORIGINS` | no | Comma-separated list of allowed CORS origins. |
@@ -272,9 +278,60 @@ reason):
 | Tampered | Change the amount in the line after signing | `validation_failed`, detail `bad-signature:signature-mismatch` |
 | Wrong key | Sign with a different secret | `validation_failed`, detail `bad-signature:signature-mismatch` |
 
+## Soroban settlement contract
+
+| | |
+|---|---|
+| Network | Stellar Testnet |
+| Contract ID | `CAGJZAZP2JYN2SORQ2XNBX4KS33ATNSBHYVHQ2Y5U5FLERCKNSEUTG4I` |
+| Explorer | [View on Stellar Expert](https://stellar.expert/explorer/testnet/contract/CAGJZAZP2JYN2SORQ2XNBX4KS33ATNSBHYVHQ2Y5U5FLERCKNSEUTG4I) |
+| Source | [`contract/src/lib.rs`](contract/src/lib.rs) |
+| Tests | [`contract/src/test.rs`](contract/src/test.rs) |
+
+The contract keeps an on-chain record of each settlement, keyed by `requestId`.
+
+| Function | Purpose |
+|---|---|
+| `settle(request_id, from, to, amount)` | Requires `from` authorization, then stores the settlement and emits a `settled` event. |
+| `get(request_id)` | Returns the stored settlement, or nothing if the ID is unknown. |
+
+`settle` rejects an amount of zero or less (`InvalidAmount`), a sender equal to
+the recipient (`SameParty`) and any `request_id` that is already stored
+(`AlreadyRecorded`). Because of the last rule, a record can never be written
+twice and a failed record can be retried safely.
+
+### Build, test and deploy
+
+```bash
+cd contract
+cargo test
+stellar contract build
+stellar keys generate deployer --network testnet --fund
+stellar contract deploy --wasm target/wasm32v1-none/release/omnipay_settlement.wasm \
+  --source deployer --network testnet
+```
+
+If your Stellar CLI builds for `wasm32-unknown-unknown`, use
+`target/wasm32-unknown-unknown/release/omnipay_settlement.wasm` instead. Put the
+returned contract address in `.env` as `SOROBAN_CONTRACT_ID`.
+
+### Settlement order review
+
+The relay sends the XLM payment first and writes the Soroban record after the
+payment is confirmed. The full review is in
+[`docs/SETTLEMENT_ORDER_REVIEW.md`](docs/SETTLEMENT_ORDER_REVIEW.md).
+
+| Case | Result |
+|---|---|
+| Payment fails | No Soroban record is written. The relay record is `failed`. |
+| Payment succeeds, contract call fails | The payment stays valid. The relay record stores `sorobanRecordStatus: failed` and the error, and the sender gets a warning event. |
+| Contract call lands but the response is lost | A retry returns `AlreadyRecorded`, which the relay treats as recorded. |
+| Same `requestId` sent twice | The contract rejects it with `AlreadyRecorded`. |
+
 ## Tests
 
 ```bash
+cd contract && cargo test           # Soroban contract tests
 npx jest Signature.test.js          # 27 offline tests
 node server.js --replay-check       # replay harness, writes replay-evidence.json
 node server.js --proof-check        # signed settlement proof with explorer links
@@ -318,7 +375,8 @@ RECEIVED -> VALIDATION_FAILED (terminal, nothing sent to Stellar)
 ```
 
 Each document keeps the full `statusHistory`. When Soroban is enabled, the
-document also stores `sorobanTxHash` and `sorobanContractId`. The monitoring
+document also stores `sorobanTxHash`, `sorobanContractId` and `sorobanRecordStatus`
+(`recorded` or `failed`). The monitoring
 dashboard is meant to read from this collection; it is **not yet wired into
 the web app**. Until then the data can be queried through the admin-key-protected
 `/api/relay-transactions` endpoints or directly in the Firebase Console.
@@ -346,6 +404,13 @@ the web app**. Until then the data can be queried through the admin-key-protecte
 ├── Signature.js         # Signed payload format and Ed25519 verification
 ├── Relay.js             # Request ID and nonce claim (replay protection)
 ├── Signature.test.js    # Signature unit tests and live SMS relay tests
+├── contract/            # Soroban settlement contract (Rust)
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs
+│       └── test.rs
+├── docs/
+│   └── SETTLEMENT_ORDER_REVIEW.md
 ├── package.json
 ├── .env.example         # template for .env (never commit the real .env)
 ├── sign-sms.js          # test helper: builds signed SMS lines / /api/send bodies
@@ -370,16 +435,22 @@ Implemented:
 - [x] `REQUIRE_SIGNED_SMS` enforced by default
 - [x] Client-side payload signing and SMS composition in the web app
 - [x] Authenticated `/api/send` channel
-- [x] Soroban `settle()` invocation with confirmation polling, recorded before the Stellar payment
+- [x] Soroban `settle()` invocation with confirmation polling and retry, recorded after the Stellar payment is confirmed
 - [x] Stellar Testnet settlement (classic `payment` operation) and SMS confirmations
 - [x] Firestore relay records with the lifecycle above
 - [x] PIN lockout and per-sender SMS rate limiting
 - [x] `Signature.test.js` (27 offline tests, 5 live SMS relay tests), `--replay-check` and `--proof-check`
 - [x] `sign-sms.js` helper for producing signed SMS lines and `/api/send` bodies
 
+**Week 3** — Soroban contract on Stellar Testnet and settlement order review.
+
+- [x] Soroban contract deployed on Stellar Testnet
+- [x] Contract ID recorded ([Soroban settlement contract](#soroban-settlement-contract))
+- [x] Contract source code and tests in `contract/`
+- [x] Settlement order review (`docs/SETTLEMENT_ORDER_REVIEW.md`)
+
 **Later in the sprint (not yet implemented):**
 
-- Deployment of the Soroban contract on Stellar Testnet, with the contract ID and explorer links as evidence (Week 3)
 - Public deployment of the web application (Week 3)
 - Web app routed through `/api/send` (it currently uses `/api/submit-payment`, and the Freighter flow submits directly to Horizon). At that point, stop the browser from overwriting `users.transactions` (`syncSenderTxsToFirestore`) so the backend is the only writer of transaction history.
 - Monitoring dashboard in the web app
@@ -388,7 +459,7 @@ Implemented:
 **Known MVP limitations:**
 
 - Relay and backend logic run in one process (`server.js`) rather than as separate services.
-- The Soroban record is written before the Stellar payment. If the payment fails after a successful contract call, the two records can differ.
+- The Soroban record is written after the Stellar payment is confirmed. If the contract call fails, the payment stays valid and the relay record is marked `sorobanRecordStatus: failed`. Automatic retry of failed records is not implemented yet.
 - PIN lockout and SMS rate limiting are held in memory and reset when the server restarts.
 - The 4–6 digit PIN is an MVP-stage secret and is sent together with the signature in the SMS body.
 - `/api/submit-payment` does not authenticate the caller beyond the Stellar signature on the transaction itself.

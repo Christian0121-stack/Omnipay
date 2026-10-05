@@ -1,3 +1,5 @@
 .env
 serviceAccountKey.json
 node_modules/
+contract/target/
+contract/test_snapshots/

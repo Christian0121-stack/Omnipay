@@ -1534,6 +1534,45 @@ app.post('/api/privacy-settings', privacyWriteLimiter, requireUserToken, async (
   }
 });
 
+const monitoringLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `uid:${req.authUid || req.ip}`,
+  message: { error: 'too many requests, please try again later' },
+});
+
+app.get('/api/my-transactions', requireUserToken, monitoringLimiter, async (req, res) => {
+  try {
+    const snap = await relayTransactionsCol().where('senderId', '==', req.authUid).limit(200).get();
+    const transactions = snap.docs.map((doc) => {
+      const d = doc.data();
+      const created = d.createdAt && typeof d.createdAt.toMillis === 'function' ? d.createdAt.toMillis() : 0;
+      const sv = d.signatureValidation;
+      return {
+        id: doc.id,
+        channel: d.channel || null,
+        recipient: d.recipient || null,
+        amount: d.amount != null ? Number(d.amount) : null,
+        status: d.status || null,
+        statusHistory: Array.isArray(d.statusHistory)
+          ? d.statusHistory.map((h) => ({ status: h.status, at: h.at, detail: h.detail || null }))
+          : [],
+        signatureValidation: sv ? { result: sv.result || null, reason: sv.reason || null } : null,
+        txHash: d.txHash || null,
+        sorobanTxHash: d.sorobanTxHash || null,
+        createdAt: created,
+      };
+    });
+    transactions.sort((a, b) => b.createdAt - a.createdAt);
+    return res.json({ transactions });
+  } catch (err) {
+    log('error', 'monitoring', `Load failed: ${err.message}`);
+    return res.status(500).json({ error: 'could not load transactions' });
+  }
+});
+
 app.post('/webhook/sms-received', async (req, res) => {
   log('info', 'webhook', `Request received from ${req.ip}`);
 

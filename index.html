@@ -699,22 +699,22 @@
   <div class="screen" id="history">
     <div class="page-header">
       <div>
-        <h2>Transaction History</h2>
-        <div class="page-header-sub">All payments &amp; syncs</div>
+        <h2>Transaction Monitoring</h2>
+        <div class="page-header-sub">Validation &amp; settlement status</div>
       </div>
       <button class="btn btn-ghost btn-sm" onclick="showFilterModal()">🔽 Filter</button>
     </div>
 
     <div class="filter-row" id="filterRow">
       <div class="filter-chip active" onclick="filterTx('all',this)">All</div>
-      <div class="filter-chip" onclick="filterTx('synced',this)">✅ Synced</div>
       <div class="filter-chip" onclick="filterTx('pending',this)">⏳ Pending</div>
-      <div class="filter-chip" onclick="filterTx('offline',this)">📴 Offline</div>
+      <div class="filter-chip" onclick="filterTx('settled',this)">✅ Settled</div>
       <div class="filter-chip" onclick="filterTx('failed',this)">❌ Failed</div>
     </div>
 
     <div class="section" style="padding-top:12px;">
-      <div class="card" style="padding:8px 16px;" id="fullTxList"></div>
+      <div class="mon-summary" id="monSummary"></div>
+      <div id="fullTxList"></div>
     </div>
 
     <div style="height:20px;"></div>

@@ -433,7 +433,7 @@ function navTo(screenId) {
   if (nav) nav.classList.add('active');
   if (screenId === 'home')    renderHome();
   if (screenId === 'vault')   renderVault();
-  if (screenId === 'history') renderHistory('all');
+  if (screenId === 'history') { renderHistory(); loadMonitoringData(true); }
   if (screenId === 'profile') renderProfile();
 
   if (screenId === 'pay') { syncSpendableBalance(); _startSendConvAutoRefresh(); }
@@ -1383,6 +1383,7 @@ function doLogout() {
   STATE.uid        = null;
   STATE._sendPicked = null;
   STATE._smsPicked  = null;
+  MONITOR.relay = []; MONITOR.loadedAt = 0;
   try { sessionStorage.removeItem('omnipay_session'); } catch(e) {}
   document.getElementById('bottomNav').style.display = 'none';
   goTo('login');
@@ -1606,18 +1607,252 @@ function updateOfflinePayUI() {
   if (el3) { var pct = STATE.balance > 0 ? (STATE.vaultLocked / STATE.balance)*100 : 0; el3.style.width=pct+'%'; }
 }
 
-function renderHistory(filter) {
-  var allTxs = normalizeTransactionState();
-  var txs = filter === 'all' ? allTxs : allTxs.filter(function(tx){
-    return tx.status === filter || (filter === 'offline' && tx.mode === 'offline');
-  });
-  var el = document.getElementById('fullTxList');
-  if (txs.length === 0) {
-    el.innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div><h4>No transactions</h4><p>No '+filter+' transactions found</p></div>';
-  } else {
-    el.innerHTML = txs.map(function(tx){ return renderTxItem(tx); }).join('');
+var MONITOR = { relay: [], loadedAt: 0, loading: false, filter: 'all' };
+
+var MONITOR_STAGES = [
+  { key: 'received',  label: 'Received' },
+  { key: 'validated', label: 'Validated' },
+  { key: 'submitted', label: 'Submitted' },
+  { key: 'confirmed', label: 'Confirmed' },
+  { key: 'settled',   label: 'Settled' }
+];
+
+var MONITOR_CHANNELS = { sms: 'SMS', api: 'Signed API', web: 'App' };
+
+var MONITOR_REASONS = {
+  'insufficient-balance': 'Insufficient balance',
+  'self-send': 'Cannot send to yourself',
+  'recipient-not-found': 'Recipient not found',
+  'incorrect-pin': 'Incorrect PIN',
+  'pin-locked': 'Too many wrong PIN attempts',
+  'signature-required': 'Signature required',
+  'no-registered-signing-key': 'No signing key registered',
+  'duplicate-request': 'Duplicate request',
+  'nonce-reused': 'Nonce already used',
+  'unknown-sender': 'Unknown sender',
+  'wallet-not-setup': 'Wallet not set up',
+  'malformed-command': 'Malformed command',
+  'malformed-transaction': 'Malformed transaction',
+  'sender-not-found': 'Sender not found',
+  'settlement-signer-not-enabled': 'SMS settlement not enabled for this wallet',
+  'settlement-signer-not-configured': 'Settlement unavailable'
+};
+
+async function loadMonitoringData(force) {
+  if (MONITOR.loading || !navigator.onLine || !auth || !auth.currentUser) return;
+  if (!force && Date.now() - MONITOR.loadedAt < 15000) return;
+  MONITOR.loading = true;
+  try {
+    var token = await auth.currentUser.getIdToken();
+    var resp = await fetch(API_BASE + '/api/my-transactions', { headers: { 'Authorization': 'Bearer ' + token } });
+    if (!resp.ok) throw new Error('http-' + resp.status);
+    var data = await resp.json();
+    MONITOR.relay = Array.isArray(data.transactions) ? data.transactions : [];
+    MONITOR.loadedAt = Date.now();
+    var screen = document.getElementById('history');
+    if (screen && screen.classList.contains('active')) renderHistory();
+  } catch (e) {
+  } finally {
+    MONITOR.loading = false;
+  }
+}
+
+function monitorReason(detail) {
+  var text = String(detail == null ? '' : detail).trim();
+  if (!text) return '';
+  if (MONITOR_REASONS[text]) return MONITOR_REASONS[text];
+  if (text.indexOf('bad-signature') === 0) return 'Signature check failed';
+  if (text.indexOf('xdr-mismatch') === 0) return 'Signed transaction did not match the request';
+  if (text.indexOf('soroban') === 0) return 'Contract settlement failed';
+  return text.length > 80 ? text.slice(0, 80) + '…' : text;
+}
+
+function monitorParty(label) {
+  var text = String(label || '').replace(/^(To|From)\s+/i, '').trim();
+  if (/^G[A-Z2-7]{55}$/.test(text)) return text.substring(0, 4) + '…' + text.slice(-4);
+  return text || 'Unknown';
+}
+
+function monitorSelfName() {
+  return (STATE.user && (STATE.user.name || STATE.user.username)) || 'You';
+}
+
+function monitorFromRelay(r, tx) {
+  var reached = {};
+  (r.statusHistory || []).forEach(function(h) { reached[h.status] = true; });
+  reached[r.status] = true;
+
+  var settled = r.status === 'settled';
+  var failed = r.status === 'failed' || r.status === 'validation_failed';
+  var reachedIdx = -1;
+  MONITOR_STAGES.forEach(function(s, i) { if (reached[s.key]) reachedIdx = i; });
+
+  var validation = { key: 'pending', label: 'Pending' };
+  if (r.status === 'validation_failed') validation = { key: 'failed', label: 'Validation Failed' };
+  else if (reached.validated) validation = { key: 'ok', label: 'Validated' };
+
+  var settlement = { key: 'pending', label: 'Awaiting' };
+  if (settled || reached.confirmed) settlement = { key: 'ok', label: 'Confirmed' };
+  else if (failed && reached.submitted) settlement = { key: 'failed', label: 'Failed' };
+  else if (reached.submitted) settlement = { key: 'pending', label: 'Submitted' };
+  else if (r.status === 'validation_failed') settlement = { key: 'idle', label: 'Not started' };
+  else if (failed) settlement = { key: 'failed', label: 'Failed' };
+
+  var detail = '';
+  if (failed) {
+    var history = r.statusHistory || [];
+    for (var i = history.length - 1; i >= 0; i--) {
+      if (history[i].detail) { detail = history[i].detail; break; }
+    }
   }
 
+  var toRaw = (tx && /^To\s+@/i.test(tx.name || '')) ? tx.name : r.recipient;
+  return {
+    ts: r.createdAt || (tx && tx.ts) || 0,
+    direction: 'send',
+    amountText: (Number(r.amount) || 0).toLocaleString('en', { minimumFractionDigits: 4, maximumFractionDigits: 7 }) + ' XLM',
+    from: monitorSelfName(),
+    to: monitorParty(toRaw),
+    outcome: settled ? 'settled' : (failed ? 'failed' : 'pending'),
+    validation: validation,
+    settlement: settlement,
+    reachedIdx: reachedIdx,
+    txHash: r.txHash || (tx && tx.txHash) || '',
+    sorobanTxHash: r.sorobanTxHash || (tx && tx.sorobanTxHash) || '',
+    channel: MONITOR_CHANNELS[r.channel] || '',
+    detail: monitorReason(detail)
+  };
+}
+
+function monitorFromTx(tx) {
+  var isReceive = tx.type === 'receive';
+  var outcome = tx.status === 'synced' ? 'settled' : (tx.status === 'failed' ? 'failed' : 'pending');
+  var validation = { key: 'pending', label: 'Pending' };
+  var settlement = { key: 'pending', label: 'Awaiting sync' };
+  var reachedIdx = 0;
+  if (outcome === 'settled') {
+    validation = { key: 'ok', label: 'Validated' };
+    settlement = { key: 'ok', label: 'Confirmed' };
+    reachedIdx = MONITOR_STAGES.length - 1;
+  } else if (outcome === 'failed') {
+    validation = { key: 'failed', label: 'Validation Failed' };
+    settlement = { key: 'idle', label: 'Not started' };
+  }
+  var party = monitorParty(tx.name);
+  return {
+    ts: tx.ts || 0,
+    direction: isReceive ? 'receive' : 'send',
+    amountText: fmtTxAmt(tx),
+    from: isReceive ? party : monitorSelfName(),
+    to: isReceive ? monitorSelfName() : party,
+    outcome: outcome,
+    validation: validation,
+    settlement: settlement,
+    reachedIdx: reachedIdx,
+    txHash: tx.txHash || '',
+    sorobanTxHash: tx.sorobanTxHash || '',
+    channel: tx.mode === 'offline' ? 'Offline' : '',
+    detail: ''
+  };
+}
+
+function buildMonitorItems() {
+  var txs = normalizeTransactionState();
+  var relay = Array.isArray(MONITOR.relay) ? MONITOR.relay : [];
+  var relayByHash = {};
+  var used = {};
+  relay.forEach(function(r) { if (r.txHash) relayByHash[r.txHash] = r; });
+
+  var items = txs.map(function(tx) {
+    var r = tx.txHash ? relayByHash[tx.txHash] : null;
+    if (r) { used[r.id] = true; return monitorFromRelay(r, tx); }
+    return monitorFromTx(tx);
+  });
+  relay.forEach(function(r) { if (!used[r.id]) items.push(monitorFromRelay(r, null)); });
+
+  items.sort(function(a, b) { return (a.ts || 0) - (b.ts || 0); });
+  items.forEach(function(item, i) { item.num = i + 1; });
+  return items.reverse();
+}
+
+function monitorRow(label, valueHtml) {
+  return '<div class="mon-row"><span class="mon-label">' + label + '</span><span class="mon-value">' + valueHtml + '</span></div>';
+}
+
+function monitorHashRow(label, hash) {
+  var safeHash = /^[A-Za-z0-9]+$/.test(String(hash || '')) ? String(hash) : '';
+  if (!safeHash) return monitorRow(label, '<span class="mon-muted">—</span>');
+  var short = safeHash.substring(0, 10) + '…' + safeHash.slice(-6);
+  return monitorRow(label,
+    '<span class="mon-hash" title="' + safeText(safeHash) + '">' + safeText(short) + '</span>' +
+    '<button type="button" class="mon-link-btn" data-tx-hash="' + safeText(safeHash) + '" onclick="copyTxHash(this.dataset.txHash)">📋 Copy</button>' +
+    '<a class="mon-link-btn" href="https://stellar.expert/explorer/testnet/tx/' + encodeURIComponent(safeHash) + '" target="_blank" rel="noopener noreferrer">⭐ View on Explorer</a>'
+  );
+}
+
+function monitorStagesHtml(item) {
+  var failed = item.outcome === 'failed';
+  var last = failed ? item.reachedIdx : MONITOR_STAGES.length - 1;
+  var chips = '';
+  for (var i = 0; i <= last; i++) {
+    var done = i <= item.reachedIdx;
+    chips += '<span class="mon-stage' + (done ? ' done' : '') + '">' + (done ? '✓ ' : '') + MONITOR_STAGES[i].label + '</span>';
+  }
+  if (failed) chips += '<span class="mon-stage failed">✕ Failed</span>';
+  return '<div class="mon-stages">' + chips + '</div>';
+}
+
+function monitorCardHtml(item) {
+  var isReceive = item.direction === 'receive';
+  var pill = item.outcome === 'settled' ? 'Settled ✓' : (item.outcome === 'failed' ? 'Failed ✕' : 'Pending ⏳');
+  var when = item.ts
+    ? new Date(item.ts).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    : '';
+  var meta = [when, item.channel ? 'via ' + item.channel : ''].filter(Boolean).join(' · ');
+
+  var html = '<div class="mon-card ' + item.outcome + '">'
+    + '<div class="mon-head">'
+    +   '<div class="mon-head-main"><div class="mon-title">Transaction #' + String(item.num).padStart(3, '0') + '</div>'
+    +   '<div class="mon-time">' + safeText(meta) + '</div></div>'
+    +   '<div class="mon-amount ' + (isReceive ? 'credit' : 'debit') + '">' + (isReceive ? '+' : '-') + safeText(item.amountText) + '</div>'
+    + '</div>'
+    + '<div class="mon-route"><span class="mon-party">' + safeText(item.from) + '</span><span class="mon-arrow">→</span><span class="mon-party">' + safeText(item.to) + '</span></div>'
+    + '<div class="mon-rows">'
+    +   monitorRow('Status', '<span class="mon-pill ' + item.outcome + '">' + pill + '</span>')
+    +   monitorRow('Validation', '<span class="mon-state ' + item.validation.key + '">' + safeText(item.validation.label) + '</span>')
+    +   monitorRow('Settlement', '<span class="mon-state ' + item.settlement.key + '">' + safeText(item.settlement.label) + '</span>')
+    +   (item.detail ? monitorRow('Reason', '<span class="mon-state failed">' + safeText(item.detail) + '</span>') : '')
+    +   monitorHashRow('Stellar TX', item.txHash)
+    +   (item.sorobanTxHash ? monitorHashRow('Contract TX', item.sorobanTxHash) : '')
+    + '</div>'
+    + monitorStagesHtml(item)
+    + '</div>';
+  return html;
+}
+
+function renderHistory(filter) {
+  if (filter) MONITOR.filter = filter;
+  var active = MONITOR.filter;
+  var items = buildMonitorItems();
+  var counts = { settled: 0, pending: 0, failed: 0 };
+  items.forEach(function(item) { counts[item.outcome] += 1; });
+
+  var summary = document.getElementById('monSummary');
+  if (summary) {
+    summary.innerHTML =
+      '<div class="mon-stat settled"><div class="mon-stat-val">' + counts.settled + '</div><div class="mon-stat-lbl">Settled</div></div>' +
+      '<div class="mon-stat pending"><div class="mon-stat-val">' + counts.pending + '</div><div class="mon-stat-lbl">Pending</div></div>' +
+      '<div class="mon-stat failed"><div class="mon-stat-val">' + counts.failed + '</div><div class="mon-stat-lbl">Failed</div></div>';
+  }
+
+  var shown = active === 'all' ? items : items.filter(function(item) { return item.outcome === active; });
+  var el = document.getElementById('fullTxList');
+  if (!el) return;
+  if (!shown.length) {
+    el.innerHTML = '<div class="card"><div class="empty-state"><div class="empty-icon">📭</div><h4>No transactions</h4><p>No ' + (active === 'all' ? '' : active + ' ') + 'transactions found</p></div></div>';
+  } else {
+    el.innerHTML = shown.map(monitorCardHtml).join('');
+  }
 }
 
 function filterTx(filter, el) {
@@ -2008,7 +2243,7 @@ async function executeSendMoney(signedAuth) {
     if (document.getElementById('sendNote')) document.getElementById('sendNote').value = '';
 
     saveSession();
-    renderHistory('all'); // refresh history tab immediately so the log appears
+    renderHistory(); // refresh history tab immediately so the log appears
 
     document.getElementById('successAmt').textContent      = fmtAmt(amt) + ' XLM';
     document.getElementById('successMerchant').textContent = 'Sent to ' + recipient.substring(0,4) + '…' + recipient.slice(-4);
@@ -2614,7 +2849,7 @@ function startInboxListener() {
 
         var histEl = document.getElementById('history');
         if (histEl && histEl.classList.contains('active')) {
-          renderHistory('all');
+          renderHistory();
         }
 
         incoming
@@ -3505,7 +3740,7 @@ function simulateReceive() {
   closeModal('receiveModal');
   showAlert('success', '💰 Received ₱' + amt.toFixed(2) + ' from ' + sender + '!');
   renderHome();
-  renderHistory('all');
+  renderHistory();
 }
 
 function showWalletManagerModal() {

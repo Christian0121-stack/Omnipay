@@ -507,7 +507,7 @@
         <div id="sendRecipientSearchWrap">
           <div class="recipient-search">
             <span class="recipient-search-icon" aria-hidden="true">🔍</span>
-            <input type="text" id="sendRecipientSearch" placeholder="Search name, username or mobile number" aria-label="Search recipient by full name, username or mobile number" autocomplete="off" spellcheck="false" oninput="onSendRecipientSearch(this)">
+            <input type="text" id="sendRecipientSearch" placeholder="Search name, username or mobile number" aria-label="Search recipient by full name, username or mobile number" autocomplete="off" spellcheck="false" oninput="onSendRecipientSearch(this)" onfocus="onSendRecipientFocus(this)">
           </div>
           <div class="recipient-results" id="sendRecipientResults" style="display:none;" role="listbox"></div>
           <div class="recipient-hint">Search by full name, username or mobile number</div>
@@ -518,6 +518,7 @@
             <div class="recipient-name" id="sendRecipientName"></div>
             <div class="recipient-sub" id="sendRecipientSub"></div>
           </div>
+          <button type="button" class="recipient-save" id="sendRecipientSave" onclick="saveSendRecipientContact()" style="display:none;" aria-label="Save to contacts" title="Save to contacts">☆</button>
           <button type="button" class="recipient-change" onclick="changeSendRecipient()">Change</button>
         </div>
       </div>
@@ -561,8 +562,9 @@
       </div>
       <div class="input-group mt-16">
         <label>Recipient (Name, Username or Phone)</label>
-        <input type="text" id="smsRecipient" placeholder="Search name, username or phone" autocomplete="off" spellcheck="false" oninput="onSmsRecipientSearch(this)">
+        <input type="text" id="smsRecipient" placeholder="Search name, username or phone" autocomplete="off" spellcheck="false" oninput="onSmsRecipientSearch(this)" onfocus="onSmsRecipientFocus(this)">
         <div class="recipient-results" id="smsRecipientResults" style="display:none;" role="listbox"></div>
+        <button type="button" class="recipient-save-link" id="smsSaveContact" onclick="saveSmsRecipientContact()" style="display:none;"></button>
       </div>
       <div style="margin-top:20px; text-align:center;">
         <div class="amount-currency">Amount · XLM</div>
@@ -796,6 +798,7 @@
     <div class="settings-tabs">
       <button class="settings-tab-btn active" onclick="switchSettingsTab('summary', this)">Account Summary</button>
       <button class="settings-tab-btn" onclick="switchSettingsTab('profile-edit', this)">Profile</button>
+      <button class="settings-tab-btn" onclick="switchSettingsTab('contacts', this)">Contacts</button>
       <button class="settings-tab-btn" onclick="switchSettingsTab('privacy', this)">Privacy</button>
       <button class="settings-tab-btn" onclick="switchSettingsTab('system', this)">System Settings</button>
     </div>
@@ -838,6 +841,33 @@
         </div>
         <button class="btn btn-primary btn-block" id="saveProfileBtn" onclick="doSaveProfile()">💾 Save Profile</button>
         <div style="height:8px;"></div>
+      </div>
+    </div>
+
+    <div class="settings-panel" id="spanel-contacts">
+      <div class="settings-list">
+        <div class="contacts-toolbar">
+          <div class="input-group contacts-filter">
+            <div class="recipient-search">
+              <span class="recipient-search-icon" aria-hidden="true">🔍</span>
+              <input type="text" id="contactsFilter" placeholder="Search contacts" aria-label="Search saved contacts" autocomplete="off" spellcheck="false" oninput="onContactsFilter(this)">
+            </div>
+          </div>
+          <button type="button" class="contacts-add-btn" onclick="toggleContactAdd()">＋ Add contact</button>
+        </div>
+        <div class="contacts-add-box" id="contactAddBox" style="display:none;">
+          <div class="input-group" style="margin:0;">
+            <label>Find a user to add</label>
+            <div class="recipient-search">
+              <span class="recipient-search-icon" aria-hidden="true">🔍</span>
+              <input type="text" id="contactAddSearch" placeholder="Search name, username or mobile number" aria-label="Search for a user to add" autocomplete="off" spellcheck="false" oninput="onContactAddSearch(this)">
+            </div>
+            <div class="recipient-results" id="contactAddResults" style="display:none;" role="listbox"></div>
+            <div class="recipient-hint">Adding a contact needs internet. Saved contacts work offline.</div>
+          </div>
+        </div>
+        <div class="contacts-count" id="contactsCount"></div>
+        <div id="contactsList"></div>
       </div>
     </div>
 
@@ -1230,6 +1260,21 @@
       <p class="sub">Stellar Soroban contract settlement report</p>
       <div id="syncResults"></div>
       <button class="btn btn-primary btn-block mt-16" onclick="closeModal('syncModal')">Done</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="contactEditModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <h3>✏️ Edit Contact</h3>
+      <p class="sub" id="contactEditSub"></p>
+      <div class="input-group">
+        <label>Nickname (optional)</label>
+        <input type="text" id="contactNicknameInput" placeholder="e.g. Mama, Kuya Ben" maxlength="40" autocomplete="off">
+      </div>
+      <button class="btn btn-primary btn-block mt-16" onclick="saveContactEdit()">💾 Save</button>
+      <button class="btn btn-danger btn-block mt-12" onclick="removeContactFromEdit()">🗑️ Remove contact</button>
+      <button class="btn btn-ghost btn-block mt-12" onclick="closeModal('contactEditModal')">Cancel</button>
     </div>
   </div>
 

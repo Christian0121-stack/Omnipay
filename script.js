@@ -437,6 +437,7 @@ function navTo(screenId) {
 
   if (screenId === 'pay') { syncSpendableBalance(); _startSendConvAutoRefresh(); }
   else                    { _stopSendConvAutoRefresh(); }
+  syncContacts(false);
 }
 
 function switchSettingsTab(tab, btn) {
@@ -447,6 +448,7 @@ function switchSettingsTab(tab, btn) {
   if (panel) panel.classList.add('active');
   if (tab === 'profile-edit') populateProfileEditForm();
   if (tab === 'privacy') loadPrivacySettings();
+  if (tab === 'contacts') { renderContactsList(); syncContacts(false); }
 }
 
 var PRIVACY = {
@@ -1378,6 +1380,8 @@ function doLogout() {
   if (auth) auth.signOut().catch(function(){});
   STATE.isLoggedIn = false;
   STATE.uid        = null;
+  STATE._sendPicked = null;
+  STATE._smsPicked  = null;
   try { sessionStorage.removeItem('omnipay_session'); } catch(e) {}
   document.getElementById('bottomNav').style.display = 'none';
   goTo('login');
@@ -3970,11 +3974,12 @@ function renderRecipientResults(boxId, results, message, onPick) {
     info.className = 'recipient-info';
     var nameEl = document.createElement('div');
     nameEl.className = 'recipient-name';
-    nameEl.textContent = displayName;
+    nameEl.textContent = (r.isContact ? '★ ' : '') + displayName;
     var subEl = document.createElement('div');
     subEl.className = 'recipient-sub';
     var subParts = [];
     if (r.username) subParts.push('@' + r.username);
+    if (r._realName && r._realName !== displayName) subParts.push(r._realName);
     if (r.phone) subParts.push(r.phone);
     subEl.textContent = subParts.join(' · ');
     info.appendChild(nameEl);
@@ -3991,21 +3996,29 @@ function scheduleRecipientSearch(key, boxId, value, onPick, offlineHint) {
   clearTimeout(RECIPIENT_SEARCH.timers[key]);
   var q = String(value || '').trim();
   RECIPIENT_SEARCH.seq[key] = (RECIPIENT_SEARCH.seq[key] || 0) + 1;
-  if (q.length < 2) { hideRecipientResults(boxId); return; }
+  var saved = key === 'contactAdd' ? [] : contactMatches(q);
+  if (q.length < 2) {
+    if (saved.length) renderRecipientResults(boxId, saved, '', onPick);
+    else hideRecipientResults(boxId);
+    return;
+  }
   var seq = RECIPIENT_SEARCH.seq[key];
+  if (saved.length) renderRecipientResults(boxId, saved, '', onPick);
   RECIPIENT_SEARCH.timers[key] = setTimeout(async function () {
-    renderRecipientResults(boxId, [], 'Searching…', onPick);
+    if (!saved.length) renderRecipientResults(boxId, [], 'Searching…', onPick);
     try {
       var found = await fetchRecipientMatches(q);
-      var results = found.results;
       if (seq !== RECIPIENT_SEARCH.seq[key]) return;
+      var results = mergeContactResults(saved, found.results);
       var emptyMsg = found.selfMatch
         ? 'That is your own account. Search for someone else to send to.'
         : 'No users found. Names need at least 3 letters, or try a username or mobile number.';
       renderRecipientResults(boxId, results, results.length ? '' : emptyMsg, onPick);
     } catch (err) {
       if (seq !== RECIPIENT_SEARCH.seq[key]) return;
-      renderRecipientResults(boxId, [], recipientSearchError(err, offlineHint), onPick);
+      var errMsg = recipientSearchError(err, offlineHint);
+      if (saved.length && err && err.message === 'offline') errMsg = 'You are offline. Showing saved contacts only.';
+      renderRecipientResults(boxId, saved, errMsg, onPick);
     }
   }, 300);
 }
@@ -4035,6 +4048,8 @@ function pickSendRecipient(r) {
   var sub = (r.username ? '@' + r.username + ' · ' : '') + recipientShortKey(r.walletPublic);
   fillSendRecipientChip(displayName, sub, recipientInitials(displayName));
   hideRecipientResults('sendRecipientResults');
+  STATE._sendPicked = r.username ? r : null;
+  refreshSaveButtons();
 }
 
 function resetSendRecipient() {
@@ -4048,6 +4063,8 @@ function resetSendRecipient() {
   if (wrap) wrap.style.display = '';
   RECIPIENT_SEARCH.seq.send = (RECIPIENT_SEARCH.seq.send || 0) + 1;
   hideRecipientResults('sendRecipientResults');
+  STATE._sendPicked = null;
+  refreshSaveButtons();
 }
 
 function changeSendRecipient() {
@@ -4068,10 +4085,17 @@ function setSendRecipientFromAddress(address) {
     if (!match) return;
     var displayName = match.name || match.username || 'OmniPay user';
     fillSendRecipientChip(displayName, (match.username ? '@' + match.username + ' · ' : '') + recipientShortKey(addr), recipientInitials(displayName));
+    STATE._sendPicked = match.username ? match : null;
+    refreshSaveButtons();
   }).catch(function () {});
 }
 
 function onSmsRecipientSearch(input) {
+  var typed = String(input ? input.value : '').trim().toLowerCase();
+  if (STATE._smsPicked && String(STATE._smsPicked.username || '').toLowerCase() !== typed) {
+    STATE._smsPicked = null;
+    refreshSaveButtons();
+  }
   scheduleRecipientSearch('sms', 'smsRecipientResults', input ? input.value : '', pickSmsRecipient, 'Search is unavailable offline. Type the username or mobile number instead.');
 }
 
@@ -4079,4 +4103,396 @@ function pickSmsRecipient(r) {
   var input = document.getElementById('smsRecipient');
   if (input) input.value = r.username || '';
   hideRecipientResults('smsRecipientResults');
+  STATE._smsPicked = r.username ? r : null;
+  refreshSaveButtons();
+}
+
+function onSendRecipientFocus(input) {
+  if (String(input ? input.value : '').trim().length < 2) onSendRecipientSearch(input);
+}
+
+function onSmsRecipientFocus(input) {
+  if (String(input ? input.value : '').trim().length < 2) onSmsRecipientSearch(input);
+}
+
+/* ---------- Saved contacts ---------- */
+var CONTACTS_KEY = 'omnipay_contacts_v1';
+var CONTACTS_MAX = 200;
+var CONTACTS = { syncing: false, lastSync: 0, filter: '', editing: '' };
+
+function readContactStore() {
+  try { return JSON.parse(localStorage.getItem(CONTACTS_KEY)) || {}; } catch (e) { return {}; }
+}
+
+function writeContactStore(map) {
+  try { localStorage.setItem(CONTACTS_KEY, JSON.stringify(map)); } catch (e) {}
+}
+
+function getContactBucket() {
+  var empty = { list: [], updatedAt: 0, syncedAt: 0, dirty: false };
+  if (!STATE.uid) return empty;
+  var bucket = readContactStore()[STATE.uid];
+  if (!bucket || !Array.isArray(bucket.list)) return empty;
+  return bucket;
+}
+
+function setContactBucket(bucket) {
+  if (!STATE.uid) return;
+  var map = readContactStore();
+  map[STATE.uid] = bucket;
+  writeContactStore(map);
+}
+
+function getContacts() {
+  return getContactBucket().list.slice();
+}
+
+function contactDisplayName(c) {
+  return c.nickname || c.name || c.username;
+}
+
+function sortContacts(list) {
+  return list.sort(function (a, b) {
+    return contactDisplayName(a).toLowerCase().localeCompare(contactDisplayName(b).toLowerCase());
+  });
+}
+
+function findContact(username) {
+  var u = String(username || '').trim().toLowerCase();
+  if (!u) return null;
+  var list = getContactBucket().list;
+  for (var i = 0; i < list.length; i++) {
+    if (String(list[i].username).toLowerCase() === u) return list[i];
+  }
+  return null;
+}
+
+function contactToResult(c) {
+  return {
+    uid: '',
+    name: contactDisplayName(c),
+    _realName: c.name || '',
+    username: c.username,
+    phone: '',
+    walletPublic: c.walletPublic || '',
+    isContact: true
+  };
+}
+
+function contactMatches(q) {
+  var needle = String(q || '').trim().toLowerCase();
+  var list = sortContacts(getContacts());
+  if (!needle) return list.slice(0, 6).map(contactToResult);
+  return list.filter(function (c) {
+    return [c.nickname, c.name, c.username].some(function (v) {
+      return String(v || '').toLowerCase().indexOf(needle) !== -1;
+    });
+  }).map(contactToResult);
+}
+
+function mergeContactResults(saved, results) {
+  var seen = {};
+  saved.forEach(function (r) { seen[String(r.username).toLowerCase()] = true; });
+  var extra = [];
+  results.forEach(function (r) {
+    var key = String(r.username || '').toLowerCase();
+    if (key && seen[key]) return;
+    var c = findContact(r.username);
+    if (c) {
+      var d = contactToResult(c);
+      d.phone = r.phone || '';
+      d.walletPublic = r.walletPublic || d.walletPublic;
+      extra.push(d);
+    } else {
+      extra.push(r);
+    }
+  });
+  return saved.concat(extra);
+}
+
+function commitContacts(list) {
+  setContactBucket({ list: list, updatedAt: Date.now(), syncedAt: getContactBucket().syncedAt || 0, dirty: true });
+  renderContactsList();
+  refreshSaveButtons();
+  syncContacts(true);
+}
+
+function saveContact(r) {
+  if (!r || !r.username) return false;
+  if (findContact(r.username)) return false;
+  var list = getContacts();
+  if (list.length >= CONTACTS_MAX) {
+    showAlert('yellow', '⚠️ Your contact list is full (' + CONTACTS_MAX + ' max).');
+    return false;
+  }
+  list.push({
+    username: r.username,
+    name: r._realName || r.name || '',
+    nickname: '',
+    walletPublic: r.walletPublic || '',
+    addedAt: Date.now()
+  });
+  commitContacts(list);
+  return true;
+}
+
+function refreshSaveButtons() {
+  var sendBtn = document.getElementById('sendRecipientSave');
+  var picked = STATE._sendPicked;
+  if (sendBtn) {
+    if (picked && picked.username) {
+      var savedSend = !!findContact(picked.username);
+      sendBtn.style.display = 'flex';
+      sendBtn.textContent = savedSend ? '★' : '☆';
+      sendBtn.classList.toggle('saved', savedSend);
+      sendBtn.title = savedSend ? 'Saved to contacts' : 'Save to contacts';
+      sendBtn.setAttribute('aria-label', sendBtn.title);
+    } else {
+      sendBtn.style.display = 'none';
+    }
+  }
+  var smsBtn = document.getElementById('smsSaveContact');
+  var smsPicked = STATE._smsPicked;
+  if (smsBtn) {
+    if (smsPicked && smsPicked.username && !findContact(smsPicked.username)) {
+      smsBtn.style.display = 'inline-block';
+      smsBtn.textContent = '☆ Save @' + smsPicked.username + ' to contacts';
+    } else {
+      smsBtn.style.display = 'none';
+    }
+  }
+}
+
+function saveSendRecipientContact() {
+  var r = STATE._sendPicked;
+  if (!r || !r.username) return;
+  if (findContact(r.username)) { showAlert('yellow', '⭐ Already in your contacts'); return; }
+  if (saveContact(r)) showAlert('success', '⭐ Saved to contacts');
+}
+
+function saveSmsRecipientContact() {
+  var r = STATE._smsPicked;
+  if (!r || !r.username) return;
+  if (saveContact(r)) showAlert('success', '⭐ Saved to contacts');
+}
+
+async function contactsRequest(method, body) {
+  if (!navigator.onLine) throw new Error('offline');
+  if (!auth || !auth.currentUser) throw new Error('signed-out');
+  var token = await auth.currentUser.getIdToken();
+  var opts = { method: method, headers: { 'Authorization': 'Bearer ' + token } };
+  if (body) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  var resp = await fetch(API_BASE + '/api/contacts', opts);
+  if (!resp.ok) throw new Error('http-' + resp.status);
+  return resp.json();
+}
+
+async function syncContacts(force) {
+  if (CONTACTS.syncing || !STATE.isLoggedIn || !STATE.uid) return;
+  if (!navigator.onLine || !auth || !auth.currentUser) return;
+  if (!force && Date.now() - CONTACTS.lastSync < 60000) return;
+  CONTACTS.syncing = true;
+  var uid = STATE.uid;
+  var again = false;
+  try {
+    var bucket = getContactBucket();
+    if (bucket.dirty) {
+      var saved = await contactsRequest('PUT', { contacts: bucket.list });
+      if (STATE.uid !== uid) return;
+      var cur = getContactBucket();
+      if (cur.updatedAt === bucket.updatedAt) {
+        setContactBucket({ list: cur.list, updatedAt: cur.updatedAt, syncedAt: Number(saved.updatedAt) || Date.now(), dirty: false });
+      } else {
+        again = true;
+      }
+    } else {
+      var remote = await contactsRequest('GET');
+      if (STATE.uid !== uid) return;
+      var latest = getContactBucket();
+      var remoteAt = Number(remote.updatedAt) || 0;
+      if (!latest.dirty && latest.updatedAt === bucket.updatedAt && remoteAt > (latest.syncedAt || 0)) {
+        setContactBucket({ list: Array.isArray(remote.contacts) ? remote.contacts : [], updatedAt: Date.now(), syncedAt: remoteAt, dirty: false });
+        renderContactsList();
+        refreshSaveButtons();
+      }
+    }
+  } catch (err) {
+  } finally {
+    CONTACTS.syncing = false;
+    CONTACTS.lastSync = Date.now();
+  }
+  if (again) syncContacts(true);
+}
+
+window.addEventListener('online', function () { syncContacts(true); });
+
+document.addEventListener('click', function (e) {
+  [['sendRecipientResults', 'sendRecipientSearch'], ['smsRecipientResults', 'smsRecipient']].forEach(function (p) {
+    var box = document.getElementById(p[0]);
+    var input = document.getElementById(p[1]);
+    if (!box || box.style.display === 'none') return;
+    if (box.contains(e.target) || e.target === input) return;
+    if (input && String(input.value || '').trim().length >= 2) return;
+    hideRecipientResults(p[0]);
+  });
+});
+
+function renderContactsList() {
+  var box = document.getElementById('contactsList');
+  if (!box) return;
+  var all = sortContacts(getContacts());
+  var q = String(CONTACTS.filter || '').trim().toLowerCase();
+  var list = !q ? all : all.filter(function (c) {
+    return [c.nickname, c.name, c.username].some(function (v) {
+      return String(v || '').toLowerCase().indexOf(q) !== -1;
+    });
+  });
+  var countEl = document.getElementById('contactsCount');
+  if (countEl) countEl.textContent = all.length ? all.length + (all.length === 1 ? ' saved contact' : ' saved contacts') : '';
+  box.innerHTML = '';
+  if (!list.length) {
+    var empty = document.createElement('div');
+    empty.className = 'contact-empty';
+    empty.textContent = all.length
+      ? 'No contacts match your search.'
+      : 'No saved contacts yet. Tap “Add contact” while online, or tap the star when you pick a recipient.';
+    box.appendChild(empty);
+    return;
+  }
+  list.forEach(function (c) {
+    var name = contactDisplayName(c);
+    var row = document.createElement('div');
+    row.className = 'contact-row';
+
+    var main = document.createElement('button');
+    main.type = 'button';
+    main.className = 'contact-main';
+    var avatar = document.createElement('div');
+    avatar.className = 'recipient-avatar';
+    avatar.textContent = recipientInitials(name);
+    var info = document.createElement('div');
+    info.className = 'recipient-info';
+    var nameEl = document.createElement('div');
+    nameEl.className = 'recipient-name';
+    nameEl.textContent = name;
+    var subEl = document.createElement('div');
+    subEl.className = 'recipient-sub';
+    var parts = ['@' + c.username];
+    if (c.nickname && c.name) parts.push(c.name);
+    subEl.textContent = parts.join(' · ');
+    info.appendChild(nameEl);
+    info.appendChild(subEl);
+    main.appendChild(avatar);
+    main.appendChild(info);
+    main.setAttribute('aria-label', 'Pay ' + name);
+    main.addEventListener('click', function () { useContact(c.username); });
+
+    var edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'contact-edit';
+    edit.textContent = '✏️';
+    edit.setAttribute('aria-label', 'Edit ' + name);
+    edit.addEventListener('click', function () { openContactEdit(c.username); });
+
+    row.appendChild(main);
+    row.appendChild(edit);
+    box.appendChild(row);
+  });
+}
+
+function onContactsFilter(input) {
+  CONTACTS.filter = input ? input.value : '';
+  renderContactsList();
+}
+
+function toggleContactAdd() {
+  var box = document.getElementById('contactAddBox');
+  if (!box) return;
+  var open = box.style.display === 'none';
+  box.style.display = open ? 'block' : 'none';
+  if (open) {
+    var input = document.getElementById('contactAddSearch');
+    if (input) { input.value = ''; input.focus(); }
+    hideRecipientResults('contactAddResults');
+    if (!navigator.onLine) showAlert('yellow', '📴 Connect to the internet to add a new contact.');
+  }
+}
+
+function onContactAddSearch(input) {
+  scheduleRecipientSearch('contactAdd', 'contactAddResults', input ? input.value : '', pickContactAdd, 'Connect to the internet to add a new contact.');
+}
+
+function pickContactAdd(r) {
+  if (!r || !r.username) return;
+  if (findContact(r.username)) {
+    showAlert('yellow', '⭐ Already in your contacts');
+  } else if (saveContact(r)) {
+    showAlert('success', '⭐ Contact saved');
+  } else {
+    return;
+  }
+  var input = document.getElementById('contactAddSearch');
+  if (input) input.value = '';
+  hideRecipientResults('contactAddResults');
+  var box = document.getElementById('contactAddBox');
+  if (box) box.style.display = 'none';
+}
+
+function openContactEdit(username) {
+  var c = findContact(username);
+  if (!c) return;
+  CONTACTS.editing = c.username;
+  var sub = document.getElementById('contactEditSub');
+  if (sub) sub.textContent = '@' + c.username + (c.name ? ' · ' + c.name : '');
+  var input = document.getElementById('contactNicknameInput');
+  if (input) input.value = c.nickname || '';
+  showModal('contactEditModal');
+}
+
+function saveContactEdit() {
+  var input = document.getElementById('contactNicknameInput');
+  var nickname = String(input ? input.value : '').trim().slice(0, 40);
+  var target = String(CONTACTS.editing || '').toLowerCase();
+  if (!target) return;
+  var list = getContacts().map(function (c) {
+    if (String(c.username).toLowerCase() !== target) return c;
+    return { username: c.username, name: c.name, nickname: nickname, walletPublic: c.walletPublic, addedAt: c.addedAt };
+  });
+  commitContacts(list);
+  closeModal('contactEditModal');
+  showAlert('success', '✅ Contact updated');
+}
+
+function removeContactFromEdit() {
+  var target = String(CONTACTS.editing || '').toLowerCase();
+  if (!target) return;
+  var list = getContacts().filter(function (c) { return String(c.username).toLowerCase() !== target; });
+  commitContacts(list);
+  closeModal('contactEditModal');
+  showAlert('success', '🗑️ Contact removed');
+}
+
+function useContact(username) {
+  var c = findContact(username);
+  if (!c) return;
+  var useSms = !navigator.onLine || STATE.offlineMode;
+  if (!useSms && !c.walletPublic) useSms = true;
+  navTo('pay');
+  var want = useSms ? 'SMS Pay' : 'Send';
+  var tabs = document.querySelectorAll('.pay-tab');
+  for (var i = 0; i < tabs.length; i++) {
+    if (tabs[i].textContent.indexOf(want) !== -1) { switchPayTab(useSms ? 'sms' : 'send', tabs[i]); break; }
+  }
+  if (useSms) {
+    var input = document.getElementById('smsRecipient');
+    if (input) input.value = c.username;
+    STATE._smsPicked = contactToResult(c);
+    hideRecipientResults('smsRecipientResults');
+    refreshSaveButtons();
+  } else {
+    pickSendRecipient(contactToResult(c));
+  }
 }

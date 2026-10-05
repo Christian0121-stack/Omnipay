@@ -1300,6 +1300,15 @@ function maskName(name) {
   return parts.slice(0, -1).join(' ') + ' ' + last + '.';
 }
 
+function maskNameDisplay(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '';
+  if (parts.length === 1) return Array.from(parts[0])[0] + '•••';
+  const last = Array.from(parts[parts.length - 1])[0].toUpperCase();
+  const first = parts.slice(0, -1).map((p) => Array.from(p)[0].toUpperCase() + '•••').join(' ');
+  return first + ' ' + last + '.';
+}
+
 async function requireUserToken(req, res, next) {
   const match = String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
   if (!match) return res.status(401).json({ error: 'authentication required' });
@@ -1321,13 +1330,14 @@ async function loadRecipientDirectory(force = false) {
       const name = String(u.name || '').trim();
       const username = String(u.username || '').trim();
       const phone = String(u.phone || '').trim();
-      const maskedName = maskName(name);
+      const searchMasked = maskName(name);
+      const maskedName = maskNameDisplay(name);
       return {
         uid: doc.id,
         name,
         nameLower: name.toLowerCase(),
         maskedName,
-        maskedSearch: maskedName.toLowerCase().replace(/[.•]/g, '').replace(/\s+/g, ' ').trim(),
+        maskedSearch: searchMasked.toLowerCase().replace(/[.•]/g, '').replace(/\s+/g, ' ').trim(),
         privacy: normalizePrivacy(u.privacy),
         username,
         usernameLower: username.toLowerCase(),
@@ -1420,6 +1430,71 @@ app.get('/api/search-recipients', recipientSearchLimiter, requireUserToken, reci
   } catch (err) {
     log('error', 'search', `Recipient search failed: ${err.message}`);
     return res.status(500).json({ error: 'search unavailable' });
+  }
+});
+
+const contactsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too many requests, please try again later' },
+});
+
+const MAX_CONTACTS = 200;
+
+function sanitizeContacts(input) {
+  if (!Array.isArray(input) || input.length > MAX_CONTACTS) return null;
+  const seen = new Set();
+  const out = [];
+  for (const item of input) {
+    if (!item || typeof item !== 'object') return null;
+    const username = String(item.username || '').trim();
+    if (!/^[^\s|]{1,40}$/.test(username)) return null;
+    const key = username.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const wallet = String(item.walletPublic || '').trim();
+    const addedAt = Number(item.addedAt);
+    out.push({
+      username,
+      name: String(item.name || '').trim().slice(0, 80),
+      nickname: String(item.nickname || '').trim().slice(0, 40),
+      walletPublic: StellarSdk.StrKey.isValidEd25519PublicKey(wallet) ? wallet : '',
+      addedAt: Number.isFinite(addedAt) && addedAt > 0 ? addedAt : Date.now(),
+    });
+  }
+  return out;
+}
+
+app.get('/api/contacts', contactsLimiter, requireUserToken, async (req, res) => {
+  try {
+    const snap = await usersCol().doc(req.authUid).get();
+    if (!snap.exists) return res.status(404).json({ error: 'account not found' });
+    const data = snap.data() || {};
+    return res.json({
+      contacts: Array.isArray(data.contacts) ? data.contacts : [],
+      updatedAt: Number(data.contactsUpdatedAt) || 0,
+    });
+  } catch (err) {
+    log('error', 'contacts', `Load failed: ${err.message}`);
+    return res.status(500).json({ error: 'contacts unavailable' });
+  }
+});
+
+app.put('/api/contacts', contactsLimiter, requireUserToken, async (req, res) => {
+  const contacts = sanitizeContacts(req.body && req.body.contacts);
+  if (!contacts) return res.status(400).json({ error: 'invalid contacts' });
+  try {
+    const updatedAt = Date.now();
+    await usersCol().doc(req.authUid).update({
+      contacts,
+      contactsUpdatedAt: updatedAt,
+    });
+    return res.json({ contacts, updatedAt });
+  } catch (err) {
+    log('error', 'contacts', `Save failed: ${err.message}`);
+    return res.status(500).json({ error: 'could not save contacts' });
   }
 });
 

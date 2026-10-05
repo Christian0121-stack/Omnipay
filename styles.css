@@ -2346,16 +2346,50 @@
   }
   .recipient-change:hover { border-color: var(--primary); background: var(--primary-light); }
 
-  .privacy-note {
-    display: flex; align-items: flex-start; gap: 12px;
-    margin: 16px 0 4px; padding: 14px 16px;
-    background: var(--bg); border: 1px solid var(--border);
-    border-radius: 16px;
-  }
-  .privacy-note-icon { font-size: 20px; line-height: 1.2; flex-shrink: 0; }
-  .privacy-note p { margin: 0; font-size: 12px; line-height: 1.55; color: var(--text-muted); font-weight: 500; }
-  .privacy-note p strong { color: var(--text); font-weight: 700; }
   .privacy-row { cursor: default; transition: opacity 0.2s; }
   .privacy-row:active { opacity: 1; }
   .privacy-row.is-disabled { opacity: 0.45; pointer-events: none; }
   .privacy-row .toggle:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+
+  .recipient-save {
+    flex: 0 0 auto; width: 36px; height: 36px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: none; border: 1.5px solid var(--border); color: var(--warning);
+    font-size: 17px; line-height: 1; cursor: pointer; font-family: inherit;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .recipient-save:hover, .recipient-save.saved { border-color: var(--warning); background: rgba(245,158,11,0.14); }
+  .recipient-save-link {
+    margin-top: 8px; padding: 6px 2px; background: none; border: none;
+    color: var(--primary); font-size: 12px; font-weight: 700; cursor: pointer; font-family: inherit;
+    max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .contacts-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 16px 0 12px; }
+  .contacts-filter { flex: 1 1 160px; min-width: 0; margin: 0; }
+  .contacts-add-btn {
+    flex: 0 0 auto; padding: 13px 16px; border: none; border-radius: var(--radius-sm);
+    background: linear-gradient(135deg, var(--primary), var(--accent)); color: #fff;
+    font-size: 13px; font-weight: 700; font-family: inherit; cursor: pointer; white-space: nowrap;
+    box-shadow: 0 4px 14px var(--primary-glow);
+  }
+  .contacts-add-box {
+    margin-bottom: 14px; padding: 14px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 16px;
+  }
+  .contacts-count { margin: 4px 2px 6px; font-size: 12px; font-weight: 700; color: var(--text-muted); }
+  .contact-row { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
+  .contact-row:last-child { border-bottom: none; }
+  .contact-main {
+    display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; min-height: 62px;
+    padding: 10px 0; background: none; border: none; text-align: left; cursor: pointer;
+    font-family: inherit; color: var(--text);
+  }
+  .contact-main:focus-visible, .contact-edit:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 10px; }
+  .contact-edit {
+    flex: 0 0 auto; width: 38px; height: 38px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: none; border: 1.5px solid var(--border); font-size: 15px; cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .contact-edit:hover { border-color: var(--primary); background: var(--primary-light); }
+  .contact-empty { padding: 28px 12px; text-align: center; font-size: 13px; font-weight: 500; line-height: 1.6; color: var(--text-muted); }

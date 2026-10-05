@@ -2062,7 +2062,8 @@ async function confirmSignPayment() {
       timestamp: timestamp,
       nonce:     nonce,
       requestId: requestId,
-      signature: bytesToBase64(keypair.sign(new TextEncoder().encode(payload)))
+      signature: bytesToBase64(keypair.sign(new TextEncoder().encode(payload))),
+      pin:       pin
     };
   } catch (err) {
     fail('Could not sign payment: ' + (err && err.message ? err.message : 'unknown error'));
@@ -2075,6 +2076,54 @@ async function confirmSignPayment() {
   closeModal('signPaymentModal');
   showAlert('success','🔏 Payment digitally signed');
   await executeSendMoney(auth);
+}
+
+var RELAY_ERROR_MESSAGES = {
+  'invalid signature':        'Signature check failed. Payment was not sent.',
+  'unauthorized sender':      'Your account is not authorized to sign payments. Log in again.',
+  'duplicate-request':        'Duplicate request ignored. No additional payment was made.',
+  'nonce-reused':             'This request was already used. No additional payment was made.',
+  'invalid-requestid':        'Invalid request ID.',
+  'invalid-nonce':            'Invalid nonce.',
+  'incorrect pin':            'Incorrect PIN. Payment was not sent.',
+  'recipient not found':      'Recipient is not registered on OmniPay.',
+  'insufficient-balance':     'Insufficient balance.',
+  'self-send':                'You cannot send money to yourself.',
+  'signer-not-enabled':       'Settlement is not enabled on your wallet yet. Try again.',
+  'settlement-not-configured':'Settlement is unavailable right now.',
+  'too many wrong PIN attempts, try again later': 'Too many wrong PIN attempts. Try again later.'
+};
+
+function relayErrorMessage(status, data) {
+  data = data || {};
+  var key = data.error || '';
+  var msg = RELAY_ERROR_MESSAGES[key]
+    || (data.reason && (MONITOR_REASONS[data.reason] || data.reason))
+    || key
+    || ('Relay error (HTTP ' + status + ')');
+  if (data.detail && typeof data.detail === 'string' && !RELAY_ERROR_MESSAGES[key]) msg += ' (' + data.detail + ')';
+  if (data.relayId) msg += ' [ref ' + String(data.relayId).slice(0, 8) + ']';
+  return msg;
+}
+
+async function postSignedSend(signedAuth, recipient, amtStr) {
+  var resp = await fetch(API_BASE + '/api/send', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      senderId:    STATE.uid,
+      recipientId: recipient,
+      amount:      amtStr,
+      timestamp:   signedAuth.timestamp,
+      nonce:       signedAuth.nonce,
+      requestId:   signedAuth.requestId,
+      signature:   signedAuth.signature,
+      pin:         signedAuth.pin
+    })
+  });
+  var data = await resp.json().catch(function(){ return {}; });
+  if (!resp.ok || !data.ok) throw new Error(relayErrorMessage(resp.status, data));
+  return data;
 }
 
 async function executeSendMoney(signedAuth) {
@@ -2147,77 +2196,87 @@ async function executeSendMoney(signedAuth) {
       throw new Error('Recipient wallet is not activated on Stellar Testnet. Ask the recipient to fund or activate the account first.');
     }
 
-    var accountResp = await fetch(STELLAR_HORIZON_TESTNET + '/accounts/' + encodeURIComponent(sourcePublic));
-    if (accountResp.status === 404 && !useFreighter) {
-      showLoading(true, 'Funding your Testnet wallet…');
-      await fundTestnetAccount(sourcePublic);
-      accountResp = await fetch(STELLAR_HORIZON_TESTNET + '/accounts/' + encodeURIComponent(sourcePublic));
-    }
-    if (!accountResp.ok) {
-      var errBody = await accountResp.json().catch(function(){ return {}; });
-      throw new Error('Sender account is not active on Stellar Testnet. Fund it via Friendbot first. (' + (errBody.detail || accountResp.status) + ')');
-    }
-    var accountData = await accountResp.json();
-
-    var account = new StellarSdk.Account(sourcePublic, accountData.sequence);
-
-    var txBuilder = new StellarSdk.TransactionBuilder(account, {
-      fee: StellarSdk.BASE_FEE,
-      networkPassphrase: StellarSdk.Networks.TESTNET
-    })
-      .addOperation(StellarSdk.Operation.payment({
-        destination: recipient,
-        asset:       StellarSdk.Asset.native(),
-        amount:      amtStr
-      }))
-      .addMemo(StellarSdk.Memo.text(note.substring(0, 28)))
-      .setTimeout(180);
-
-    var tx = txBuilder.build();
-    var txXdr;
-
-    if (useFreighter) {
-      var xdrUnsigned = tx.toXDR();
-      var api = getFreighterAPI();
-      var signResult = await api.signTransaction(xdrUnsigned, {
-        networkPassphrase: STELLAR_TESTNET_PASSPHRASE,
-        network: 'TESTNET'
-      });
-      if (typeof signResult === 'string') {
-        txXdr = signResult;
-      } else if (signResult && signResult.signedTxXdr) {
-        txXdr = signResult.signedTxXdr;
-      } else if (signResult && signResult.xdr) {
-        txXdr = signResult.xdr;
-      } else {
-        throw new Error('Freighter returned an unexpected signing result');
-      }
+    var txHash;
+    var sentViaSend = false;
+    if (signedAuth && !useFreighter) {
+      showLoading(true, 'Sending through OmniPay Relay…');
+      await prepareSettlementSigner(secretKey);
+      var sendData = await postSignedSend(signedAuth, recipient, amtStr);
+      txHash = sendData.txHash;
+      sentViaSend = true;
     } else {
-      tx.sign(StellarSdk.Keypair.fromSecret(secretKey));
-      txXdr = tx.toEnvelope().toXDR('base64');
-    }
+      var accountResp = await fetch(STELLAR_HORIZON_TESTNET + '/accounts/' + encodeURIComponent(sourcePublic));
+      if (accountResp.status === 404 && !useFreighter) {
+        showLoading(true, 'Funding your Testnet wallet…');
+        await fundTestnetAccount(sourcePublic);
+        accountResp = await fetch(STELLAR_HORIZON_TESTNET + '/accounts/' + encodeURIComponent(sourcePublic));
+      }
+      if (!accountResp.ok) {
+        var errBody = await accountResp.json().catch(function(){ return {}; });
+        throw new Error('Sender account is not active on Stellar Testnet. Fund it via Friendbot first. (' + (errBody.detail || accountResp.status) + ')');
+      }
+      var accountData = await accountResp.json();
 
-    var submitResp = await fetch(API_BASE + '/api/submit-payment', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        senderId:    STATE.uid,
-        recipientId: recipient,
-        amount:      amtStr,
-        signedXdr:   txXdr,
-        timestamp:   signedAuth ? signedAuth.timestamp : undefined,
-        nonce:       signedAuth ? signedAuth.nonce : undefined,
-        requestId:   signedAuth ? signedAuth.requestId : undefined,
-        signature:   signedAuth ? signedAuth.signature : undefined
+      var account = new StellarSdk.Account(sourcePublic, accountData.sequence);
+
+      var txBuilder = new StellarSdk.TransactionBuilder(account, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: StellarSdk.Networks.TESTNET
       })
-    });
-    var submitData = await submitResp.json();
+        .addOperation(StellarSdk.Operation.payment({
+          destination: recipient,
+          asset:       StellarSdk.Asset.native(),
+          amount:      amtStr
+        }))
+        .addMemo(StellarSdk.Memo.text(note.substring(0, 28)))
+        .setTimeout(180);
 
-    if (!submitResp.ok || !submitData.ok) {
-      throw new Error('Transaction failed: ' + (submitData.detail || submitData.error || 'Unknown relay error'));
+      var tx = txBuilder.build();
+      var txXdr;
+
+      if (useFreighter) {
+        var xdrUnsigned = tx.toXDR();
+        var api = getFreighterAPI();
+        var signResult = await api.signTransaction(xdrUnsigned, {
+          networkPassphrase: STELLAR_TESTNET_PASSPHRASE,
+          network: 'TESTNET'
+        });
+        if (typeof signResult === 'string') {
+          txXdr = signResult;
+        } else if (signResult && signResult.signedTxXdr) {
+          txXdr = signResult.signedTxXdr;
+        } else if (signResult && signResult.xdr) {
+          txXdr = signResult.xdr;
+        } else {
+          throw new Error('Freighter returned an unexpected signing result');
+        }
+      } else {
+        tx.sign(StellarSdk.Keypair.fromSecret(secretKey));
+        txXdr = tx.toEnvelope().toXDR('base64');
+      }
+
+      var submitResp = await fetch(API_BASE + '/api/submit-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          senderId:    STATE.uid,
+          recipientId: recipient,
+          amount:      amtStr,
+          signedXdr:   txXdr,
+          timestamp:   signedAuth ? signedAuth.timestamp : undefined,
+          nonce:       signedAuth ? signedAuth.nonce : undefined,
+          requestId:   signedAuth ? signedAuth.requestId : undefined,
+          signature:   signedAuth ? signedAuth.signature : undefined
+        })
+      });
+      var submitData = await submitResp.json();
+
+      if (!submitResp.ok || !submitData.ok) {
+        throw new Error('Transaction failed: ' + (submitData.detail || submitData.error || 'Unknown relay error'));
+      }
+
+      txHash = submitData.txHash;
     }
-
-    var txHash = submitData.txHash;
     STATE._balanceGraceUntil = Date.now() + 20000;
 
     var signingWalletIdx = -1;
@@ -2264,7 +2323,7 @@ async function executeSendMoney(signedAuth) {
       icon:   '💸'
     });
 
-    syncSenderTxsToFirestore();
+    if (!sentViaSend) syncSenderTxsToFirestore();
 
     var sendBal = document.getElementById('sendBal');
     if (sendBal) sendBal.textContent = (STATE.balance || 0).toFixed(6) + ' XLM';
@@ -3244,19 +3303,25 @@ async function doSendXLM() {
       throw new Error('Freighter returned an unexpected signing result');
     }
 
-    showLoading(true, 'Submitting to Stellar Testnet…');
-    var submitResp = await fetch(STELLAR_HORIZON_TESTNET + '/transactions', {
+    if (!STATE.uid) throw new Error('Log in to send through the OmniPay Relay.');
+    showLoading(true, 'Sending through OmniPay Relay…');
+    var submitResp = await fetch(API_BASE + '/api/submit-payment', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body:    'tx=' + encodeURIComponent(signedXDR)
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        senderId:    STATE.uid,
+        recipientId: dest,
+        amount:      amtNum.toFixed(7),
+        signedXdr:   signedXDR
+      })
     });
-    var submitData = await submitResp.json();
+    var submitData = await submitResp.json().catch(function(){ return {}; });
 
     showLoading(false);
     if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = '🚀 Send XLM'; }
 
-    if (submitData.successful === true) {
-      var txHash = submitData.hash || '';
+    if (submitResp.ok && submitData.ok === true) {
+      var txHash = submitData.txHash || '';
       renderXLMTxResult(true, txHash, amtNum, dest, '');
 
       STATE.transactions.unshift({
@@ -3275,11 +3340,9 @@ async function doSendXLM() {
       setTimeout(fetchLiveXLMBalance, 4000);
 
     } else {
-      var errCode = '';
-      if (submitData.extras && submitData.extras.result_codes) {
-        errCode = JSON.stringify(submitData.extras.result_codes);
-      }
-      renderXLMTxResult(false, '', amtNum, dest, errCode || submitData.title || 'Transaction was not accepted by the network');
+      var errCode = (submitData.reason || submitData.detail || '');
+      if (errCode && typeof errCode !== 'string') errCode = JSON.stringify(errCode);
+      renderXLMTxResult(false, '', amtNum, dest, errCode || submitData.error || 'Transaction was not accepted by the relay');
     }
 
   } catch (e) {

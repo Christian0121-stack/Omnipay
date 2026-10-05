@@ -2457,3 +2457,155 @@
   .mon-summary { gap: 8px; }
   .mon-stat-val { font-size: 19px; }
 }
+
+.auth-showcase { display: none; }
+
+@media (min-width: 1024px) {
+  body { padding: 0; }
+  #app {
+    max-width: none; max-height: none;
+    width: 100%; height: 100vh; height: 100svh;
+    border-radius: 0; box-shadow: none;
+  }
+  .alert-banner { left: 0; right: 0; margin: 0 auto; max-width: 560px; }
+  .modal-overlay { align-items: center; justify-content: center; padding: 24px; }
+  .modal,
+  .modal-card {
+    width: 100%; max-width: 480px;
+    max-height: 88%;
+    border-radius: 28px;
+    padding: 28px 28px 32px;
+  }
+  .modal-handle { display: none; }
+
+  #app:has(#bottomNav[style*="flex"]) .bottom-nav {
+    top: 0; right: auto; bottom: 0;
+    width: 248px; height: auto;
+    flex-direction: column; align-items: stretch; justify-content: flex-start;
+    gap: 6px; padding: 92px 14px 24px;
+    border-top: 0; border-right: 1px solid var(--border);
+    box-shadow: 8px 0 28px rgba(30,58,95,0.06);
+  }
+  #app:has(#bottomNav[style*="flex"]) .bottom-nav::before {
+    content: 'OmniPay';
+    position: absolute; top: 34px; left: 26px;
+    font-size: 24px; font-weight: 800; letter-spacing: -0.02em;
+    color: var(--primary);
+  }
+  #app:has(#bottomNav[style*="flex"]) .nav-item {
+    flex: 0 0 auto; flex-direction: row; justify-content: flex-start;
+    gap: 12px; padding: 6px 10px; min-height: 52px;
+    border-radius: 14px;
+  }
+  #app:has(#bottomNav[style*="flex"]) .nav-item:hover { background: var(--primary-light); }
+  #app:has(#bottomNav[style*="flex"]) .nav-item.active { background: var(--primary-light); }
+  #app:has(#bottomNav[style*="flex"]) .nav-icon { width: 40px; height: 40px; }
+  #app:has(#bottomNav[style*="flex"]) .nav-item.active .nav-icon {
+    background: transparent; transform: none; box-shadow: none;
+  }
+  #app:has(#bottomNav[style*="flex"]) .nav-label { font-size: 14px; }
+  #app:has(#bottomNav[style*="flex"]) .nav-pay-btn {
+    width: 40px; height: 40px; border-radius: 13px;
+    transform: none;
+    box-shadow: 0 4px 12px rgba(37,99,235,0.4), inset 0 1px 0 rgba(255,255,255,0.25);
+  }
+  #app:has(#bottomNav[style*="flex"]) .nav-pay-btn:active { transform: scale(0.95); }
+  #app:has(#bottomNav[style*="flex"]) .nav-pay-btn svg { width: 20px; height: 20px; }
+
+  #app:has(#bottomNav[style*="flex"]) .screen:not(.no-nav) {
+    left: 248px;
+    padding: 28px 32px 40px;
+  }
+  #app:has(#bottomNav[style*="flex"]) .screen:not(.no-nav) > * {
+    width: 100%; max-width: 960px;
+    margin-left: auto; margin-right: auto;
+  }
+  #app:has(#bottomNav[style*="flex"]) #pay > * { max-width: 640px; }
+  #app:has(#bottomNav[style*="flex"]) #profile > * { max-width: 800px; }
+
+  #app:has(#bottomNav[style*="flex"]) .home-hero,
+  #app:has(#bottomNav[style*="flex"]) .vault-hero,
+  #app:has(#bottomNav[style*="flex"]) .profile-hero,
+  #app:has(#bottomNav[style*="flex"]) .omnicard-page-header { border-radius: 28px; }
+  #app:has(#bottomNav[style*="flex"]) .page-header {
+    border: 1px solid var(--border);
+    border-radius: 24px;
+  }
+  #app:has(#bottomNav[style*="flex"]) .pay-tabs,
+  #app:has(#bottomNav[style*="flex"]) .filter-row {
+    margin-top: 12px;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+  }
+
+  #app:has(#bottomNav[style*="flex"]) #fullTxList {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 14px;
+    align-items: start;
+  }
+  #app:has(#bottomNav[style*="flex"]) #fullTxList > .card { grid-column: 1 / -1; }
+  #app:has(#bottomNav[style*="flex"]) .mon-stat { padding: 18px 12px; }
+  #app:has(#bottomNav[style*="flex"]) .mon-stat-val { font-size: 28px; }
+
+  #app:has(#bottomNav[style*="flex"]) .alert-banner { left: 248px; }
+
+  #app:not(:has(#bottomNav[style*="flex"])) #splash::before { width: 560px; height: 560px; }
+  #app:not(:has(#bottomNav[style*="flex"])) #splash::after { width: 400px; height: 400px; }
+  #app:not(:has(#bottomNav[style*="flex"])) .splash-ring3 { width: 260px; height: 260px; }
+  #app:not(:has(#bottomNav[style*="flex"])) .splash-circuit-tr,
+  #app:not(:has(#bottomNav[style*="flex"])) .splash-circuit-bl { width: 300px; height: 300px; }
+  #app:not(:has(#bottomNav[style*="flex"])) .splash-circuit-tl,
+  #app:not(:has(#bottomNav[style*="flex"])) .splash-circuit-br { width: 230px; height: 230px; }
+  #app:not(:has(#bottomNav[style*="flex"])) .splash-logo { width: 176px; height: 176px; margin-bottom: 30px; }
+  #app:not(:has(#bottomNav[style*="flex"])) .splash-logo img,
+  #app:not(:has(#bottomNav[style*="flex"])) .splash-logo div { width: 176px !important; height: 176px !important; }
+  #app:not(:has(#bottomNav[style*="flex"])) .splash-title { font-size: 64px; margin-bottom: 18px; }
+  #app:not(:has(#bottomNav[style*="flex"])) .splash-tagline { font-size: 21px; max-width: 460px; line-height: 1.7; }
+  #app:not(:has(#bottomNav[style*="flex"])) .splash-loader { width: 280px; }
+
+  #app:not(:has(#bottomNav[style*="flex"])) .auth-screen {
+    display: grid;
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+    align-items: start;
+  }
+  #app:not(:has(#bottomNav[style*="flex"])) .auth-header {
+    position: sticky; top: 0; align-self: start;
+    height: 100vh; height: 100svh;
+    padding: 64px clamp(48px, 6vw, 96px);
+    border-radius: 0 56px 56px 0;
+    display: flex; flex-direction: column; justify-content: center; align-items: flex-start;
+  }
+  #app:not(:has(#bottomNav[style*="flex"])) .auth-header .auth-logo-img {
+    width: 104px !important; height: 104px !important;
+    margin: 0 0 22px !important;
+  }
+  #app:not(:has(#bottomNav[style*="flex"])) .auth-header h1 { font-size: clamp(40px, 4vw, 56px); letter-spacing: -1.5px; }
+  #app:not(:has(#bottomNav[style*="flex"])) .auth-header p { font-size: 18px; max-width: 460px; line-height: 1.5; }
+  #app:not(:has(#bottomNav[style*="flex"])) .auth-showcase {
+    display: block; position: relative; z-index: 1;
+    margin-top: 44px; max-width: 520px;
+  }
+  #app:not(:has(#bottomNav[style*="flex"])) .auth-points { list-style: none; display: flex; flex-direction: column; gap: 22px; }
+  #app:not(:has(#bottomNav[style*="flex"])) .auth-points li { display: flex; align-items: flex-start; gap: 16px; }
+  #app:not(:has(#bottomNav[style*="flex"])) .auth-point-icon {
+    flex: 0 0 auto; width: 46px; height: 46px; border-radius: 14px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 21px;
+    background: rgba(255,255,255,0.14);
+    border: 1px solid rgba(255,255,255,0.22);
+  }
+  #app:not(:has(#bottomNav[style*="flex"])) .auth-points strong { display: block; font-size: 16px; font-weight: 700; color: #fff; }
+  #app:not(:has(#bottomNav[style*="flex"])) .auth-points div span { display: block; margin-top: 3px; font-size: 14px; line-height: 1.5; color: rgba(255,255,255,0.74); }
+  #app:not(:has(#bottomNav[style*="flex"])) .auth-point-icon svg { width: 22px; height: 22px; }
+  #app:not(:has(#bottomNav[style*="flex"])) .auth-body {
+    align-self: center; width: 100%; max-width: 520px;
+    margin: 0 auto; padding: 56px 40px;
+    flex: none;
+  }
+
+  #app:not(:has(#bottomNav[style*="flex"])) #wallet-setup .ws-steps,
+  #app:not(:has(#bottomNav[style*="flex"])) #wallet-setup .ws-wallet-card,
+  #app:not(:has(#bottomNav[style*="flex"])) #wallet-setup .ws-continue-btn,
+  #app:not(:has(#bottomNav[style*="flex"])) #wallet-setup #wsErrorBox { width: 100%; max-width: 520px; }
+}

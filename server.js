@@ -1272,6 +1272,13 @@ function requireAdminKey(req, res, next) {
   }
   next();
 }
+app.get('/admin', (_req, res) => {
+  const file = path.join(PUBLIC_DIR, 'admin.html');
+  if (!fs.existsSync(file)) return res.status(404).end();
+  res.set('Cache-Control', 'no-store');
+  res.set('X-Robots-Tag', 'noindex, nofollow');
+  return res.sendFile(file);
+});
 const RECIPIENT_DIRECTORY_TTL_MS = 30 * 1000;
 let recipientDirectory = { loadedAt: 0, rows: [] };
 
@@ -1568,34 +1575,106 @@ const monitoringLimiter = rateLimit({
   message: { error: 'too many requests, please try again later' },
 });
 
+function mapMyTransaction(doc) {
+  const d = doc.data();
+  const created = d.createdAt && typeof d.createdAt.toMillis === 'function' ? d.createdAt.toMillis() : 0;
+  const sv = d.signatureValidation;
+  return {
+    id: doc.id,
+    channel: d.channel || null,
+    recipient: d.recipient || null,
+    amount: d.amount != null ? Number(d.amount) : null,
+    status: d.status || null,
+    statusHistory: Array.isArray(d.statusHistory)
+      ? d.statusHistory.map((h) => ({ status: h.status, at: h.at, detail: h.detail || null }))
+      : [],
+    signatureValidation: sv ? { result: sv.result || null, reason: sv.reason || null } : null,
+    txHash: d.txHash || null,
+    sorobanTxHash: d.sorobanTxHash || null,
+    createdAt: created,
+  };
+}
+
+function mapMyTransactionSnapshot(snap) {
+  const transactions = snap.docs.map(mapMyTransaction);
+  transactions.sort((a, b) => b.createdAt - a.createdAt);
+  return transactions;
+}
+
 app.get('/api/my-transactions', requireUserToken, monitoringLimiter, async (req, res) => {
   try {
     const snap = await relayTransactionsCol().where('senderId', '==', req.authUid).limit(200).get();
-    const transactions = snap.docs.map((doc) => {
-      const d = doc.data();
-      const created = d.createdAt && typeof d.createdAt.toMillis === 'function' ? d.createdAt.toMillis() : 0;
-      const sv = d.signatureValidation;
-      return {
-        id: doc.id,
-        channel: d.channel || null,
-        recipient: d.recipient || null,
-        amount: d.amount != null ? Number(d.amount) : null,
-        status: d.status || null,
-        statusHistory: Array.isArray(d.statusHistory)
-          ? d.statusHistory.map((h) => ({ status: h.status, at: h.at, detail: h.detail || null }))
-          : [],
-        signatureValidation: sv ? { result: sv.result || null, reason: sv.reason || null } : null,
-        txHash: d.txHash || null,
-        sorobanTxHash: d.sorobanTxHash || null,
-        createdAt: created,
-      };
-    });
-    transactions.sort((a, b) => b.createdAt - a.createdAt);
-    return res.json({ transactions });
+    return res.json({ transactions: mapMyTransactionSnapshot(snap) });
   } catch (err) {
     log('error', 'monitoring', `Load failed: ${err.message}`);
     return res.status(500).json({ error: 'could not load transactions' });
   }
+});
+
+const MY_STREAM_MAX_PER_USER = 3;
+const MY_STREAM_MAX_AGE_MS = 50 * 60 * 1000;
+const MY_STREAM_HEARTBEAT_MS = 25 * 1000;
+const myStreamCounts = new Map();
+
+app.get('/api/my-transactions/stream', requireUserToken, (req, res) => {
+  const uid = req.authUid;
+  const open = myStreamCounts.get(uid) || 0;
+  if (open >= MY_STREAM_MAX_PER_USER) {
+    return res.status(429).json({ error: 'too many open streams' });
+  }
+  myStreamCounts.set(uid, open + 1);
+
+  res.set({
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+  res.write('retry: 5000\n\n');
+
+  let closed = false;
+  let unsubscribe = null;
+  let heartbeat = null;
+  let maxAge = null;
+
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(heartbeat);
+    clearTimeout(maxAge);
+    if (typeof unsubscribe === 'function') unsubscribe();
+    const left = (myStreamCounts.get(uid) || 1) - 1;
+    if (left > 0) myStreamCounts.set(uid, left);
+    else myStreamCounts.delete(uid);
+    res.end();
+  };
+
+  try {
+    unsubscribe = relayTransactionsCol()
+      .where('senderId', '==', uid)
+      .limit(200)
+      .onSnapshot(
+        (snap) => {
+          if (closed) return;
+          res.write(`data: ${JSON.stringify({ transactions: mapMyTransactionSnapshot(snap) })}\n\n`);
+        },
+        (err) => {
+          log('error', 'monitoring', `Stream failed: ${err.message}`);
+          cleanup();
+        }
+      );
+  } catch (err) {
+    log('error', 'monitoring', `Stream setup failed: ${err.message}`);
+    cleanup();
+    return;
+  }
+
+  heartbeat = setInterval(() => {
+    if (!closed) res.write(': ping\n\n');
+  }, MY_STREAM_HEARTBEAT_MS);
+  maxAge = setTimeout(cleanup, MY_STREAM_MAX_AGE_MS);
+  req.on('close', cleanup);
 });
 
 app.post('/webhook/sms-received', async (req, res) => {
@@ -1863,6 +1942,64 @@ app.post('/dev/simulate-sms', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+let adminStreamCount = 0;
+const ADMIN_STREAM_MAX = 5;
+app.get('/api/relay-transactions/stream', requireAdminKey, (req, res) => {
+  if (adminStreamCount >= ADMIN_STREAM_MAX) {
+    return res.status(429).json({ error: 'too many open streams' });
+  }
+  adminStreamCount += 1;
+
+  res.set({
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+  res.write('retry: 5000\n\n');
+
+  let closed = false;
+  let unsubscribe = null;
+  let heartbeat = null;
+  let maxAge = null;
+
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(heartbeat);
+    clearTimeout(maxAge);
+    if (typeof unsubscribe === 'function') unsubscribe();
+    adminStreamCount = Math.max(0, adminStreamCount - 1);
+    res.end();
+  };
+
+  try {
+    unsubscribe = relayTransactionsCol()
+      .orderBy('createdAt', 'desc')
+      .limit(200)
+      .onSnapshot(
+        (snap) => {
+          if (closed) return;
+          res.write(`data: ${JSON.stringify({ transactions: snap.docs.map((d) => ({ id: d.id, ...d.data() })) })}\n\n`);
+        },
+        (err) => {
+          log('error', 'monitoring', `Admin stream failed: ${err.message}`);
+          cleanup();
+        }
+      );
+  } catch (err) {
+    log('error', 'monitoring', `Admin stream setup failed: ${err.message}`);
+    cleanup();
+    return;
+  }
+
+  heartbeat = setInterval(() => {
+    if (!closed) res.write(': ping\n\n');
+  }, 25 * 1000);
+  maxAge = setTimeout(cleanup, 50 * 60 * 1000);
+  req.on('close', cleanup);
 });
 app.get('/api/relay-transactions/:id', requireAdminKey, async (req, res) => {
   try {

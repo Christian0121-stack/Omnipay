@@ -1,4 +1,4 @@
-var VERSION = 'omnipay-v1';
+var VERSION = 'omnipay-v2';
 
 var SHELL = [
   './',
@@ -29,7 +29,7 @@ var CDN_HOSTS = [
   'fonts.gstatic.com'
 ];
 
-var LIVE_PATHS = /^\/(api|webhook|dev|health)(\/|$)/;
+var LIVE_PATHS = /^\/(api|webhook|dev|health)(\/|$)|^\/admin(\.html|\.js)?$/;
 
 self.addEventListener('install', function (event) {
   event.waitUntil((async function () {

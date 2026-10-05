@@ -1667,24 +1667,103 @@ function monitorHasPending() {
   return relay.some(function(r) { return !MONITOR_FINAL_STATUSES[r.status]; });
 }
 
+var _monitorStreamAbort = null;
+var _monitorStreamLive = false;
+var _monitorStreamRetryId = null;
+
+function _monitorStreamSupported() {
+  return typeof ReadableStream !== 'undefined' && typeof AbortController !== 'undefined' && typeof TextDecoder !== 'undefined';
+}
+
+function _monitorScreenActive() {
+  var screen = document.getElementById('history');
+  return !!(screen && screen.classList.contains('active'));
+}
+
+function _applyMonitorStreamData(list) {
+  MONITOR.relay = Array.isArray(list) ? list : [];
+  MONITOR.loadedAt = Date.now();
+  if (_monitorScreenActive()) renderHistory();
+}
+
+function _handleMonitorStreamEvent(block) {
+  block.split('\n').forEach(function(line) {
+    if (line.indexOf('data:') !== 0) return;
+    try {
+      var payload = JSON.parse(line.slice(5).trim());
+      _applyMonitorStreamData(payload.transactions);
+    } catch (e) {}
+  });
+}
+
+async function _startMonitorStream() {
+  _stopMonitorStream();
+  if (!_monitorStreamSupported() || !navigator.onLine || !auth || !auth.currentUser) return;
+  var controller = new AbortController();
+  _monitorStreamAbort = controller;
+  try {
+    var token = await auth.currentUser.getIdToken();
+    var resp = await fetch(API_BASE + '/api/my-transactions/stream', {
+      headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'text/event-stream' },
+      signal: controller.signal
+    });
+    if (!resp.ok || !resp.body) throw new Error('http-' + resp.status);
+    _monitorStreamLive = true;
+    var reader = resp.body.getReader();
+    var decoder = new TextDecoder();
+    var buffer = '';
+    while (true) {
+      var chunk = await reader.read();
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      var blocks = buffer.split('\n\n');
+      buffer = blocks.pop();
+      blocks.forEach(_handleMonitorStreamEvent);
+    }
+  } catch (e) {}
+  if (_monitorStreamAbort !== controller) return;
+  _monitorStreamAbort = null;
+  _monitorStreamLive = false;
+  if (_monitorScreenActive() && STATE.isLoggedIn) {
+    _monitorStreamRetryId = setTimeout(function() {
+      _monitorStreamRetryId = null;
+      if (_monitorScreenActive() && STATE.isLoggedIn && !document.hidden) _startMonitorStream();
+    }, MONITOR_REFRESH_MS);
+  }
+}
+
+function _stopMonitorStream() {
+  if (_monitorStreamRetryId) { clearTimeout(_monitorStreamRetryId); _monitorStreamRetryId = null; }
+  var controller = _monitorStreamAbort;
+  _monitorStreamAbort = null;
+  _monitorStreamLive = false;
+  if (controller) { try { controller.abort(); } catch (e) {} }
+}
+
 function _startMonitorAutoRefresh() {
   _stopMonitorAutoRefresh();
   _monitorRefreshId = setInterval(function() {
     var screen = document.getElementById('history');
     if (!screen || !screen.classList.contains('active')) { _stopMonitorAutoRefresh(); return; }
     if (document.hidden) return;
+    if (_monitorStreamLive) return;
     loadMonitoringData(monitorHasPending());
   }, MONITOR_REFRESH_MS);
+  _startMonitorStream();
 }
 
 function _stopMonitorAutoRefresh() {
   if (_monitorRefreshId) { clearInterval(_monitorRefreshId); _monitorRefreshId = null; }
+  _stopMonitorStream();
 }
 
 document.addEventListener('visibilitychange', function() {
   if (document.hidden) return;
   var screen = document.getElementById('history');
-  if (screen && screen.classList.contains('active')) loadMonitoringData(true);
+  if (screen && screen.classList.contains('active')) {
+    loadMonitoringData(true);
+    _startMonitorStream();
+  }
 });
 
 function monitorReason(detail) {

@@ -1252,11 +1252,53 @@ let recipientDirectory = { loadedAt: 0, rows: [] };
 
 const recipientSearchLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 60,
+  max: 30,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'too many requests, please try again later' },
 });
+
+const recipientSearchUserLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `uid:${req.authUid || 'anonymous'}`,
+  message: { error: 'too many requests, please try again later' },
+});
+
+const privacyWriteLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too many requests, please try again later' },
+});
+
+const DEFAULT_PRIVACY = {
+  showFullName: false,
+  findByName: true,
+  findByPhone: true,
+  hideFromSearch: false,
+};
+
+function normalizePrivacy(raw) {
+  const p = raw && typeof raw === 'object' ? raw : {};
+  return {
+    showFullName: p.showFullName === true,
+    findByName: p.findByName !== false,
+    findByPhone: p.findByPhone !== false,
+    hideFromSearch: p.hideFromSearch === true,
+  };
+}
+
+function maskName(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '';
+  if (parts.length === 1) return Array.from(parts[0])[0] + '•••';
+  const last = Array.from(parts[parts.length - 1])[0].toUpperCase();
+  return parts.slice(0, -1).join(' ') + ' ' + last + '.';
+}
 
 async function requireUserToken(req, res, next) {
   const match = String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
@@ -1272,17 +1314,21 @@ async function requireUserToken(req, res, next) {
 
 async function loadRecipientDirectory(force = false) {
   if (!force && Date.now() - recipientDirectory.loadedAt < RECIPIENT_DIRECTORY_TTL_MS) return recipientDirectory.rows;
-  const snap = await usersCol().select('name', 'username', 'phone', 'walletPublic').get();
+  const snap = await usersCol().select('name', 'username', 'phone', 'walletPublic', 'privacy').get();
   const rows = snap.docs
     .map((doc) => {
       const u = doc.data() || {};
       const name = String(u.name || '').trim();
       const username = String(u.username || '').trim();
       const phone = String(u.phone || '').trim();
+      const maskedName = maskName(name);
       return {
         uid: doc.id,
         name,
         nameLower: name.toLowerCase(),
+        maskedName,
+        maskedSearch: maskedName.toLowerCase().replace(/[.•]/g, '').replace(/\s+/g, ' ').trim(),
+        privacy: normalizePrivacy(u.privacy),
         username,
         usernameLower: username.toLowerCase(),
         phone,
@@ -1309,35 +1355,46 @@ function searchRecipientRows(rows, q) {
   const qDigits = phoneLike ? q.replace(/\D/g, '') : '';
   const qNational = qDigits.replace(/^(63|0)/, '');
   const walletQuery = StellarSdk.StrKey.isValidEd25519PublicKey(q.toUpperCase()) ? q.toUpperCase() : '';
+  const nameSearchable = !phoneLike && needle.replace(/[^\p{L}\p{N}]/gu, '').length >= 3;
 
   const scored = [];
+  const exact = new Set();
   for (const row of rows) {
+    if (row.privacy.hideFromSearch) continue;
     let score = null;
     const consider = (value) => { if (score === null || value < score) score = value; };
 
-    if (walletQuery && row.walletPublic === walletQuery) consider(0);
+    if (walletQuery && row.walletPublic === walletQuery) {
+      consider(0);
+      exact.add(row.uid);
+    }
     if (row.usernameLower) {
-      if (row.usernameLower === needle) consider(1);
+      if (row.usernameLower === needle) { consider(1); exact.add(row.uid); }
       else if (row.usernameLower.startsWith(needle)) consider(2);
       else if (row.usernameLower.includes(needle)) consider(4);
     }
-    if (row.nameLower) {
-      if (row.nameLower === needle) consider(1);
-      else if (row.nameLower.startsWith(needle)) consider(2);
-      else if (tokens.length && tokens.every((t) => row.nameLower.includes(t))) consider(3);
+    if (nameSearchable && row.privacy.findByName) {
+      const hay = row.privacy.showFullName ? row.nameLower : row.maskedSearch;
+      if (hay) {
+        if (hay === needle) consider(1);
+        else if (hay.startsWith(needle)) consider(2);
+        else if (tokens.length && tokens.every((t) => hay.includes(t))) consider(3);
+      }
     }
-    if (qDigits.length >= 3 && row.phoneDigits) {
+    if (row.privacy.findByPhone && qDigits.length >= 3 && row.phoneDigits) {
       if (row.phoneDigits.includes(qDigits) || (qNational.length >= 3 && row.phoneNational.includes(qNational))) {
-        consider(row.phoneNational === qNational || row.phoneDigits === qDigits ? 1 : 3);
+        const sameNumber = row.phoneNational === qNational || row.phoneDigits === qDigits;
+        consider(sameNumber ? 1 : 3);
+        if (sameNumber && qNational.length >= 9) exact.add(row.uid);
       }
     }
     if (score !== null) scored.push({ score, row });
   }
   scored.sort((a, b) => a.score - b.score || a.row.nameLower.localeCompare(b.row.nameLower));
-  return { matches: scored.map((s) => s.row), revealPhone: qDigits.length >= 7 };
+  return { matches: scored.map((s) => s.row), exact, revealPhone: qDigits.length >= 7 };
 }
 
-app.get('/api/search-recipients', recipientSearchLimiter, requireUserToken, async (req, res) => {
+app.get('/api/search-recipients', recipientSearchLimiter, requireUserToken, recipientSearchUserLimiter, async (req, res) => {
   const q = String(req.query.q || '').trim().slice(0, 64);
   if (q.length < 2) return res.json({ results: [] });
 
@@ -1352,7 +1409,9 @@ app.get('/api/search-recipients', recipientSearchLimiter, requireUserToken, asyn
     const selfMatch = others.length === 0 && found.matches.length > 0;
     const results = others.slice(0, 8).map((row) => ({
       uid: row.uid,
-      name: row.name || row.username,
+      name: !row.name
+        ? row.username
+        : (row.privacy.showFullName || found.exact.has(row.uid)) ? row.name : row.maskedName,
       username: row.username,
       phone: found.revealPhone ? row.phone : maskPhone(row.phone),
       walletPublic: row.walletPublic,
@@ -1361,6 +1420,42 @@ app.get('/api/search-recipients', recipientSearchLimiter, requireUserToken, asyn
   } catch (err) {
     log('error', 'search', `Recipient search failed: ${err.message}`);
     return res.status(500).json({ error: 'search unavailable' });
+  }
+});
+
+app.get('/api/privacy-settings', requireUserToken, async (req, res) => {
+  try {
+    const snap = await usersCol().doc(req.authUid).get();
+    if (!snap.exists) return res.status(404).json({ error: 'account not found' });
+    return res.json({ privacy: normalizePrivacy((snap.data() || {}).privacy) });
+  } catch (err) {
+    log('error', 'privacy', `Load failed: ${err.message}`);
+    return res.status(500).json({ error: 'privacy settings unavailable' });
+  }
+});
+
+app.post('/api/privacy-settings', privacyWriteLimiter, requireUserToken, async (req, res) => {
+  const incoming = req.body && req.body.privacy;
+  if (!incoming || typeof incoming !== 'object') {
+    return res.status(400).json({ error: 'privacy settings required' });
+  }
+  const next = {};
+  for (const key of Object.keys(DEFAULT_PRIVACY)) {
+    if (typeof incoming[key] !== 'boolean') {
+      return res.status(400).json({ error: `invalid value for ${key}` });
+    }
+    next[key] = incoming[key];
+  }
+  try {
+    await usersCol().doc(req.authUid).update({
+      privacy: next,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    recipientDirectory.loadedAt = 0;
+    return res.json({ privacy: next });
+  } catch (err) {
+    log('error', 'privacy', `Save failed: ${err.message}`);
+    return res.status(500).json({ error: 'could not save privacy settings' });
   }
 });
 

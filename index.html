@@ -796,6 +796,7 @@
     <div class="settings-tabs">
       <button class="settings-tab-btn active" onclick="switchSettingsTab('summary', this)">Account Summary</button>
       <button class="settings-tab-btn" onclick="switchSettingsTab('profile-edit', this)">Profile</button>
+      <button class="settings-tab-btn" onclick="switchSettingsTab('privacy', this)">Privacy</button>
       <button class="settings-tab-btn" onclick="switchSettingsTab('system', this)">System Settings</button>
     </div>
 
@@ -837,6 +838,46 @@
         </div>
         <button class="btn btn-primary btn-block" id="saveProfileBtn" onclick="doSaveProfile()">💾 Save Profile</button>
         <div style="height:8px;"></div>
+      </div>
+    </div>
+
+    <div class="settings-panel" id="spanel-privacy">
+      <div class="settings-list">
+        <div class="settings-item privacy-row">
+          <div class="settings-icon" style="background:linear-gradient(135deg,#EAF1FF,#D6E4FF);">🪪</div>
+          <div class="settings-info">
+            <h4>Show my full name in search</h4>
+            <p>Off by default. Others see a masked name</p>
+          </div>
+          <div class="toggle" id="privShowFullName" role="switch" aria-checked="false" tabindex="0" onclick="togglePrivacy('showFullName')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();togglePrivacy('showFullName')}"></div>
+        </div>
+
+        <div class="settings-item privacy-row" data-hide-dim>
+          <div class="settings-icon" style="background:linear-gradient(135deg,#E8FFF6,#C6F9E8);">🔤</div>
+          <div class="settings-info">
+            <h4>Let others find me by name</h4>
+            <p>Turn off to be found by username or number only</p>
+          </div>
+          <div class="toggle on" id="privFindByName" role="switch" aria-checked="true" tabindex="0" onclick="togglePrivacy('findByName')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();togglePrivacy('findByName')}"></div>
+        </div>
+
+        <div class="settings-item privacy-row" data-hide-dim>
+          <div class="settings-icon" style="background:linear-gradient(135deg,#FFF3E0,#FFE0B2);">📱</div>
+          <div class="settings-info">
+            <h4>Let others find me by phone number</h4>
+            <p>Turn off to be found by name or username only</p>
+          </div>
+          <div class="toggle on" id="privFindByPhone" role="switch" aria-checked="true" tabindex="0" onclick="togglePrivacy('findByPhone')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();togglePrivacy('findByPhone')}"></div>
+        </div>
+
+        <div class="settings-item privacy-row">
+          <div class="settings-icon" style="background:linear-gradient(135deg,#F0E8FF,#DDD5FF);">🙈</div>
+          <div class="settings-info">
+            <h4>Hide me from search</h4>
+            <p>You won't appear anywhere, but can still receive via QR</p>
+          </div>
+          <div class="toggle" id="privHideFromSearch" role="switch" aria-checked="false" tabindex="0" onclick="togglePrivacy('hideFromSearch')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();togglePrivacy('hideFromSearch')}"></div>
+        </div>
       </div>
     </div>
 

@@ -446,6 +446,88 @@ function switchSettingsTab(tab, btn) {
   var panel = document.getElementById('spanel-' + tab);
   if (panel) panel.classList.add('active');
   if (tab === 'profile-edit') populateProfileEditForm();
+  if (tab === 'privacy') loadPrivacySettings();
+}
+
+var PRIVACY = {
+  keys: ['showFullName', 'findByName', 'findByPhone', 'hideFromSearch'],
+  ids: { showFullName: 'privShowFullName', findByName: 'privFindByName', findByPhone: 'privFindByPhone', hideFromSearch: 'privHideFromSearch' },
+  values: { showFullName: false, findByName: true, findByPhone: true, hideFromSearch: false },
+  loaded: false,
+  busy: false
+};
+
+function renderPrivacySettings() {
+  PRIVACY.keys.forEach(function (key) {
+    var el = document.getElementById(PRIVACY.ids[key]);
+    if (!el) return;
+    el.classList.toggle('on', !!PRIVACY.values[key]);
+    el.setAttribute('aria-checked', PRIVACY.values[key] ? 'true' : 'false');
+  });
+  document.querySelectorAll('#spanel-privacy [data-hide-dim]').forEach(function (row) {
+    row.classList.toggle('is-disabled', !!PRIVACY.values.hideFromSearch);
+  });
+}
+
+function applyPrivacySettings(remote) {
+  var next = {};
+  PRIVACY.keys.forEach(function (key) {
+    next[key] = typeof remote[key] === 'boolean' ? remote[key] : PRIVACY.values[key];
+  });
+  PRIVACY.values = next;
+  PRIVACY.loaded = true;
+  renderPrivacySettings();
+}
+
+async function privacyRequest(method, body) {
+  if (!navigator.onLine) throw new Error('offline');
+  if (!auth || !auth.currentUser) throw new Error('signed-out');
+  var token = await auth.currentUser.getIdToken();
+  var opts = { method: method, headers: { 'Authorization': 'Bearer ' + token } };
+  if (body) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  var resp = await fetch(API_BASE + '/api/privacy-settings', opts);
+  if (!resp.ok) throw new Error('http-' + resp.status);
+  var data = await resp.json();
+  return data.privacy || {};
+}
+
+async function loadPrivacySettings() {
+  renderPrivacySettings();
+  try {
+    applyPrivacySettings(await privacyRequest('GET'));
+  } catch (err) {
+    if (!PRIVACY.loaded) showAlert('yellow', '⚠️ Could not load your privacy settings. Please try again.');
+  }
+}
+
+async function togglePrivacy(key) {
+  if (PRIVACY.busy) return;
+  if (!PRIVACY.loaded) {
+    showAlert('yellow', '⚠️ Privacy settings are still loading. Please try again.');
+    loadPrivacySettings();
+    return;
+  }
+  var previous = Object.assign({}, PRIVACY.values);
+  var next = Object.assign({}, PRIVACY.values);
+  next[key] = !next[key];
+  PRIVACY.values = next;
+  PRIVACY.busy = true;
+  renderPrivacySettings();
+  try {
+    applyPrivacySettings(await privacyRequest('POST', { privacy: next }));
+    showAlert('success', '✅ Privacy setting updated!');
+  } catch (err) {
+    PRIVACY.values = previous;
+    renderPrivacySettings();
+    showAlert('red', err && err.message === 'offline'
+      ? '❌ You need an internet connection to change privacy settings.'
+      : '❌ Could not save your privacy setting. Please try again.');
+  } finally {
+    PRIVACY.busy = false;
+  }
 }
 
 function populateProfileEditForm() {
@@ -3851,6 +3933,7 @@ function recipientSearchError(err, offlineHint) {
   var msg = err && err.message;
   if (msg === 'offline') return offlineHint;
   if (msg === 'signed-out') return 'Sign in online to search for recipients.';
+  if (msg === 'http-429') return 'Too many searches. Please wait a moment and try again.';
   return 'Search is unavailable right now. Please try again.';
 }
 
@@ -3918,7 +4001,7 @@ function scheduleRecipientSearch(key, boxId, value, onPick, offlineHint) {
       if (seq !== RECIPIENT_SEARCH.seq[key]) return;
       var emptyMsg = found.selfMatch
         ? 'That is your own account. Search for someone else to send to.'
-        : 'No users found. Check the spelling or try a username or mobile number.';
+        : 'No users found. Names need at least 3 letters, or try a username or mobile number.';
       renderRecipientResults(boxId, results, results.length ? '' : emptyMsg, onPick);
     } catch (err) {
       if (seq !== RECIPIENT_SEARCH.seq[key]) return;

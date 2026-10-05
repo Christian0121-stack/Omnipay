@@ -2345,3 +2345,17 @@
     font-family: inherit; transition: border-color 0.2s, background 0.2s;
   }
   .recipient-change:hover { border-color: var(--primary); background: var(--primary-light); }
+
+  .privacy-note {
+    display: flex; align-items: flex-start; gap: 12px;
+    margin: 16px 0 4px; padding: 14px 16px;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 16px;
+  }
+  .privacy-note-icon { font-size: 20px; line-height: 1.2; flex-shrink: 0; }
+  .privacy-note p { margin: 0; font-size: 12px; line-height: 1.55; color: var(--text-muted); font-weight: 500; }
+  .privacy-note p strong { color: var(--text); font-weight: 700; }
+  .privacy-row { cursor: default; transition: opacity 0.2s; }
+  .privacy-row:active { opacity: 1; }
+  .privacy-row.is-disabled { opacity: 0.45; pointer-events: none; }
+  .privacy-row .toggle:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }

@@ -195,6 +195,7 @@ then delivered as a multi-part SMS.
 | `GET` | `/api/settlement-signer` | Returns the settlement signer public key and network passphrase. `503` if the signer is not configured. |
 | `POST` | `/api/submit-payment` | Relays a payment that the client already signed as a Stellar transaction. Body: `{ senderId, recipientId, amount, signedXdr }`. Submits the XDR to Horizon and records a relay entry. It does **no** signature/PIN check of its own — the Stellar signature inside the XDR is what authorizes the payment, and `senderId`/`recipientId`/`amount` are recorded for monitoring only (not cross-checked against the XDR). Used by the current web send flow. |
 | `POST` | `/dev/simulate-sms` | **Localhost only.** Simulates an inbound SMS without a real gateway (skips webhook signature checks). Body: `{ sender, message }`. |
+| `GET` | `/api/my-transactions` | Signed-in user's own payments for the monitoring dashboard. Requires a Firebase ID token in the `Authorization: Bearer` header. Returns status, status history, amount, recipient, channel, failure reason, `txHash` and `sorobanTxHash` only. Limited to 30 requests per minute per user. |
 | `GET` | `/api/relay-transactions` | Recent relay transactions. Query: `?status=`, `?limit=` (max 200). Requires `x-admin-key`. |
 | `GET` | `/api/relay-transactions/:id` | One relay transaction, with full status history. Requires `x-admin-key`. |
 | `GET` | `/api/replay-audit/:requestId` | Replay evidence for a request ID: `status`, `channel`, `txHash`, `settlements` (0 or 1), `replayCount`, `lastReplayAt`, `lastReplayChannel`. Requires `x-admin-key`. |
@@ -376,10 +377,28 @@ RECEIVED -> VALIDATION_FAILED (terminal, nothing sent to Stellar)
 
 Each document keeps the full `statusHistory`. When Soroban is enabled, the
 document also stores `sorobanTxHash`, `sorobanContractId` and `sorobanRecordStatus`
-(`recorded` or `failed`). The monitoring
-dashboard is meant to read from this collection; it is **not yet wired into
-the web app**. Until then the data can be queried through the admin-key-protected
-`/api/relay-transactions` endpoints or directly in the Firebase Console.
+(`recorded` or `failed`).
+
+## Transaction monitoring dashboard
+
+The **Transaction Monitoring** screen of the web app (History tab) reads this
+collection through `GET /api/my-transactions`. Each payment is shown as a card
+with its validation state, settlement state, failure reason, Stellar
+transaction hash and Soroban contract transaction hash, plus the stage chips
+Received, Validated, Submitted, Confirmed and Settled. Payments that were
+rejected show **Validation Failed** and payments that broke after submission
+show **Failed**. The list can be filtered by Settled, Pending and Failed.
+
+- **Live updates:** while the screen is open, the app refreshes every 5 seconds
+  when a payment is still in progress, so Firestore changes appear without
+  reopening the screen. Refreshing pauses while the tab is hidden and resumes
+  when it is shown again.
+- **Security:** the browser never holds `ADMIN_API_KEY`. The endpoint requires
+  the user's Firebase sign-in token and only returns that user's own
+  payments, limited to status, status history, amount, recipient, channel,
+  failure reason and transaction hashes. Signed payloads and phone numbers are
+  not returned. Keep `omnipay_relay_transactions` closed to direct client reads
+  in the Firestore rules, so only the server can read it.
 
 ## Firestore collections used
 
@@ -448,12 +467,14 @@ Implemented:
 - [x] Contract ID recorded ([Soroban settlement contract](#soroban-settlement-contract))
 - [x] Contract source code and tests in `contract/`
 - [x] Settlement order review (`docs/SETTLEMENT_ORDER_REVIEW.md`)
+- [x] Transaction monitoring dashboard with live status updates ([details](#transaction-monitoring-dashboard))
+- [x] Firestore sync to the dashboard through `GET /api/my-transactions`
+- [x] No admin key in the browser; users only see their own payments
 
 **Later in the sprint (not yet implemented):**
 
 - Public deployment of the web application (Week 3)
 - Web app routed through `/api/send` (it currently uses `/api/submit-payment`, and the Freighter flow submits directly to Horizon). At that point, stop the browser from overwriting `users.transactions` (`syncSenderTxsToFirestore`) so the backend is the only writer of transaction history.
-- Monitoring dashboard in the web app
 - OmniCard authentication prototype (optional stretch goal)
 
 **Known MVP limitations:**

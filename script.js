@@ -433,7 +433,8 @@ function navTo(screenId) {
   if (nav) nav.classList.add('active');
   if (screenId === 'home')    renderHome();
   if (screenId === 'vault')   renderVault();
-  if (screenId === 'history') { renderHistory(); loadMonitoringData(true); }
+  if (screenId === 'history') { renderHistory(); loadMonitoringData(true); _startMonitorAutoRefresh(); }
+  else                        { _stopMonitorAutoRefresh(); }
   if (screenId === 'profile') renderProfile();
 
   if (screenId === 'pay') { syncSpendableBalance(); _startSendConvAutoRefresh(); }
@@ -1382,6 +1383,7 @@ function doLogout() {
   STATE.uid        = null;
   STATE._sendPicked = null;
   STATE._smsPicked  = null;
+  _stopMonitorAutoRefresh();
   MONITOR.relay = []; MONITOR.loadedAt = 0;
   try { sessionStorage.removeItem('omnipay_session'); } catch(e) {}
   document.getElementById('bottomNav').style.display = 'none';
@@ -1655,6 +1657,35 @@ async function loadMonitoringData(force) {
     MONITOR.loading = false;
   }
 }
+
+var MONITOR_REFRESH_MS = 5000;
+var MONITOR_FINAL_STATUSES = { settled: true, failed: true, validation_failed: true };
+var _monitorRefreshId = null;
+
+function monitorHasPending() {
+  var relay = Array.isArray(MONITOR.relay) ? MONITOR.relay : [];
+  return relay.some(function(r) { return !MONITOR_FINAL_STATUSES[r.status]; });
+}
+
+function _startMonitorAutoRefresh() {
+  _stopMonitorAutoRefresh();
+  _monitorRefreshId = setInterval(function() {
+    var screen = document.getElementById('history');
+    if (!screen || !screen.classList.contains('active')) { _stopMonitorAutoRefresh(); return; }
+    if (document.hidden) return;
+    loadMonitoringData(monitorHasPending());
+  }, MONITOR_REFRESH_MS);
+}
+
+function _stopMonitorAutoRefresh() {
+  if (_monitorRefreshId) { clearInterval(_monitorRefreshId); _monitorRefreshId = null; }
+}
+
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden) return;
+  var screen = document.getElementById('history');
+  if (screen && screen.classList.contains('active')) loadMonitoringData(true);
+});
 
 function monitorReason(detail) {
   var text = String(detail == null ? '' : detail).trim();

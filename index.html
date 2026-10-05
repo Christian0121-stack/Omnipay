@@ -91,7 +91,7 @@
     </svg>
 
  <div class="splash-logo" style="position:relative;z-index:2;">
-      <img src="OMNIPAY LOGO 4.png" alt="OmniPay" style="width:132px;height:132px;object-fit:cover;border-radius:50%;filter:drop-shadow(0 4px 16px rgba(37,99,235,0.35));"
+      <img src="OMNIPAY LOGO 5.png" data-logo-light="OMNIPAY LOGO 4.png" data-logo-dark="OMNIPAY LOGO 5.png" alt="OmniPay" style="width:132px;height:132px;object-fit:cover;border-radius:50%;filter:drop-shadow(0 4px 16px rgba(37,99,235,0.35));"
            onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
       <div style="display:none;width:132px;height:132px;border-radius:50%;background:linear-gradient(135deg,#2563EB,#0EA5E9);align-items:center;justify-content:center;font-size:44px;box-shadow:0 4px 20px rgba(37,99,235,0.4);">💳</div>
     </div>
@@ -112,7 +112,7 @@
   <div class="screen no-nav auth-screen" id="login">
     <div class="auth-header">
       <div class="auth-header-blob3"></div>
-      <img src="OMNIPAY LOGO 5.png" alt="OmniPay" class="auth-logo-img" style="width:72px;height:72px;object-fit:contain;margin-bottom:8px;filter:drop-shadow(0 4px 12px rgba(37,99,235,0.3));" onerror="this.style.display='none';">
+      <img src="OMNIPAY LOGO 5.png" data-logo-light="OMNIPAY LOGO 4.png" data-logo-dark="OMNIPAY LOGO 5.png" alt="OmniPay" class="auth-logo-img" style="width:72px;height:72px;object-fit:contain;margin-bottom:8px;filter:drop-shadow(0 4px 12px rgba(37,99,235,0.3));" onerror="this.style.display='none';">
       <h1>Welcome Back</h1>
       <p>Sign in to your OmniPay account</p>
     </div>
@@ -132,8 +132,6 @@
         <a href="#" style="font-size:13px; color:var(--primary); font-weight:600;" onclick="event.preventDefault(); showModal('forgotModal')">Forgot Password?</a>
       </div>
       <button class="btn btn-primary btn-block" id="loginBtn" onclick="doLogin()">Sign In →</button>
-      <div class="divider">or</div>
-      <button class="btn btn-ghost btn-block" onclick="showAlert('yellow','📱 Biometric login activated!')">🔑 Sign in with Biometrics</button>
       <div class="auth-switch">
         Don't have an account? <a onclick="goTo('register')">Create Account</a>
       </div>
@@ -143,7 +141,7 @@
   <div class="screen no-nav auth-screen" id="register">
     <div class="auth-header">
       <div class="auth-header-blob3"></div>
-      <img src="OMNIPAY LOGO 5.png" alt="OmniPay" class="auth-logo-img" style="width:72px;height:72px;object-fit:contain;margin-bottom:8px;filter:drop-shadow(0 4px 12px rgba(37,99,235,0.3));" onerror="this.style.display='none';">
+      <img src="OMNIPAY LOGO 5.png" data-logo-light="OMNIPAY LOGO 4.png" data-logo-dark="OMNIPAY LOGO 5.png" alt="OmniPay" class="auth-logo-img" style="width:72px;height:72px;object-fit:contain;margin-bottom:8px;filter:drop-shadow(0 4px 12px rgba(37,99,235,0.3));" onerror="this.style.display='none';">
       <h1>Create Account</h1>
       <p>Join OmniPay — Payments that work anywhere</p>
     </div>
@@ -1512,6 +1510,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/stellar-sdk/10.4.1/stellar-sdk.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+<script>try{if(localStorage.getItem('omnipay_theme_v2')==='light'){document.querySelectorAll('img[data-logo-light]').forEach(function(i){i.src=i.getAttribute('data-logo-light');});}}catch(e){}</script>
 <script src="script.js"></script>
 </body>
 </html>

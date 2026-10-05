@@ -2690,6 +2690,10 @@ function applyTheme(dark) {
     body.classList.remove('dark-body');
     if (btn) btn.textContent = '🌙';
   }
+  document.querySelectorAll('img[data-logo-light]').forEach(function(img) {
+    var next = img.getAttribute(dark ? 'data-logo-dark' : 'data-logo-light');
+    if (next && img.getAttribute('src') !== next) img.setAttribute('src', next);
+  });
   try { localStorage.setItem('omnipay_theme_v2', dark ? 'dark' : 'light'); } catch(e) {}
 }
 

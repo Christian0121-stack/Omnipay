@@ -2393,3 +2393,18 @@
   }
   .contact-edit:hover { border-color: var(--primary); background: var(--primary-light); }
   .contact-empty { padding: 28px 12px; text-align: center; font-size: 13px; font-weight: 500; line-height: 1.6; color: var(--text-muted); }
+#app:not(.dark) .auth-header .auth-logo-img {
+  width: 124px !important;
+  height: 124px !important;
+  margin-top: -18px !important;
+  margin-bottom: -10px !important;
+}
+
+@media (max-width: 380px), (max-height: 680px) {
+  #app:not(.dark) .auth-header .auth-logo-img {
+    width: 108px !important;
+    height: 108px !important;
+    margin-top: -14px !important;
+    margin-bottom: -8px !important;
+  }
+}

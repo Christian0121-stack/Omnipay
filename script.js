@@ -12,6 +12,7 @@ var fbApp, auth, db;
 var API_BASE = (window.location.protocol === 'file:' || !window.location.host) ? 'http://localhost:3000' : '';
 var USERS_COLLECTION = 'users';
 var USERNAME_LOOKUP_COLLECTION = 'usernames';
+var SMS_RELAY_NUMBER = '09612490625';
 try {
   fbApp = firebase.initializeApp(firebaseConfig);
   auth  = firebase.auth();
@@ -2071,13 +2072,12 @@ async function ensureSettlementSigner(secretKey) {
 }
 
 async function doSignAndPrepareSms() {
-  var relayNumber = (document.getElementById('smsRelayNumber').value || '').trim();
+  var relayNumber = SMS_RELAY_NUMBER;
   var recipient   = (document.getElementById('smsRecipient').value || '').trim();
   var amt         = parseFloat(document.getElementById('smsAmount').value);
   var pin         = (document.getElementById('smsPin').value || '').trim();
 
-  if (!relayNumber)                  { showAlert('red','⚠️ Enter the OmniPay relay number'); return; }
-  if (!recipient)                    { showAlert('red','⚠️ Enter a recipient username or phone number'); return; }
+  if (!recipient)                   { showAlert('red','⚠️ Enter a recipient username or phone number'); return; }
   if (!isFinite(amt) || amt <= 0)    { showAlert('red','⚠️ Enter a valid amount'); return; }
   if (!/^\d{4,6}$/.test(pin))        { showAlert('red','🔢 PIN must be 4–6 digits'); return; }
 

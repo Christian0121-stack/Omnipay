@@ -112,7 +112,7 @@
   <div class="screen no-nav auth-screen" id="login">
     <div class="auth-header">
       <div class="auth-header-blob3"></div>
-      <img src="OMNIPAY LOGO 5.png" data-logo-light="OMNIPAY LOGO 4.png" data-logo-dark="OMNIPAY LOGO 5.png" alt="OmniPay" class="auth-logo-img" style="width:72px;height:72px;object-fit:contain;margin-bottom:8px;filter:drop-shadow(0 4px 12px rgba(37,99,235,0.3));" onerror="this.style.display='none';">
+      <div class="auth-brand-row"><img src="OMNIPAY LOGO 5.png" data-logo-light="OMNIPAY LOGO 4.png" data-logo-dark="OMNIPAY LOGO 5.png" alt="OmniPay" class="auth-logo-img" style="width:72px;height:72px;object-fit:contain;margin-bottom:8px;filter:drop-shadow(0 4px 12px rgba(37,99,235,0.3));" onerror="this.style.display='none';"><div class="auth-brand-text"><div class="auth-brand-title"><span class="auth-brand-omni">Omni</span><span class="auth-brand-pay">Pay</span></div><div class="auth-brand-tagline">When the Grid Fails, the Economy <span class="auth-brand-accent">Doesn't.</span></div></div></div>
       <h1>Welcome Back</h1>
       <p>Sign in to your OmniPay account</p>
       <div class="auth-showcase">
@@ -124,6 +124,7 @@
       </div>
     </div>
     <div class="auth-body">
+      <div class="auth-intro"><span class="auth-intro-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2.5"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/><circle cx="12" cy="16" r="1.2" fill="currentColor"/></svg></span><h2 class="auth-intro-title">Sign in to continue</h2><p class="auth-intro-sub">Access your wallet and send payments, even when the network is down.</p><div class="auth-intro-pills"><span>Stellar Testnet</span><span>SMS Relay</span><span>Signed Payments</span></div></div>
        <div class="input-group">
          <label>Username</label>
          <input type="text" id="loginUser" placeholder="Enter your username" autocomplete="username" autocapitalize="none" spellcheck="false">
@@ -148,7 +149,7 @@
   <div class="screen no-nav auth-screen" id="register">
     <div class="auth-header">
       <div class="auth-header-blob3"></div>
-      <img src="OMNIPAY LOGO 5.png" data-logo-light="OMNIPAY LOGO 4.png" data-logo-dark="OMNIPAY LOGO 5.png" alt="OmniPay" class="auth-logo-img" style="width:72px;height:72px;object-fit:contain;margin-bottom:8px;filter:drop-shadow(0 4px 12px rgba(37,99,235,0.3));" onerror="this.style.display='none';">
+      <div class="auth-brand-row"><img src="OMNIPAY LOGO 5.png" data-logo-light="OMNIPAY LOGO 4.png" data-logo-dark="OMNIPAY LOGO 5.png" alt="OmniPay" class="auth-logo-img" style="width:72px;height:72px;object-fit:contain;margin-bottom:8px;filter:drop-shadow(0 4px 12px rgba(37,99,235,0.3));" onerror="this.style.display='none';"><div class="auth-brand-text"><div class="auth-brand-title"><span class="auth-brand-omni">Omni</span><span class="auth-brand-pay">Pay</span></div><div class="auth-brand-tagline">When the Grid Fails, the Economy <span class="auth-brand-accent">Doesn't.</span></div></div></div>
       <h1>Create Account</h1>
       <p>Join OmniPay — Payments that work anywhere</p>
       <div class="auth-showcase">
@@ -286,7 +287,7 @@
         <div class="terms-row">
           <input type="checkbox" id="regTerms" class="terms-checkbox">
           <label for="regTerms" class="terms-label">
-            I agree to the <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>
+            I agree to the <a href="#" onclick="event.preventDefault();event.stopPropagation();showModal('termsModal')">Terms of Service</a> and <a href="#" onclick="event.preventDefault();event.stopPropagation();showModal('privacyModal')">Privacy Policy</a>
           </label>
         </div>
         <button class="btn btn-primary btn-block" id="registerBtn" onclick="doRegister()" style="margin-top:16px;">🚀 Create Account &amp; Generate Wallet</button>
@@ -1003,6 +1004,24 @@
           <span class="settings-arrow">›</span>
         </div>
 
+        <div class="settings-item" onclick="showModal('helpModal')">
+          <div class="settings-icon" style="background:linear-gradient(135deg,#E8FFF6,#C6F9E8);">💬</div>
+          <div class="settings-info">
+            <h4>Help &amp; Support</h4>
+            <p>Contact us, FAQs &amp; assistance</p>
+          </div>
+          <span class="settings-arrow">›</span>
+        </div>
+
+        <div class="settings-item" onclick="showModal('aboutModal')">
+          <div class="settings-icon" style="background:linear-gradient(135deg,#EAF1FF,#D6E4FF);">ℹ️</div>
+          <div class="settings-info">
+            <h4>About OmniPay</h4>
+            <p>Version, Terms &amp; Privacy Policy</p>
+          </div>
+          <span class="settings-arrow">›</span>
+        </div>
+
         <div class="settings-item" onclick="doLogout()">
           <div class="settings-icon" style="background:linear-gradient(135deg,#FFE8E8,#FFD0D0);">🚪</div>
           <div class="settings-info">
@@ -1049,6 +1068,109 @@
       <span class="nav-label">Settings</span>
     </div>
   </nav>
+
+  <div class="modal-overlay" id="helpModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <h3>💬 Help &amp; Support</h3>
+      <p class="sub">We're here to help with payments, your account, and anything else.</p>
+      <a class="help-row" href="mailto:support@example.com">
+        <span class="help-row-icon">✉️</span>
+        <span class="help-row-info"><strong>Email us</strong><span>support@example.com</span></span>
+        <span class="settings-arrow">›</span>
+      </a>
+      <div class="help-faq">
+        <div class="help-faq-title">Quick answers</div>
+        <details><summary>My payment is still pending</summary><p>Payments sent by SMS are relayed and settled on Stellar, which can take a short while. Check the status in History, and contact us if it stays pending.</p></details>
+        <details><summary>I forgot my PIN</summary><p>Your PIN confirms SMS payments. If you can't remember it, contact support so we can help you reset it securely.</p></details>
+        <details><summary>I forgot my password</summary><p>On the Sign In screen, tap Forgot Password and enter the email on your account to receive a reset link.</p></details>
+        <details><summary>Is this real money?</summary><p>No. OmniPay currently runs on the Stellar Testnet, so balances are demo values with no real-world worth.</p></details>
+      </div>
+      <button class="btn btn-primary btn-block mt-16" onclick="closeModal('helpModal')">Close</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="aboutModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <div class="about-head">
+        <img src="OMNIPAY LOGO 5.png" data-logo-light="OMNIPAY LOGO 4.png" data-logo-dark="OMNIPAY LOGO 5.png" alt="OmniPay" class="about-logo" onerror="this.style.display='none';">
+        <div class="about-name"><span class="auth-brand-omni-dyn">Omni</span><span style="color:var(--primary);">Pay</span></div>
+        <div class="about-tag">When the Grid Fails, the Economy Doesn't.</div>
+        <span class="badge badge-green" style="margin-top:10px;">Version 1.0 · Stellar Testnet</span>
+      </div>
+      <p class="about-text">OmniPay is a disaster-resilient payment app. It lets you send signed payments by SMS when the internet is down, and settles them through a Soroban smart contract on the Stellar network.</p>
+      <a class="help-row" href="#" onclick="event.preventDefault();closeModal('aboutModal');showModal('termsModal')">
+        <span class="help-row-icon">📄</span>
+        <span class="help-row-info"><strong>Terms of Service</strong></span>
+        <span class="settings-arrow">›</span>
+      </a>
+      <a class="help-row" href="#" onclick="event.preventDefault();closeModal('aboutModal');showModal('privacyModal')">
+        <span class="help-row-icon">🔒</span>
+        <span class="help-row-info"><strong>Privacy Policy</strong></span>
+        <span class="settings-arrow">›</span>
+      </a>
+      <button class="btn btn-primary btn-block mt-16" onclick="closeModal('aboutModal')">Close</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="termsModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <h3>📄 Terms of Service</h3>
+      <p class="sub">Last updated: October 2026</p>
+      <div class="legal-body">
+        <h4>1. Acceptance of Terms</h4>
+        <p>By creating an account or using OmniPay, you agree to these Terms. If you do not agree, please do not use the app.</p>
+        <h4>2. Testnet Notice</h4>
+        <p>OmniPay currently operates on the Stellar Testnet. Balances and transactions are for demonstration and testing only and have no real-world monetary value.</p>
+        <h4>3. Your Account</h4>
+        <p>You must provide accurate information when registering. You are responsible for keeping your password and PIN confidential and for all activity under your account. Tell us promptly if you suspect unauthorized use.</p>
+        <h4>4. Payments</h4>
+        <p>Payments are signed on your device and relayed for settlement on the Stellar network. Once a payment is settled it cannot be reversed, so please check the recipient and amount before you confirm.</p>
+        <h4>5. SMS Relay</h4>
+        <p>When you pay by SMS, standard carrier charges may apply. Delivery depends on network conditions, and OmniPay cannot guarantee that a message will be delivered or processed within a specific time.</p>
+        <h4>6. Acceptable Use</h4>
+        <p>You agree not to use OmniPay for unlawful activity, fraud, or any attempt to disrupt, abuse, or gain unauthorized access to the service or other users' accounts.</p>
+        <h4>7. Availability</h4>
+        <p>We work to keep OmniPay available, but the service is provided "as is" and may be interrupted, changed, or discontinued at any time.</p>
+        <h4>8. Limitation of Liability</h4>
+        <p>To the extent permitted by law, OmniPay is not liable for losses arising from your use of the app, including losses caused by incorrect recipient details, lost credentials, or network failures.</p>
+        <h4>9. Changes to These Terms</h4>
+        <p>We may update these Terms from time to time. Continued use of OmniPay after changes means you accept the updated Terms.</p>
+        <h4>10. Contact</h4>
+        <p>Questions about these Terms? Reach us through Help &amp; Support in Settings.</p>
+      </div>
+      <button class="btn btn-primary btn-block mt-16" onclick="closeModal('termsModal')">I Understand</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="privacyModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <h3>🔒 Privacy Policy</h3>
+      <p class="sub">Last updated: October 2026</p>
+      <div class="legal-body">
+        <h4>1. Information We Collect</h4>
+        <p>When you register we collect your name, mobile number, email address, country, and username. We also record your wallet's public address and the payments you send and receive.</p>
+        <h4>2. How We Use It</h4>
+        <p>We use your information to create and secure your account, process and settle payments, verify signed requests, show your transaction history, and provide support.</p>
+        <h4>3. Payment Signing</h4>
+        <p>Payments are digitally signed on your device. Each request includes a timestamp, nonce, and request ID so it can be verified and protected against replay.</p>
+        <h4>4. Blockchain Transparency</h4>
+        <p>Settled transactions are recorded on the Stellar network, which is public. Wallet addresses and transaction hashes can be viewed by anyone and cannot be deleted from the network.</p>
+        <h4>5. Sharing</h4>
+        <p>We do not sell your personal information. We share data only with the services needed to run OmniPay, such as our hosting and authentication providers, or when required by law.</p>
+        <h4>6. Security</h4>
+        <p>We use reasonable measures to protect your data. No system is completely secure, so please keep your password and PIN private.</p>
+        <h4>7. Your Choices</h4>
+        <p>You can update your profile details and privacy display options in Settings. To request access to or deletion of your account data, contact us through Help &amp; Support.</p>
+        <h4>8. Changes to This Policy</h4>
+        <p>We may update this Privacy Policy from time to time. The latest version is always available in the app.</p>
+      </div>
+      <button class="btn btn-primary btn-block mt-16" onclick="closeModal('privacyModal')">I Understand</button>
+    </div>
+  </div>
 
   <div class="modal-overlay" id="forgotModal">
     <div class="modal">

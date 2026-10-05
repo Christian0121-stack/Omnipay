@@ -869,7 +869,6 @@ async function doLogin() {
     navTo('home');
     saveSession();
     var firstName = STATE.user.name.split(' ')[0];
-    showAlert('success','👋 Welcome back, ' + firstName + '!');
     setFbStatus('connected','🟢 Signed in as ' + firstName);
     startInboxListener(); // begin real-time incoming-payment listener
   } else {

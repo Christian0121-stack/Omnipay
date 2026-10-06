@@ -446,6 +446,30 @@ Forces a user's Firestore `xlmBalance` to match their real on-chain Stellar bala
 
 ---
 
+### 3.11 `POST /api/activity/login`
+
+Records a sign-in for the authenticated user and reports whether it came from a new device or after a wallet key change. Requires `Authorization: Bearer <Firebase ID token>`.
+
+**Body:** `{ "deviceId": "<random id stored in the browser>" }`
+
+**Response `200`:** `{ "alerts": [ { "type": "new-device" | "key-changed", "device": "Chrome on Android", "location": "Manila, PH" } ] }`
+
+The first device seen for an account is stored as the baseline and does not raise an alert. Location is approximate and uses proxy geo headers, or `geoip-lite` when installed. IP addresses are stored masked.
+
+### 3.12 `POST /api/activity/event`
+
+Records a client-initiated security event. Requires a Firebase ID token. **Body:** `{ "type": "password-changed", "deviceId": "..." }`. Other types return `400`.
+
+### 3.13 `GET /api/activity`
+
+Returns the latest 50 activity events and the devices signed in to the account. Requires a Firebase ID token. Optional query `deviceId` marks the current device.
+
+**Response `200`:** `{ "events": [ { "id", "type", "device", "location", "ip", "detail", "thisDevice", "createdAt" } ], "devices": [ { "label", "firstSeen", "lastSeen", "thisDevice" } ] }`
+
+Event types: `login`, `new-device`, `key-changed`, `password-changed`.
+
+---
+
 ## 4. SMS Command Reference
 
 Sent as plain text to the gateway phone number.
@@ -562,6 +586,7 @@ Firestore is Google's managed database, reached two different ways in this codeb
 | `omnipay_relay_transactions` | Server | The transaction-lifecycle ledger exposed via `GET /api/relay-transactions` (§3.7/3.8) | `channel`, `senderId`/`senderPhone`, `recipient`, `amount`, `status`, `statusHistory[]`, `txHash`, `sorobanTxHash`, `sorobanContractId` |
 | `relay_requests` | Server (`Relay.js`) | Replay protection: one doc per `requestId`, created exactly once | `requestId`, `senderId`, `nonce`, `channel`, `relayId`, `status`, `txHash`, `sorobanTxHash`, `replayCount`, `lastReplayAt`, `lastReplayChannel` |
 | `omnipay_used_nonces` | Server (`Relay.js`) | Replay protection: one doc per `senderId:nonce` pair | `senderId`, `requestId`, `createdAt` |
+| `users/{uid}/activity` | Server | Sign-in and security event log shown in Settings > Activity | `type`, `device`, `location`, `ip` (masked), `detail`, `createdAt` |
 
 ### Notes
 

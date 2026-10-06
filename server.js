@@ -1566,6 +1566,192 @@ app.post('/api/privacy-settings', privacyWriteLimiter, requireUserToken, async (
   }
 });
 
+const ACTIVITY_MAX_DEVICES = 10;
+const ACTIVITY_LIST_LIMIT = 50;
+const ACTIVITY_CLIENT_TYPES = new Set(['password-changed']);
+const DEVICE_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+
+let geoLookup = null;
+try {
+  geoLookup = require('geoip-lite').lookup;
+} catch (_) {
+  geoLookup = null;
+}
+
+const activityLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `uid:${req.authUid || req.ip}`,
+  message: { error: 'too many requests, please try again later' },
+});
+
+function describeDevice(userAgent) {
+  const ua = String(userAgent || '');
+  let os = 'Unknown device';
+  if (/Android/i.test(ua)) os = 'Android';
+  else if (/iPhone|iPad|iPod/i.test(ua)) os = 'iOS';
+  else if (/Windows/i.test(ua)) os = 'Windows';
+  else if (/Mac OS X|Macintosh/i.test(ua)) os = 'macOS';
+  else if (/CrOS/i.test(ua)) os = 'ChromeOS';
+  else if (/Linux/i.test(ua)) os = 'Linux';
+  let browser = 'Browser';
+  if (/Edg\//i.test(ua)) browser = 'Edge';
+  else if (/OPR\/|Opera/i.test(ua)) browser = 'Opera';
+  else if (/SamsungBrowser/i.test(ua)) browser = 'Samsung Internet';
+  else if (/Firefox|FxiOS/i.test(ua)) browser = 'Firefox';
+  else if (/Chrome|CriOS/i.test(ua)) browser = 'Chrome';
+  else if (/Safari/i.test(ua)) browser = 'Safari';
+  return `${browser} on ${os}`;
+}
+
+function deviceKeyFor(req, rawId) {
+  const seed = DEVICE_ID_PATTERN.test(String(rawId || ''))
+    ? `id:${rawId}`
+    : `ua:${describeDevice(req.headers['user-agent'])}`;
+  return crypto.createHash('sha256').update(seed).digest('hex').slice(0, 32);
+}
+
+function maskIp(ip) {
+  const value = String(ip || '').replace(/^::ffff:/, '');
+  if (!value) return null;
+  if (value.includes(':')) return `${value.split(':').slice(0, 2).join(':')}::`;
+  const parts = value.split('.');
+  return parts.length === 4 ? `${parts[0]}.${parts[1]}.•••.•••` : null;
+}
+
+function safeHeader(req, name) {
+  const raw = req.headers[name];
+  if (!raw) return '';
+  try {
+    return decodeURIComponent(String(raw)).slice(0, 60);
+  } catch (_) {
+    return String(raw).slice(0, 60);
+  }
+}
+
+function approximateLocation(req) {
+  let city = safeHeader(req, 'x-vercel-ip-city') || safeHeader(req, 'x-appengine-city');
+  let country = safeHeader(req, 'cf-ipcountry') || safeHeader(req, 'x-vercel-ip-country') || safeHeader(req, 'x-appengine-country');
+  if (!city && !country && geoLookup) {
+    const found = geoLookup(String(req.ip || '').replace(/^::ffff:/, ''));
+    if (found) {
+      city = found.city || '';
+      country = found.country || '';
+    }
+  }
+  return [city, country].filter(Boolean).join(', ') || 'Location unavailable';
+}
+
+async function recordActivity(uid, type, req, deviceKey, detail) {
+  await usersCol().doc(uid).collection('activity').add({
+    type,
+    device: describeDevice(req.headers['user-agent']),
+    deviceKey: deviceKey || null,
+    location: approximateLocation(req),
+    ip: maskIp(req.ip),
+    detail: detail || null,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+}
+
+function mapActivity(doc, currentKey) {
+  const d = doc.data();
+  const created = d.createdAt && typeof d.createdAt.toMillis === 'function' ? d.createdAt.toMillis() : 0;
+  return {
+    id: doc.id,
+    type: d.type || 'login',
+    device: d.device || 'Unknown device',
+    location: d.location || 'Location unavailable',
+    ip: d.ip || null,
+    detail: d.detail || null,
+    thisDevice: !!currentKey && d.deviceKey === currentKey,
+    createdAt: created,
+  };
+}
+
+app.post('/api/activity/login', requireUserToken, activityLimiter, async (req, res) => {
+  const uid = req.authUid;
+  try {
+    const userRef = usersCol().doc(uid);
+    const snap = await userRef.get();
+    if (!snap.exists) return res.status(404).json({ error: 'account not found' });
+    const user = snap.data() || {};
+
+    const deviceKey = deviceKeyFor(req, req.body && req.body.deviceId);
+    const label = describeDevice(req.headers['user-agent']);
+    const now = Date.now();
+    const known = Array.isArray(user.knownDevices) ? user.knownDevices.filter((d) => d && d.id) : [];
+    const existing = known.find((d) => d.id === deviceKey);
+    const isNewDevice = !existing && known.length > 0;
+
+    const currentWallet = String(user.walletPublic || '').trim();
+    const previousWallet = String(user.lastKnownWalletPublic || '').trim();
+    const keyChanged = !!previousWallet && !!currentWallet && previousWallet !== currentWallet;
+
+    const nextKnown = existing
+      ? known.map((d) => (d.id === deviceKey ? { ...d, label, lastSeen: now } : d))
+      : [...known, { id: deviceKey, label, firstSeen: now, lastSeen: now }];
+    nextKnown.sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
+
+    const fields = {
+      knownDevices: nextKnown.slice(0, ACTIVITY_MAX_DEVICES),
+      lastLoginAt: FieldValue.serverTimestamp(),
+    };
+    if (currentWallet) fields.lastKnownWalletPublic = currentWallet;
+    await userRef.update(fields);
+
+    await recordActivity(uid, isNewDevice ? 'new-device' : 'login', req, deviceKey);
+    if (keyChanged) await recordActivity(uid, 'key-changed', req, deviceKey, 'Wallet signing key was updated');
+
+    const location = approximateLocation(req);
+    const alerts = [];
+    if (isNewDevice) alerts.push({ type: 'new-device', device: label, location });
+    if (keyChanged) alerts.push({ type: 'key-changed', device: label, location });
+    return res.json({ alerts });
+  } catch (err) {
+    log('error', 'activity', `Login record failed: ${err.message}`);
+    return res.status(500).json({ error: 'could not record activity' });
+  }
+});
+
+app.post('/api/activity/event', requireUserToken, activityLimiter, async (req, res) => {
+  const type = String((req.body && req.body.type) || '');
+  if (!ACTIVITY_CLIENT_TYPES.has(type)) return res.status(400).json({ error: 'invalid event type' });
+  try {
+    await recordActivity(req.authUid, type, req, deviceKeyFor(req, req.body && req.body.deviceId));
+    return res.json({ ok: true });
+  } catch (err) {
+    log('error', 'activity', `Event record failed: ${err.message}`);
+    return res.status(500).json({ error: 'could not record activity' });
+  }
+});
+
+app.get('/api/activity', requireUserToken, activityLimiter, async (req, res) => {
+  try {
+    const currentKey = deviceKeyFor(req, req.query && req.query.deviceId);
+    const [eventsSnap, userSnap] = await Promise.all([
+      usersCol().doc(req.authUid).collection('activity').orderBy('createdAt', 'desc').limit(ACTIVITY_LIST_LIMIT).get(),
+      usersCol().doc(req.authUid).get(),
+    ]);
+    const user = userSnap.exists ? userSnap.data() || {} : {};
+    const devices = (Array.isArray(user.knownDevices) ? user.knownDevices : [])
+      .filter((d) => d && d.id)
+      .map((d) => ({
+        label: d.label || 'Unknown device',
+        firstSeen: d.firstSeen || 0,
+        lastSeen: d.lastSeen || 0,
+        thisDevice: d.id === currentKey,
+      }))
+      .sort((a, b) => b.lastSeen - a.lastSeen);
+    return res.json({ events: eventsSnap.docs.map((doc) => mapActivity(doc, currentKey)), devices });
+  } catch (err) {
+    log('error', 'activity', `Load failed: ${err.message}`);
+    return res.status(500).json({ error: 'activity unavailable' });
+  }
+});
+
 const monitoringLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 30,

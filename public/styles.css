@@ -2692,3 +2692,35 @@
 .legal-body h4 { font-size: 14px; font-weight: 800; color: var(--text); margin: 16px 0 4px; }
 .legal-body h4:first-child { margin-top: 0; }
 .legal-body p { font-size: 13px; line-height: 1.65; color: var(--text-muted); font-weight: 500; }
+
+.activity-heading { font-size: 13px; font-weight: 800; color: var(--text); margin: 22px 0 2px; }
+.settings-item.activity-row { cursor: default; align-items: flex-start; }
+.settings-item.activity-row:active { opacity: 1; }
+.activity-row .settings-info { min-width: 0; }
+.activity-row .settings-info h4,
+.activity-row .settings-info p { overflow-wrap: anywhere; }
+.activity-tag {
+  display: inline-block; margin-left: 6px; padding: 2px 8px; border-radius: 20px;
+  font-size: 10px; font-weight: 700; vertical-align: middle;
+  background: var(--primary-light); color: var(--primary);
+}
+.activity-tag.warn { background: rgba(245,158,11,0.16); color: var(--warning-dark); }
+.activity-empty { padding: 16px 0; font-size: 12.5px; font-weight: 500; color: var(--text-muted); }
+.activity-note { margin-top: 20px; font-size: 12px; font-weight: 500; line-height: 1.5; color: var(--text-muted); }
+.activity-btn {
+  margin-top: 10px; padding: 11px 18px; min-height: 44px; border: none; border-radius: var(--radius-sm);
+  background: var(--primary); color: #fff; font-family: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.activity-btn.ghost { background: transparent; color: var(--primary); border: 1px solid var(--border); margin-left: 8px; }
+.activity-btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.activity-alert {
+  margin-top: 16px; padding: 14px 16px; border-radius: var(--radius-sm);
+  background: rgba(239,68,68,0.10); border: 1px solid rgba(239,68,68,0.35);
+}
+.activity-alert h4 { font-size: 14px; font-weight: 700; color: var(--text); }
+.activity-alert p { margin-top: 4px; font-size: 12.5px; font-weight: 500; line-height: 1.5; color: var(--text-muted); overflow-wrap: anywhere; }
+.activity-alert .activity-btn { margin-top: 12px; }
+.settings-tab-btn.has-alert::after {
+  content: ''; display: inline-block; width: 7px; height: 7px; margin-left: 6px;
+  border-radius: 50%; background: var(--danger); vertical-align: middle;
+}

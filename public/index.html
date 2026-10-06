@@ -809,6 +809,7 @@
       <button class="settings-tab-btn" onclick="switchSettingsTab('profile-edit', this)">Profile</button>
       <button class="settings-tab-btn" onclick="switchSettingsTab('contacts', this)">Contacts</button>
       <button class="settings-tab-btn" onclick="switchSettingsTab('privacy', this)">Privacy</button>
+      <button class="settings-tab-btn" id="activityTabBtn" onclick="switchSettingsTab('activity', this)">Activity</button>
       <button class="settings-tab-btn" onclick="switchSettingsTab('system', this)">System Settings</button>
     </div>
 
@@ -917,6 +918,18 @@
           </div>
           <div class="toggle" id="privHideFromSearch" role="switch" aria-checked="false" tabindex="0" onclick="togglePrivacy('hideFromSearch')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();togglePrivacy('hideFromSearch')}"></div>
         </div>
+      </div>
+    </div>
+
+    <div class="settings-panel" id="spanel-activity">
+      <div class="settings-list">
+        <div id="activityAlerts"></div>
+        <h3 class="activity-heading">Devices signed in</h3>
+        <div id="activityDevices"></div>
+        <h3 class="activity-heading">Recent activity</h3>
+        <div id="activityList"></div>
+        <p class="activity-note">Don't recognize something? Change your password right away.</p>
+        <button class="activity-btn" type="button" onclick="showChangePasswordModal()">Change password</button>
       </div>
     </div>
 

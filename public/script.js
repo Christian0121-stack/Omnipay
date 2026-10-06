@@ -450,7 +450,161 @@ function switchSettingsTab(tab, btn) {
   if (panel) panel.classList.add('active');
   if (tab === 'profile-edit') populateProfileEditForm();
   if (tab === 'privacy') loadPrivacySettings();
+  if (tab === 'activity') loadActivity();
   if (tab === 'contacts') { renderContactsList(); syncContacts(false); }
+}
+
+var ACTIVITY = { alerts: [], busy: false };
+
+var ACTIVITY_META = {
+  'login':            { icon: '🔐', bg: 'linear-gradient(135deg,#E8FFF6,#C6F9E8)', title: 'Signed in' },
+  'new-device':       { icon: '📲', bg: 'linear-gradient(135deg,#FFF3E0,#FFE0B2)', title: 'New device signed in' },
+  'key-changed':      { icon: '🔑', bg: 'linear-gradient(135deg,#FFE9E9,#FFD0D0)', title: 'Wallet key changed' },
+  'password-changed': { icon: '🛡️', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)', title: 'Password changed' }
+};
+
+function getActivityDeviceId() {
+  var id = '';
+  try { id = localStorage.getItem('omnipay_device_id') || ''; } catch (_) {}
+  if (/^[A-Za-z0-9_-]{16,64}$/.test(id)) return id;
+  try {
+    var bytes = new Uint8Array(18);
+    window.crypto.getRandomValues(bytes);
+    id = Array.prototype.map.call(bytes, function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+    localStorage.setItem('omnipay_device_id', id);
+    return id;
+  } catch (_) {
+    return '';
+  }
+}
+
+async function activityRequest(method, path, body) {
+  if (!navigator.onLine) throw new Error('offline');
+  if (!auth || !auth.currentUser) throw new Error('signed-out');
+  var token = await auth.currentUser.getIdToken();
+  var opts = { method: method, headers: { 'Authorization': 'Bearer ' + token } };
+  if (body) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  var resp = await fetch(API_BASE + path, opts);
+  if (!resp.ok) throw new Error('http-' + resp.status);
+  return resp.json();
+}
+
+function activityAlertText(a) {
+  var where = a.device + (a.location && a.location !== 'Location unavailable' ? ' · ' + a.location : '');
+  if (a.type === 'key-changed') return 'Your wallet signing key was changed (' + where + ').';
+  return 'New sign-in from ' + where + '.';
+}
+
+async function reportLoginActivity() {
+  try {
+    var data = await activityRequest('POST', '/api/activity/login', { deviceId: getActivityDeviceId() });
+    var alerts = (data && data.alerts) || [];
+    if (!alerts.length) return;
+    ACTIVITY.alerts = alerts;
+    var btn = document.getElementById('activityTabBtn');
+    if (btn) btn.classList.add('has-alert');
+    showAlert('red', alerts.map(activityAlertText).join(' ') + ' Not you? Change your password.');
+  } catch (_) {}
+}
+
+function activityEl(tag, className, text) {
+  var el = document.createElement(tag);
+  if (className) el.className = className;
+  if (text != null) el.textContent = text;
+  return el;
+}
+
+function activityRow(meta, title, lines, tag, warn) {
+  var row = activityEl('div', 'settings-item activity-row');
+  var icon = activityEl('div', 'settings-icon', meta.icon);
+  icon.style.background = meta.bg;
+  var info = activityEl('div', 'settings-info');
+  var h = activityEl('h4', null, title);
+  if (tag) h.appendChild(activityEl('span', 'activity-tag' + (warn ? ' warn' : ''), tag));
+  info.appendChild(h);
+  lines.forEach(function (line) { if (line) info.appendChild(activityEl('p', null, line)); });
+  row.appendChild(icon);
+  row.appendChild(info);
+  return row;
+}
+
+function formatActivityTime(ms) {
+  if (!ms) return '';
+  return new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+function renderActivityAlerts() {
+  var box = document.getElementById('activityAlerts');
+  if (!box) return;
+  box.textContent = '';
+  if (!ACTIVITY.alerts.length) return;
+  var card = activityEl('div', 'activity-alert');
+  card.setAttribute('role', 'alert');
+  card.appendChild(activityEl('h4', null, '🚨 Security alert'));
+  ACTIVITY.alerts.forEach(function (a) { card.appendChild(activityEl('p', null, activityAlertText(a))); });
+  var change = activityEl('button', 'activity-btn', 'Change password');
+  change.type = 'button';
+  change.onclick = function () { showChangePasswordModal(); };
+  var ok = activityEl('button', 'activity-btn ghost', 'This was me');
+  ok.type = 'button';
+  ok.onclick = function () { ACTIVITY.alerts = []; renderActivityAlerts(); };
+  card.appendChild(change);
+  card.appendChild(ok);
+  box.appendChild(card);
+}
+
+function renderActivity(data) {
+  renderActivityAlerts();
+  var devBox = document.getElementById('activityDevices');
+  var listBox = document.getElementById('activityList');
+  if (!devBox || !listBox) return;
+  devBox.textContent = '';
+  listBox.textContent = '';
+
+  var devices = data.devices || [];
+  if (!devices.length) devBox.appendChild(activityEl('p', 'activity-empty', 'No devices recorded yet.'));
+  devices.forEach(function (d) {
+    devBox.appendChild(activityRow(
+      { icon: d.thisDevice ? '📱' : '💻', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)' },
+      d.label,
+      ['Last active ' + formatActivityTime(d.lastSeen), 'First seen ' + formatActivityTime(d.firstSeen)],
+      d.thisDevice ? 'This device' : '',
+      false
+    ));
+  });
+
+  var events = data.events || [];
+  if (!events.length) listBox.appendChild(activityEl('p', 'activity-empty', 'No activity yet.'));
+  events.forEach(function (e) {
+    var meta = ACTIVITY_META[e.type] || ACTIVITY_META.login;
+    var where = e.device + (e.location && e.location !== 'Location unavailable' ? ' · ' + e.location : '');
+    listBox.appendChild(activityRow(
+      meta,
+      meta.title,
+      [where, e.detail, formatActivityTime(e.createdAt)],
+      e.type === 'new-device' || e.type === 'key-changed' ? 'Review' : '',
+      true
+    ));
+  });
+}
+
+async function loadActivity() {
+  var btn = document.getElementById('activityTabBtn');
+  if (btn) btn.classList.remove('has-alert');
+  renderActivityAlerts();
+  if (ACTIVITY.busy) return;
+  ACTIVITY.busy = true;
+  try {
+    var id = getActivityDeviceId();
+    renderActivity(await activityRequest('GET', '/api/activity' + (id ? '?deviceId=' + encodeURIComponent(id) : '')));
+  } catch (err) {
+    showAlert('yellow', '⚠️ Could not load your activity. Please try again.');
+  } finally {
+    ACTIVITY.busy = false;
+  }
 }
 
 var PRIVACY = {
@@ -872,6 +1026,7 @@ async function doLogin() {
     var firstName = STATE.user.name.split(' ')[0];
     setFbStatus('connected','🟢 Signed in as ' + firstName);
     startInboxListener(); // begin real-time incoming-payment listener
+    reportLoginActivity();
   } else {
     if (loginError && loginError.code === 'permission-denied') {
       showAlert('red','❌ Login is unavailable. Firestore rules need to allow reading the "usernames" collection.');
@@ -1378,6 +1533,9 @@ function copyInternalWalletAddress() {
 
 function doLogout() {
   stopInboxListener(); // tear down real-time listener before clearing state
+  ACTIVITY.alerts = [];
+  var activityTab = document.getElementById('activityTabBtn');
+  if (activityTab) activityTab.classList.remove('has-alert');
   if (auth) auth.signOut().catch(function(){});
   STATE.isLoggedIn = false;
   STATE.uid        = null;
@@ -2970,6 +3128,7 @@ async function doChangePassword() {
 
   closeModal('changePasswordModal');
   showAlert('success','✅ Password updated successfully!');
+  activityRequest('POST', '/api/activity/event', { type: 'password-changed', deviceId: getActivityDeviceId() }).catch(function(){});
 }
 
 function copyWalletAddress() {

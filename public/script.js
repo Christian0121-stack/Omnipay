@@ -2240,6 +2240,31 @@ function processManualPay() {
   doPaymentSuccess(amt, 'Aling Nena Store', STATE.isOnline ? 'online' : 'offline');
 }
 
+var _sendConfirmAction = null;
+
+function askSendConfirm(amount, name, sub, action) {
+  _sendConfirmAction = action;
+  var amountEl = document.getElementById('sendConfirmAmount');
+  var toEl = document.getElementById('sendConfirmTo');
+  var subEl = document.getElementById('sendConfirmSub');
+  if (amountEl) amountEl.textContent = String(parseFloat(Number(amount).toFixed(7))) + ' XLM';
+  if (toEl) toEl.textContent = name || 'this recipient';
+  if (subEl) subEl.textContent = sub || '';
+  showModal('sendConfirmModal');
+}
+
+function confirmSendAction() {
+  var action = _sendConfirmAction;
+  _sendConfirmAction = null;
+  closeModal('sendConfirmModal');
+  if (action) action();
+}
+
+function cancelSendAction() {
+  _sendConfirmAction = null;
+  closeModal('sendConfirmModal');
+}
+
 async function doSendMoney() {
   syncSpendableBalance();
   var recipientEl = document.getElementById('sendRecipient');
@@ -2257,6 +2282,17 @@ async function doSendMoney() {
     showAlert('red','❌ ' + stellarAddressError(recipient));
     return;
   }
+
+  if (!STATE._sendConfirmed) {
+    var chipName = document.getElementById('sendRecipientName');
+    var chipSub = document.getElementById('sendRecipientSub');
+    askSendConfirm(amt, chipName ? chipName.textContent : recipient, chipSub ? chipSub.textContent : '', function () {
+      STATE._sendConfirmed = true;
+      doSendMoney();
+    });
+    return;
+  }
+  STATE._sendConfirmed = false;
 
   var secretKey = STATE.wallet.secretKey;
   var primaryPublic = null;
@@ -2684,6 +2720,16 @@ async function doSignAndPrepareSms() {
 
   var senderId = STATE.uid;
   if (!senderId) { showAlert('red','❌ You must be logged in to sign a payment.'); return; }
+
+  if (!STATE._smsConfirmed) {
+    var picked = STATE._smsPicked && STATE._smsPicked.username === recipient ? STATE._smsPicked : null;
+    askSendConfirm(amt, picked ? (picked.name || picked.username) : recipient, picked ? '@' + picked.username : '', function () {
+      STATE._smsConfirmed = true;
+      doSignAndPrepareSms();
+    });
+    return;
+  }
+  STATE._smsConfirmed = false;
 
   var btn = document.querySelector('[onclick="doSignAndPrepareSms()"]');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Signing…'; }
@@ -3521,6 +3567,15 @@ async function doSendXLM() {
     showAlert('red', '❌ Stellar SDK not loaded. Refresh the page and try again.');
     return;
   }
+
+  if (!STATE._xlmConfirmed) {
+    askSendConfirm(amtNum, recipientShortKey(dest), dest, function () {
+      STATE._xlmConfirmed = true;
+      doSendXLM();
+    });
+    return;
+  }
+  STATE._xlmConfirmed = false;
 
   if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = 'Building transaction…'; }
   var resultEl = document.getElementById('xlmTxResult');

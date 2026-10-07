@@ -1575,6 +1575,17 @@
     </div>
   </div>
 
+  <div class="modal-overlay" id="sendConfirmModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <h3>Confirm payment</h3>
+      <p class="send-confirm-text">You will send <strong id="sendConfirmAmount">—</strong> to <strong id="sendConfirmTo">—</strong>.</p>
+      <p class="send-confirm-sub" id="sendConfirmSub"></p>
+      <button class="btn btn-primary btn-block mt-16" onclick="confirmSendAction()">Send</button>
+      <button class="btn btn-ghost btn-block mt-12" onclick="cancelSendAction()">Cancel</button>
+    </div>
+  </div>
+
   <div class="modal-overlay" id="signPaymentModal">
     <div class="modal">
       <div class="modal-handle"></div>

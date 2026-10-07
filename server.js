@@ -2025,6 +2025,29 @@ app.post('/api/submit-payment', paymentEndpointLimiter, async (req, res) => {
   }
 });
 
+async function notifyAppPayment({ sender, recipient, amount, result }) {
+  if (String(process.env.APP_PAYMENT_SMS || 'true').toLowerCase() === 'false') return;
+  const senderName = sender.username || sender.id;
+  const recipientName = recipient.username || recipient.id;
+  const fmt = (n) => (Number.isFinite(Number(n)) ? Number(n).toFixed(4) : 'n/a');
+  try {
+    if (sender.phone) {
+      await sendSms(
+        sender.phone,
+        `OmniPay: Sent ${amount} ${ASSET_LABEL} to ${recipientName}. TX: ${String(result.txHash).slice(0, 12)}... New balance: ${fmt(result.newSenderBal)} ${ASSET_LABEL}.`
+      );
+    }
+    if (recipient.phone) {
+      await sendSms(
+        recipient.phone,
+        `OmniPay: You received ${amount} ${ASSET_LABEL} from ${senderName}. New balance: ${fmt(result.newRecipientBal)} ${ASSET_LABEL}.`
+      );
+    }
+  } catch (err) {
+    log('error', 'sms', `Payment confirmation SMS failed: ${err.message}`);
+  }
+}
+
 app.post('/api/send', paymentEndpointLimiter, async (req, res) => {
   const { senderId, recipientId, amount, timestamp, nonce, requestId, signature, pin } = req.body || {};
 
@@ -2128,6 +2151,7 @@ app.post('/api/send', paymentEndpointLimiter, async (req, res) => {
     }
 
     await finishSignedRequest(requestId, 'processed', { txHash: result.txHash, sorobanTxHash: result.sorobanTxHash });
+    notifyAppPayment({ sender, recipient, amount: amt, result });
     return res.json({
       ok: true,
       txHash: result.txHash,

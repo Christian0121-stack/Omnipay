@@ -460,8 +460,49 @@ var ACTIVITY_META = {
   'login':            { icon: '🔐', bg: 'linear-gradient(135deg,#E8FFF6,#C6F9E8)', title: 'Signed in' },
   'new-device':       { icon: '📲', bg: 'linear-gradient(135deg,#FFF3E0,#FFE0B2)', title: 'New device signed in' },
   'key-changed':      { icon: '🔑', bg: 'linear-gradient(135deg,#FFE9E9,#FFD0D0)', title: 'Wallet key changed' },
-  'password-changed': { icon: '🛡️', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)', title: 'Password changed' }
+  'password-changed': { icon: '🛡️', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)', title: 'Password changed' },
+  'profile-updated':  { icon: '✏️', bg: 'linear-gradient(135deg,#F0E8FF,#DDD5FF)', title: 'Profile updated' },
+  'privacy-changed':  { icon: '🙈', bg: 'linear-gradient(135deg,#F0E8FF,#DDD5FF)', title: 'Privacy settings changed' },
+  'logout':           { icon: '🚪', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)', title: 'Signed out' },
+  'payment-sent':     { icon: '💸', bg: 'linear-gradient(135deg,#E8FFF6,#C6F9E8)', title: 'Payment sent' },
+  'payment-rejected': { icon: '🚫', bg: 'linear-gradient(135deg,#FFE9E9,#FFD0D0)', title: 'Payment rejected' },
+  'payment-pending':  { icon: '⏳', bg: 'linear-gradient(135deg,#FFF3E0,#FFE0B2)', title: 'Payment in progress' }
 };
+
+var ACTIVITY_REASONS = {
+  'incorrect-pin': 'Incorrect PIN',
+  'pin-locked': 'PIN locked',
+  'duplicate-request': 'Duplicate request',
+  'nonce-reused': 'Request code already used',
+  'signature-required': 'Signature required',
+  'no-registered-signing-key': 'No signing key on file',
+  'insufficient-balance': 'Insufficient balance',
+  'recipient-not-found': 'Recipient not found',
+  'unknown-sender': 'Unknown sender',
+  'self-send': 'Cannot send to yourself',
+  'wallet-not-setup': 'Wallet not set up',
+  'malformed-command': 'Invalid command format',
+  'malformed-transaction': 'Invalid transaction'
+};
+
+function activityReason(code) {
+  if (!code) return '';
+  if (String(code).indexOf('bad-signature') === 0) return 'Invalid signature';
+  if (ACTIVITY_REASONS[code]) return ACTIVITY_REASONS[code];
+  var text = String(code).replace(/-/g, ' ');
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function activityEventLines(e) {
+  if (String(e.type).indexOf('payment-') === 0) {
+    var via = String(e.channel || '').toLowerCase() === 'sms' ? 'SMS' : 'App';
+    var head = (e.amount != null ? e.amount + ' to ' : 'To ') + (e.recipient || 'unknown recipient') + ' · ' + via;
+    var extra = e.type === 'payment-rejected' ? activityReason(e.detail) : (e.txHash ? 'Tx ' + String(e.txHash).slice(0, 12) + '…' : '');
+    return [head, extra, formatActivityTime(e.createdAt)];
+  }
+  var where = e.device + (e.location && e.location !== 'Location unavailable' ? ' · ' + e.location : '');
+  return [where, e.detail, formatActivityTime(e.createdAt)];
+}
 
 function getActivityDeviceId() {
   var id = '';
@@ -580,14 +621,8 @@ function renderActivity(data) {
   if (!events.length) listBox.appendChild(activityEl('p', 'activity-empty', 'No activity yet.'));
   events.forEach(function (e) {
     var meta = ACTIVITY_META[e.type] || ACTIVITY_META.login;
-    var where = e.device + (e.location && e.location !== 'Location unavailable' ? ' · ' + e.location : '');
-    listBox.appendChild(activityRow(
-      meta,
-      meta.title,
-      [where, e.detail, formatActivityTime(e.createdAt)],
-      e.type === 'new-device' || e.type === 'key-changed' ? 'Review' : '',
-      true
-    ));
+    var tag = e.type === 'payment-rejected' ? 'Rejected' : (e.type === 'new-device' || e.type === 'key-changed' ? 'Review' : '');
+    listBox.appendChild(activityRow(meta, meta.title, activityEventLines(e), tag, true));
   });
 }
 
@@ -743,6 +778,7 @@ async function doSaveProfile() {
   if (btn) { btn.disabled = false; btn.textContent = '💾 Save Profile'; }
   renderProfile();
   showAlert('success','✅ Profile updated successfully!');
+  activityRequest('POST', '/api/activity/event', { type: 'profile-updated', deviceId: getActivityDeviceId() }).catch(function(){});
 }
 
 function onRegCountryChange(sel) {
@@ -1533,6 +1569,7 @@ function copyInternalWalletAddress() {
 
 function doLogout() {
   stopInboxListener(); // tear down real-time listener before clearing state
+  activityRequest('POST', '/api/activity/event', { type: 'logout', deviceId: getActivityDeviceId() }).catch(function(){});
   ACTIVITY.alerts = [];
   var activityTab = document.getElementById('activityTabBtn');
   if (activityTab) activityTab.classList.remove('has-alert');

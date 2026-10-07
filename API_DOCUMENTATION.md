@@ -458,15 +458,17 @@ The first device seen for an account is stored as the baseline and does not rais
 
 ### 3.12 `POST /api/activity/event`
 
-Records a client-initiated security event. Requires a Firebase ID token. **Body:** `{ "type": "password-changed", "deviceId": "..." }`. Other types return `400`.
+Records a client-initiated event. Requires a Firebase ID token. **Body:** `{ "type": "password-changed" | "profile-updated" | "logout", "deviceId": "..." }`. Other types return `400`. Privacy changes are recorded by `POST /api/privacy-settings`.
 
 ### 3.13 `GET /api/activity`
 
-Returns the latest 50 activity events and the devices signed in to the account. Requires a Firebase ID token. Optional query `deviceId` marks the current device.
+Returns up to 60 of the most recent activity events and the devices signed in to the account. Events combine account and security entries with the user's own payments from the relay ledger. Requires a Firebase ID token. Optional query `deviceId` marks the current device.
 
-**Response `200`:** `{ "events": [ { "id", "type", "device", "location", "ip", "detail", "thisDevice", "createdAt" } ], "devices": [ { "label", "firstSeen", "lastSeen", "thisDevice" } ] }`
+**Response `200`:** `{ "events": [ ... ], "devices": [ { "label", "firstSeen", "lastSeen", "thisDevice" } ] }`
 
-Event types: `login`, `new-device`, `key-changed`, `password-changed`.
+Account and security events carry `id`, `type`, `device`, `location`, `ip`, `detail`, `thisDevice`, `createdAt`. Payment events carry `id`, `type`, `amount`, `recipient`, `channel`, `txHash`, `detail` (rejection reason), `createdAt`.
+
+Event types: `login`, `new-device`, `key-changed`, `password-changed`, `profile-updated`, `privacy-changed`, `logout`, `payment-sent`, `payment-rejected`, `payment-pending`.
 
 ---
 

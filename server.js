@@ -1559,6 +1559,7 @@ app.post('/api/privacy-settings', privacyWriteLimiter, requireUserToken, async (
       updatedAt: FieldValue.serverTimestamp(),
     });
     recipientDirectory.loadedAt = 0;
+    recordActivity(req.authUid, 'privacy-changed', req, deviceKeyFor(req, null), 'Privacy settings were updated').catch(() => {});
     return res.json({ privacy: next });
   } catch (err) {
     log('error', 'privacy', `Save failed: ${err.message}`);
@@ -1568,7 +1569,10 @@ app.post('/api/privacy-settings', privacyWriteLimiter, requireUserToken, async (
 
 const ACTIVITY_MAX_DEVICES = 10;
 const ACTIVITY_LIST_LIMIT = 50;
-const ACTIVITY_CLIENT_TYPES = new Set(['password-changed']);
+const ACTIVITY_MERGED_LIMIT = 60;
+const ACTIVITY_CLIENT_TYPES = new Set(['password-changed', 'profile-updated', 'logout']);
+const PAYMENT_DONE_STATUSES = new Set(['settled', 'confirmed']);
+const PAYMENT_REJECTED_STATUSES = new Set(['validation_failed', 'failed']);
 const DEVICE_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
 
 let geoLookup = null;
@@ -1728,12 +1732,31 @@ app.post('/api/activity/event', requireUserToken, activityLimiter, async (req, r
   }
 });
 
+function mapPaymentActivity(doc) {
+  const t = mapMyTransaction(doc);
+  let type = 'payment-pending';
+  if (PAYMENT_DONE_STATUSES.has(t.status)) type = 'payment-sent';
+  else if (PAYMENT_REJECTED_STATUSES.has(t.status)) type = 'payment-rejected';
+  const failure = t.statusHistory.filter((h) => h.detail).pop();
+  return {
+    id: `tx-${t.id}`,
+    type,
+    amount: t.amount,
+    recipient: t.recipient,
+    channel: t.channel,
+    txHash: t.txHash,
+    detail: type === 'payment-rejected' && failure ? failure.detail : null,
+    createdAt: t.createdAt,
+  };
+}
+
 app.get('/api/activity', requireUserToken, activityLimiter, async (req, res) => {
   try {
     const currentKey = deviceKeyFor(req, req.query && req.query.deviceId);
-    const [eventsSnap, userSnap] = await Promise.all([
+    const [eventsSnap, userSnap, paymentsSnap] = await Promise.all([
       usersCol().doc(req.authUid).collection('activity').orderBy('createdAt', 'desc').limit(ACTIVITY_LIST_LIMIT).get(),
       usersCol().doc(req.authUid).get(),
+      relayTransactionsCol().where('senderId', '==', req.authUid).limit(100).get(),
     ]);
     const user = userSnap.exists ? userSnap.data() || {} : {};
     const devices = (Array.isArray(user.knownDevices) ? user.knownDevices : [])
@@ -1745,7 +1768,12 @@ app.get('/api/activity', requireUserToken, activityLimiter, async (req, res) => 
         thisDevice: d.id === currentKey,
       }))
       .sort((a, b) => b.lastSeen - a.lastSeen);
-    return res.json({ events: eventsSnap.docs.map((doc) => mapActivity(doc, currentKey)), devices });
+    const events = eventsSnap.docs
+      .map((doc) => mapActivity(doc, currentKey))
+      .concat(paymentsSnap.docs.map(mapPaymentActivity))
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, ACTIVITY_MERGED_LIMIT);
+    return res.json({ events, devices });
   } catch (err) {
     log('error', 'activity', `Load failed: ${err.message}`);
     return res.status(500).json({ error: 'activity unavailable' });

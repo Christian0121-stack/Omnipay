@@ -13,7 +13,7 @@ if (missingEnvVars.length > 0) {
 }
 
 const express = require('express');
-const rateLimit = require('express-rate-limit');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const helmet = require('helmet');
 const cors = require('cors');
 const axios = require('axios');
@@ -1086,6 +1086,7 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
   }
 }
 const app = express();
+app.set('trust proxy', 1);
 
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
@@ -1573,7 +1574,7 @@ const phoneChangeLimiter = rateLimit({
   max: 5,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => `uid:${req.authUid || req.ip}`,
+  keyGenerator: (req) => `uid:${req.authUid || ipKeyGenerator(req.ip)}`,
   message: { error: 'too many requests, please try again later' },
 });
 
@@ -1654,7 +1655,7 @@ const activityLimiter = rateLimit({
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => `uid:${req.authUid || req.ip}`,
+  keyGenerator: (req) => `uid:${req.authUid || ipKeyGenerator(req.ip)}`,
   message: { error: 'too many requests, please try again later' },
 });
 
@@ -1852,7 +1853,7 @@ const monitoringLimiter = rateLimit({
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => `uid:${req.authUid || req.ip}`,
+  keyGenerator: (req) => `uid:${req.authUid || ipKeyGenerator(req.ip)}`,
   message: { error: 'too many requests, please try again later' },
 });
 

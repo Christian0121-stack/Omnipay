@@ -1297,6 +1297,79 @@ async function doChangePhone() {
 
 window.addEventListener('load', handlePhoneChangeLink);
 
+var PASSWORD_RESET = { code: '' };
+
+function passwordResetSetStep(step) {
+  ['Form', 'Done', 'Invalid'].forEach(function(name) {
+    var el = document.getElementById('rpStep' + name);
+    if (el) el.style.display = name === step ? '' : 'none';
+  });
+}
+
+function cleanResetUrl() {
+  try { window.history.replaceState(null, '', window.location.pathname); } catch (_) {}
+}
+
+async function handlePasswordResetLink() {
+  if (!auth) return;
+  var params = new URLSearchParams(window.location.search);
+  if (params.get('mode') !== 'resetPassword' || !params.get('oobCode')) return;
+  PASSWORD_RESET.code = params.get('oobCode');
+  showModal('resetPasswordModal');
+  showLoading(true, 'Checking reset link\u2026');
+  try {
+    var email = await auth.verifyPasswordResetCode(PASSWORD_RESET.code);
+    document.getElementById('rpEmail').textContent = email;
+    document.getElementById('rpNew').value = '';
+    document.getElementById('rpConfirm').value = '';
+    passwordResetSetStep('Form');
+  } catch (e) {
+    PASSWORD_RESET.code = '';
+    cleanResetUrl();
+    passwordResetSetStep('Invalid');
+  }
+  showLoading(false);
+}
+
+async function doResetPassword() {
+  var newPass = document.getElementById('rpNew').value;
+  var confirm = document.getElementById('rpConfirm').value;
+  if (!newPass || newPass.length < 6) { showAlert('orange', '\ud83d\udd10 New password must be at least 6 characters'); return; }
+  if (!/\d/.test(newPass)) { showAlert('orange', '\ud83d\udd22 New password must contain at least one number'); return; }
+  if (newPass !== confirm) { showAlert('red', '\u26a0\ufe0f New password and confirmation do not match'); return; }
+  if (!PASSWORD_RESET.code) { passwordResetSetStep('Invalid'); return; }
+
+  var btn = document.getElementById('rpSaveBtn');
+  if (btn) btn.disabled = true;
+  showLoading(true, 'Updating password\u2026');
+  try {
+    await auth.confirmPasswordReset(PASSWORD_RESET.code, newPass);
+    PASSWORD_RESET.code = '';
+    cleanResetUrl();
+    passwordResetSetStep('Done');
+  } catch (e) {
+    var code = e && e.code ? e.code : '';
+    if (code === 'auth/expired-action-code' || code === 'auth/invalid-action-code') {
+      PASSWORD_RESET.code = '';
+      cleanResetUrl();
+      passwordResetSetStep('Invalid');
+    } else if (code === 'auth/weak-password') {
+      showAlert('orange', '\ud83d\udd10 Choose a stronger password');
+    } else {
+      showAlert('red', '\u274c Could not update your password. Please try again.');
+    }
+  }
+  showLoading(false);
+  if (btn) btn.disabled = false;
+}
+
+function finishPasswordReset() {
+  closeModal('resetPasswordModal');
+  goTo('login');
+}
+
+window.addEventListener('load', handlePasswordResetLink);
+
 async function doRegister() {
   var first = document.getElementById('regFirst').value.trim();
   var last  = document.getElementById('regLast').value.trim();

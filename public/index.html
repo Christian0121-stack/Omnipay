@@ -1233,6 +1233,45 @@
     </div>
   </div>
 
+  <div class="modal-overlay" id="resetPasswordModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <h3>🔑 Reset Password</h3>
+      <div id="rpStepForm">
+        <p class="sub">Choose a new password for <strong id="rpEmail"></strong>.</p>
+        <div class="input-group">
+          <label>New Password</label>
+          <div class="input-wrapper">
+            <input type="password" id="rpNew" placeholder="e.g. Secure1pass" autocomplete="new-password">
+            <button class="input-toggle" onclick="togglePass('rpNew',this)">👁</button>
+          </div>
+        </div>
+        <div class="input-group mt-12">
+          <label>Confirm New Password</label>
+          <div class="input-wrapper">
+            <input type="password" id="rpConfirm" placeholder="Re-enter new password" autocomplete="new-password">
+            <button class="input-toggle" onclick="togglePass('rpConfirm',this)">👁</button>
+          </div>
+        </div>
+        <button class="btn btn-primary btn-block mt-16" id="rpSaveBtn" onclick="doResetPassword()">Update Password</button>
+      </div>
+      <div id="rpStepDone" style="display:none;">
+        <div style="background:rgba(16,185,129,0.14);border:1.5px solid #10B981;border-radius:14px;padding:16px;text-align:center;margin-top:4px;">
+          <div style="font-size:17px;font-weight:800;margin-bottom:6px;">✅ Password changed</div>
+          <div style="font-size:14px;font-weight:600;line-height:1.5;">You can now sign in with your new password.</div>
+        </div>
+        <button class="btn btn-primary btn-block mt-16" onclick="finishPasswordReset()">Sign In →</button>
+      </div>
+      <div id="rpStepInvalid" style="display:none;">
+        <div style="background:rgba(239,68,68,0.14);border:1.5px solid #EF4444;border-radius:14px;padding:16px;text-align:center;margin-top:4px;">
+          <div style="font-size:17px;font-weight:800;margin-bottom:6px;">⚠️ Link expired</div>
+          <div style="font-size:14px;font-weight:600;line-height:1.5;">This reset link has expired or was already used. Request a new one to continue.</div>
+        </div>
+        <button class="btn btn-primary btn-block mt-16" onclick="closeModal('resetPasswordModal'); goTo('login'); showModal('forgotModal')">Request New Link</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal-overlay" id="successModal">
     <div class="modal">
       <div class="modal-handle"></div>

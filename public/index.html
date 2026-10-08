@@ -1215,8 +1215,11 @@
         <button class="btn btn-primary btn-block mt-16" id="cpnSendBtn" onclick="onPhoneChangeEmailAction()">Send Verification Link ✉️</button>
       </div>
       <div id="cpnStepSent" style="display:none;">
-        <p class="sub">If that email is registered, a verification link is on its way. Open it on this device to continue, and check your spam folder if you don’t see it.</p>
-        <button class="btn btn-ghost btn-block mt-16" onclick="phoneChangeSetStep('Email')">Use a different email</button>
+        <div style="background:rgba(37,99,235,0.14);border:1.5px solid var(--primary);border-radius:14px;padding:16px;text-align:center;margin-top:4px;">
+          <div style="font-size:17px;font-weight:800;margin-bottom:6px;">📬 Check your email</div>
+          <div style="font-size:14px;font-weight:600;line-height:1.5;">If that email is registered, a verification link is on its way. Open it on this device to continue, and check your spam folder if you don’t see it.</div>
+        </div>
+        <button class="btn btn-ghost btn-block mt-16" id="cpnAgainBtn" onclick="phoneChangeSetStep('Email')">Use a different email</button>
       </div>
       <div id="cpnStepNew" style="display:none;">
         <p class="sub">Email verified. Enter your new mobile number.</p>

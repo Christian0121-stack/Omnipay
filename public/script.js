@@ -1167,6 +1167,8 @@ async function onPhoneChangeEmailAction() {
     });
     try { localStorage.setItem(PHONE_CHANGE_EMAIL_KEY, email); } catch (_) {}
     showLoading(false);
+    var againBtn = document.getElementById('cpnAgainBtn');
+    if (againBtn) againBtn.style.display = document.getElementById('cpnEmail').readOnly ? 'none' : '';
     phoneChangeSetStep('Sent');
   } catch (e) {
     showLoading(false);

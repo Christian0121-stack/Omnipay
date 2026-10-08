@@ -136,7 +136,8 @@
           <button class="input-toggle" onclick="togglePass('loginPass',this)">👁</button>
         </div>
       </div>
-      <div style="text-align:right; margin-top:-4px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px 12px;margin-top:-4px;">
+        <a href="#" style="font-size:13px; color:var(--primary); font-weight:600;" onclick="event.preventDefault(); showChangePhoneModal()">Lost your SIM?</a>
         <a href="#" style="font-size:13px; color:var(--primary); font-weight:600;" onclick="event.preventDefault(); showModal('forgotModal')">Forgot Password?</a>
       </div>
       <button class="btn btn-primary btn-block" id="loginBtn" onclick="doLogin()">Sign In →</button>
@@ -835,7 +836,8 @@
         </div>
         <div class="input-group">
           <label>Mobile Number</label>
-          <input type="tel" id="editPhone" placeholder="+63 9XX XXX XXXX">
+          <input type="tel" id="editPhone" placeholder="+63 9XX XXX XXXX" readonly>
+          <a href="#" style="display:inline-block;margin-top:8px;font-size:13px;color:var(--primary);font-weight:600;" onclick="event.preventDefault(); showChangePhoneModal()">Lost your SIM? Change number</a>
         </div>
         <div class="input-group">
           <label>Email Address</label>
@@ -1097,6 +1099,7 @@
         <details><summary>My payment is still pending</summary><p>Payments sent by SMS are relayed and settled on Stellar, which can take a short while. Check the status in History, and contact us if it stays pending.</p></details>
         <details><summary>I forgot my PIN</summary><p>Your PIN confirms SMS payments. If you can't remember it, contact support so we can help you reset it securely.</p></details>
         <details><summary>I forgot my password</summary><p>On the Sign In screen, tap Forgot Password and enter the email on your account to receive a reset link.</p></details>
+        <details><summary>I lost my SIM or changed numbers</summary><p>Tap Lost your SIM? on the Sign In screen, or Change number in Edit Profile. We’ll email a verification link, then you can set your new mobile number.</p></details>
         <details><summary>Is this real money?</summary><p>No. OmniPay currently runs on the Stellar Testnet, so balances are demo values with no real-world worth.</p></details>
       </div>
       <button class="btn btn-primary btn-block mt-16" onclick="closeModal('helpModal')">Close</button>
@@ -1196,6 +1199,34 @@
       </div>
        <button class="btn btn-primary btn-block mt-16" onclick="doForgotPassword()">Send Reset Link 🔐</button>
       <button class="btn btn-ghost btn-block mt-12" onclick="closeModal('forgotModal')">Cancel</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="changePhoneModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <h3>📱 Change Mobile Number</h3>
+      <div id="cpnStepEmail">
+        <p class="sub" id="cpnEmailHint">Lost your SIM or switching numbers? We’ll email a secure link to your account email to confirm it’s you.</p>
+        <div class="input-group">
+          <label>Account Email</label>
+          <input type="email" id="cpnEmail" placeholder="you@example.com" autocomplete="email" inputmode="email">
+        </div>
+        <button class="btn btn-primary btn-block mt-16" id="cpnSendBtn" onclick="onPhoneChangeEmailAction()">Send Verification Link ✉️</button>
+      </div>
+      <div id="cpnStepSent" style="display:none;">
+        <p class="sub">If that email is registered, a verification link is on its way. Open it on this device to continue, and check your spam folder if you don’t see it.</p>
+        <button class="btn btn-ghost btn-block mt-16" onclick="phoneChangeSetStep('Email')">Use a different email</button>
+      </div>
+      <div id="cpnStepNew" style="display:none;">
+        <p class="sub">Email verified. Enter your new mobile number.</p>
+        <div class="input-group">
+          <label>New Mobile Number</label>
+          <input type="tel" id="cpnPhone" value="+63 9" placeholder="+63 9XX XXX XXXX" inputmode="tel" autocomplete="tel" maxlength="24" oninput="onChangePhoneInput(this)">
+        </div>
+        <button class="btn btn-primary btn-block mt-16" id="cpnSaveBtn" onclick="doChangePhone()">Update Number</button>
+      </div>
+      <button class="btn btn-ghost btn-block mt-12" onclick="closePhoneChangeModal()">Cancel</button>
     </div>
   </div>
 

@@ -462,6 +462,7 @@ var ACTIVITY_META = {
   'key-changed':      { icon: '🔑', bg: 'linear-gradient(135deg,#FFE9E9,#FFD0D0)', title: 'Wallet key changed' },
   'password-changed': { icon: '🛡️', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)', title: 'Password changed' },
   'profile-updated':  { icon: '✏️', bg: 'linear-gradient(135deg,#F0E8FF,#DDD5FF)', title: 'Profile updated' },
+  'phone-changed':    { icon: '📱', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)', title: 'Mobile number changed' },
   'privacy-changed':  { icon: '🙈', bg: 'linear-gradient(135deg,#F0E8FF,#DDD5FF)', title: 'Privacy settings changed' },
   'logout':           { icon: '🚪', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)', title: 'Signed out' },
   'payment-sent':     { icon: '💸', bg: 'linear-gradient(135deg,#E8FFF6,#C6F9E8)', title: 'Payment sent' },
@@ -754,7 +755,6 @@ async function doSaveProfile() {
   var updates = {
     name:      fullName,
     nameLower: fullName.toLowerCase(),
-    phone:     phone,
     email:     email,
     type:      type
   };
@@ -770,7 +770,6 @@ async function doSaveProfile() {
   }
 
   STATE.user.name  = fullName;
-  STATE.user.phone = phone;
   STATE.user.email = email;
   STATE.user.type  = type;
 
@@ -1094,6 +1093,207 @@ async function doForgotPassword() {
     showAlert('red','❌ Could not send the reset link. Check the email and try again.');
   }
 }
+
+var PHONE_CHANGE = { pendingLink: '', verified: false, keepSession: false };
+var PHONE_CHANGE_EMAIL_KEY = 'omnipay_phone_change_email';
+
+function phoneChangeSetStep(step) {
+  ['Email', 'Sent', 'New'].forEach(function(name) {
+    var el = document.getElementById('cpnStep' + name);
+    if (el) el.style.display = name === step ? '' : 'none';
+  });
+}
+
+function setPhoneChangeHint(text) {
+  var el = document.getElementById('cpnEmailHint');
+  if (el) el.textContent = text;
+}
+
+function showChangePhoneModal() {
+  PHONE_CHANGE.pendingLink = '';
+  PHONE_CHANGE.verified = false;
+  var known = (STATE.isLoggedIn && STATE.user && STATE.user.email) || '';
+  var emailEl = document.getElementById('cpnEmail');
+  emailEl.value = known;
+  emailEl.readOnly = !!known;
+  setPhoneChangeHint('Lost your SIM or switching numbers? We\u2019ll email a secure link to your account email to confirm it\u2019s you.');
+  phoneChangeSetStep('Email');
+  showModal('changePhoneModal');
+}
+
+function closePhoneChangeModal() {
+  closeModal('changePhoneModal');
+  if (PHONE_CHANGE.verified && !PHONE_CHANGE.keepSession && !STATE.isLoggedIn && auth) auth.signOut().catch(function(){});
+  PHONE_CHANGE.verified = false;
+  PHONE_CHANGE.pendingLink = '';
+}
+
+function waitForAuthReady() {
+  return new Promise(function(resolve) {
+    if (!auth) { resolve(null); return; }
+    var off = auth.onAuthStateChanged(function(user) { off(); resolve(user); });
+  });
+}
+
+function onChangePhoneInput(el) {
+  var value = String(el.value || '');
+  var next = /^\+(?!63)/.test(value.trim()) ? value.replace(/[^\d+\s()-]/g, '') : formatPhPhone(value);
+  if (next !== el.value) el.value = next;
+}
+
+function validateChangePhone(phone) {
+  var value = String(phone || '').trim();
+  if (/^\+63/.test(value)) {
+    return /^\+63 9\d{2} \d{3} \d{4}$/.test(value) ? '' : 'Enter your complete mobile number (+63 9XX XXX XXXX)';
+  }
+  var digits = value.replace(/\D/g, '');
+  return (/^\+/.test(value) && digits.length >= 7 && digits.length <= 15) ? '' : 'Enter a valid mobile number with country code';
+}
+
+async function onPhoneChangeEmailAction() {
+  var email = document.getElementById('cpnEmail').value.trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { showAlert('orange', '\ud83d\udce7 Enter a valid email address'); return; }
+  if (!auth) { showAlert('red', '\u274c Authentication is unavailable. Refresh and try again.'); return; }
+  if (!navigator.onLine) { showAlert('red', '\u274c You need an internet connection to change your number.'); return; }
+  if (PHONE_CHANGE.pendingLink) { await completePhoneChangeLink(email); return; }
+
+  var btn = document.getElementById('cpnSendBtn');
+  if (btn) btn.disabled = true;
+  showLoading(true, 'Sending verification link\u2026');
+  try {
+    await auth.sendSignInLinkToEmail(email, {
+      url: window.location.origin + window.location.pathname + '?change-number=1',
+      handleCodeInApp: true
+    });
+    try { localStorage.setItem(PHONE_CHANGE_EMAIL_KEY, email); } catch (_) {}
+    showLoading(false);
+    phoneChangeSetStep('Sent');
+  } catch (e) {
+    showLoading(false);
+    var code = e && e.code ? e.code : '';
+    var message = '\u274c Could not send the verification link. Check the email and try again.';
+    if (code === 'auth/operation-not-allowed') message = '\u274c Email link sign-in is turned off. Enable it in Firebase Console \u2192 Authentication \u2192 Sign-in method \u2192 Email/Password.';
+    else if (code === 'auth/unauthorized-continue-uri') message = '\u274c This website address is not authorized in Firebase Console \u2192 Authentication \u2192 Settings \u2192 Authorized domains.';
+    else if (code === 'auth/too-many-requests') message = '\u274c Too many requests. Please wait a few minutes and try again.';
+    showAlert('red', message);
+  }
+  if (btn) btn.disabled = false;
+}
+
+function handlePhoneChangeLink() {
+  if (!auth || typeof auth.isSignInWithEmailLink !== 'function' || !auth.isSignInWithEmailLink(window.location.href)) return;
+  PHONE_CHANGE.pendingLink = window.location.href;
+  var stored = '';
+  try { stored = localStorage.getItem(PHONE_CHANGE_EMAIL_KEY) || ''; } catch (_) {}
+  if (stored) { completePhoneChangeLink(stored); return; }
+  var emailEl = document.getElementById('cpnEmail');
+  emailEl.value = '';
+  emailEl.readOnly = false;
+  setPhoneChangeHint('To finish, confirm the email address this verification link was sent to.');
+  phoneChangeSetStep('Email');
+  showModal('changePhoneModal');
+}
+
+async function completePhoneChangeLink(email) {
+  showModal('changePhoneModal');
+  showLoading(true, 'Verifying your email\u2026');
+  var link = PHONE_CHANGE.pendingLink;
+  try {
+    var before = await waitForAuthReady();
+    var cred = await auth.signInWithEmailLink(email, link);
+    var profile = await db.collection(USERS_COLLECTION).doc(cred.user.uid).get();
+    if (!profile.exists) {
+      try { await cred.user.delete(); } catch (_) { try { await auth.signOut(); } catch (__) {} }
+      throw { code: 'omnipay/no-account' };
+    }
+    PHONE_CHANGE.keepSession = !!before && before.uid === cred.user.uid;
+    PHONE_CHANGE.verified = true;
+    PHONE_CHANGE.pendingLink = '';
+    try { localStorage.removeItem(PHONE_CHANGE_EMAIL_KEY); } catch (_) {}
+    try { window.history.replaceState(null, '', window.location.pathname); } catch (_) {}
+    showLoading(false);
+    document.getElementById('cpnPhone').value = '+63 9';
+    phoneChangeSetStep('New');
+  } catch (e) {
+    showLoading(false);
+    var code = e && e.code ? e.code : '';
+    var message = '\u274c Could not verify your email. Request a new link and try again.';
+    if (code === 'omnipay/no-account') message = '\u274c No OmniPay account uses that email address.';
+    else if (code === 'auth/invalid-email') message = '\u274c That email does not match the verification link.';
+    else if (code === 'auth/network-request-failed') message = '\u274c Network problem. Check your connection and try again.';
+    else if (code === 'auth/invalid-action-code' || code === 'auth/expired-action-code') {
+      message = '\u274c This link has expired or was already used. Request a new one.';
+      PHONE_CHANGE.pendingLink = '';
+      try { window.history.replaceState(null, '', window.location.pathname); } catch (_) {}
+      setPhoneChangeHint('Enter your account email and we\u2019ll send a fresh verification link.');
+    }
+    if (code !== 'auth/invalid-email' && code !== 'auth/network-request-failed') {
+      PHONE_CHANGE.pendingLink = '';
+      phoneChangeSetStep('Email');
+    }
+    showAlert('red', message);
+  }
+}
+
+async function doChangePhone() {
+  var phone = document.getElementById('cpnPhone').value.trim();
+  var issue = validateChangePhone(phone);
+  if (issue) { showAlert('red', '\u26a0\ufe0f ' + issue); return; }
+  if (!auth || !auth.currentUser) {
+    showAlert('red', '\u274c Verification expired. Please verify your email again.');
+    phoneChangeSetStep('Email');
+    return;
+  }
+  var btn = document.getElementById('cpnSaveBtn');
+  if (btn) btn.disabled = true;
+  showLoading(true, 'Updating number\u2026');
+  try {
+    var uid = auth.currentUser.uid;
+    var token = await auth.currentUser.getIdToken(true);
+    var resp = await fetch(API_BASE + '/api/change-phone', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: phone, deviceId: getActivityDeviceId() })
+    });
+    var data = {};
+    try { data = await resp.json(); } catch (_) {}
+    if (!resp.ok) throw { code: data.error || ('http-' + resp.status) };
+
+    var vaults = readOfflineVaults();
+    Object.keys(vaults).forEach(function(key) { if (vaults[key] && vaults[key].uid === uid) vaults[key].phone = phone; });
+    writeOfflineVaults(vaults);
+
+    var inApp = STATE.isLoggedIn && STATE.uid === uid;
+    if (inApp) {
+      STATE.user.phone = phone;
+      saveSession();
+      renderProfile();
+      populateProfileEditForm();
+    }
+    var keep = PHONE_CHANGE.keepSession || inApp;
+    PHONE_CHANGE.verified = false;
+    closeModal('changePhoneModal');
+    showLoading(false);
+    if (btn) btn.disabled = false;
+    if (!keep) { try { await auth.signOut(); } catch (_) {} }
+    showAlert('success', inApp ? '\u2705 Mobile number updated!' : '\u2705 Mobile number updated! Sign in to continue.');
+  } catch (e) {
+    showLoading(false);
+    if (btn) btn.disabled = false;
+    var code = e && e.code ? e.code : '';
+    var message = '\u274c Could not update your number. Please try again.';
+    if (code === 'phone-in-use') message = '\u274c That number is already linked to another OmniPay account.';
+    else if (code === 'same-phone') message = '\u26a0\ufe0f That is already your current number.';
+    else if (code === 'invalid-phone') message = '\u26a0\ufe0f Enter a valid mobile number.';
+    else if (code === 'recent-verification-required') {
+      message = '\u274c Verification expired. Please verify your email again.';
+      phoneChangeSetStep('Email');
+    }
+    showAlert('red', message);
+  }
+}
+
+window.addEventListener('load', handlePhoneChangeLink);
 
 async function doRegister() {
   var first = document.getElementById('regFirst').value.trim();

@@ -1347,6 +1347,7 @@ async function requireUserToken(req, res, next) {
   try {
     const decoded = await getAuth().verifyIdToken(match[1]);
     req.authUid = decoded.uid;
+    req.authTime = Number(decoded.auth_time) || 0;
     return next();
   } catch (err) {
     return res.status(401).json({ error: 'invalid or expired session' });
@@ -1564,6 +1565,72 @@ app.post('/api/privacy-settings', privacyWriteLimiter, requireUserToken, async (
   } catch (err) {
     log('error', 'privacy', `Save failed: ${err.message}`);
     return res.status(500).json({ error: 'could not save privacy settings' });
+  }
+});
+
+const phoneChangeLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `uid:${req.authUid || req.ip}`,
+  message: { error: 'too many requests, please try again later' },
+});
+
+const PHONE_CHANGE_MAX_AUTH_AGE_S = 10 * 60;
+
+function cleanNewPhone(raw) {
+  const value = String(raw || '').trim().replace(/\s+/g, ' ');
+  if (/^\+63 9\d{2} \d{3} \d{4}$/.test(value)) return value;
+  const digits = value.replace(/\D/g, '');
+  if (/^\+[\d\s().-]+$/.test(value) && !value.startsWith('+63') && digits.length >= 7 && digits.length <= 15) return value;
+  return null;
+}
+
+const phoneTail = (phone) => String(phone || '').replace(/\D/g, '').slice(-9);
+
+app.post('/api/change-phone', requireUserToken, phoneChangeLimiter, async (req, res) => {
+  const phone = cleanNewPhone(req.body && req.body.phone);
+  if (!phone) return res.status(400).json({ error: 'invalid-phone' });
+
+  const authAge = Math.floor(Date.now() / 1000) - (req.authTime || 0);
+  if (!req.authTime || authAge > PHONE_CHANGE_MAX_AUTH_AGE_S) {
+    return res.status(403).json({ error: 'recent-verification-required' });
+  }
+
+  try {
+    const userRef = usersCol().doc(req.authUid);
+    const snap = await userRef.get();
+    if (!snap.exists) return res.status(404).json({ error: 'account not found' });
+    const current = snap.data() || {};
+
+    const newTail = phoneTail(phone);
+    if (phoneTail(current.phone) === newTail) return res.status(400).json({ error: 'same-phone' });
+
+    const all = await usersCol().select('phone').get();
+    const taken = all.docs.some((d) => d.id !== req.authUid && phoneTail(d.data().phone) === newTail);
+    if (taken) return res.status(409).json({ error: 'phone-in-use' });
+
+    await userRef.update({
+      phone,
+      previousPhone: current.phone || null,
+      phoneChangedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    recipientDirectory.loadedAt = 0;
+    if (current.phone) clearPinFailures(current.phone);
+    clearPinFailures(phone);
+
+    recordActivity(req.authUid, 'phone-changed', req, deviceKeyFor(req, req.body && req.body.deviceId), 'Mobile number was changed').catch(() => {});
+    if (current.phone) {
+      sendSms(current.phone, 'OmniPay: The mobile number on your account was changed. If this was not you, contact support right away.').catch(() => {});
+    }
+    sendSms(phone, 'OmniPay: This number is now linked to your OmniPay account.').catch(() => {});
+
+    return res.json({ ok: true, phone });
+  } catch (err) {
+    log('error', 'phone', `Change failed: ${err.message}`);
+    return res.status(500).json({ error: 'could not change number' });
   }
 });
 

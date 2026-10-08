@@ -2250,6 +2250,45 @@ app.post('/dev/simulate-sms', async (req, res) => {
 });
 let adminStreamCount = 0;
 const ADMIN_STREAM_MAX = 5;
+const relayNameCache = { at: 0, byUid: new Map(), byWallet: new Map(), byTail: new Map(), names: new Set() };
+
+async function enrichRelayTransactions(list) {
+  try {
+    if (Date.now() - relayNameCache.at > 60 * 1000) {
+      const snap = await usersCol().select('username', 'walletPublic', 'phone').get();
+      const byUid = new Map();
+      const byWallet = new Map();
+      const byTail = new Map();
+      const names = new Set();
+      snap.docs.forEach((d) => {
+        const u = d.data() || {};
+        const name = String(u.username || '').trim();
+        if (!name) return;
+        byUid.set(d.id, name);
+        if (u.walletPublic) byWallet.set(String(u.walletPublic), name);
+        const tail = phoneTail(u.phone);
+        if (tail.length === 9) byTail.set(tail, name);
+        names.add(name.toLowerCase());
+      });
+      relayNameCache.byUid = byUid;
+      relayNameCache.byWallet = byWallet;
+      relayNameCache.byTail = byTail;
+      relayNameCache.names = names;
+      relayNameCache.at = Date.now();
+    }
+    return list.map((tx) => {
+      const recipient = String(tx.recipient || '');
+      const senderTail = phoneTail(tx.senderPhone);
+      return Object.assign({}, tx, {
+        senderUsername: relayNameCache.byUid.get(tx.senderId) || (senderTail.length === 9 ? relayNameCache.byTail.get(senderTail) : '') || '',
+        recipientUsername: relayNameCache.byWallet.get(recipient) || (relayNameCache.names.has(recipient.toLowerCase()) ? recipient : '')
+      });
+    });
+  } catch (err) {
+    return list;
+  }
+}
+
 app.get('/api/relay-transactions/stream', requireAdminKey, (req, res) => {
   if (adminStreamCount >= ADMIN_STREAM_MAX) {
     return res.status(429).json({ error: 'too many open streams' });
@@ -2285,9 +2324,11 @@ app.get('/api/relay-transactions/stream', requireAdminKey, (req, res) => {
       .orderBy('createdAt', 'desc')
       .limit(200)
       .onSnapshot(
-        (snap) => {
+        async (snap) => {
           if (closed) return;
-          res.write(`data: ${JSON.stringify({ transactions: snap.docs.map((d) => ({ id: d.id, ...d.data() })) })}\n\n`);
+          const list = await enrichRelayTransactions(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+          if (closed) return;
+          res.write(`data: ${JSON.stringify({ transactions: list })}\n\n`);
         },
         (err) => {
           log('error', 'monitoring', `Admin stream failed: ${err.message}`);
@@ -2310,7 +2351,8 @@ app.get('/api/relay-transactions/:id', requireAdminKey, async (req, res) => {
   try {
     const doc = await relayTransactionsCol().doc(req.params.id).get();
     if (!doc.exists) return res.status(404).json({ error: 'not found' });
-    res.json({ id: doc.id, ...doc.data() });
+    const [item] = await enrichRelayTransactions([{ id: doc.id, ...doc.data() }]);
+    res.json(item);
   } catch (err) {
     console.error('[api/relay-transactions/:id] failed:', err.message);
     res.status(500).json({ error: 'internal error' });
@@ -2322,7 +2364,7 @@ app.get('/api/relay-transactions', requireAdminKey, async (req, res) => {
     let query = relayTransactionsCol().orderBy('createdAt', 'desc');
     if (req.query.status) query = query.where('status', '==', String(req.query.status));
     const snap = await query.limit(limit).get();
-    res.json({ transactions: snap.docs.map((d) => ({ id: d.id, ...d.data() })) });
+    res.json({ transactions: await enrichRelayTransactions(snap.docs.map((d) => ({ id: d.id, ...d.data() }))) });
   } catch (err) {
     console.error('[api/relay-transactions] failed:', err.message);
     res.status(500).json({ error: 'internal error' });

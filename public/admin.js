@@ -115,6 +115,8 @@
       senderId: raw.senderId || '',
       senderPhone: raw.senderPhone || '',
       recipient: raw.recipient || '',
+      senderUsername: raw.senderUsername || '',
+      recipientUsername: raw.recipientUsername || '',
       amount: raw.amount != null ? Number(raw.amount) : null,
       status: status,
       category: category,
@@ -131,7 +133,12 @@
   }
 
   function senderLabel(r) {
-    return r.senderId || r.senderPhone || 'Unknown sender';
+    return r.senderUsername ? '@' + r.senderUsername : (r.senderId || r.senderPhone || 'Unknown sender');
+  }
+
+  function recipientLabel(r) {
+    if (r.recipientUsername) return '@' + r.recipientUsername;
+    return r.recipient || 'Unknown';
   }
 
   function statusLabel(r) {
@@ -291,7 +298,7 @@
     if (state.channel && r.channel !== state.channel) return false;
     var q = state.query.trim().toLowerCase();
     if (!q) return true;
-    var hay = [r.senderId, r.senderPhone, r.recipient, r.reason, reasonText(r.reason), r.requestId, r.id, r.status]
+    var hay = [r.senderUsername, r.recipientUsername, r.senderId, r.senderPhone, r.recipient, r.reason, reasonText(r.reason), r.requestId, r.id, r.status]
       .join(' ').toLowerCase();
     return hay.indexOf(q) !== -1;
   }
@@ -384,6 +391,8 @@
     }
     var rows = '<dl class="kv">'
       + '<dt>Relay ID</dt><dd>' + esc(r.id) + '</dd>'
+      + '<dt>Sender username</dt><dd>' + esc(r.senderUsername ? '@' + r.senderUsername : '—') + '</dd>'
+      + '<dt>Recipient username</dt><dd>' + esc(r.recipientUsername ? '@' + r.recipientUsername : '—') + '</dd>'
       + '<dt>Sender ID</dt><dd>' + esc(r.senderId || '—') + '</dd>'
       + '<dt>Sender phone</dt><dd>' + esc(r.senderPhone || '—') + '</dd>'
       + '<dt>Recipient</dt><dd>' + esc(r.recipient || '—') + '</dd>'
@@ -425,7 +434,7 @@
     return '<article class="card tx c-' + r.category + (state.fresh[r.id] ? ' fresh' : '') + '">'
       + '<div class="tx-head"><div class="tx-ico">' + statusIcon(r) + '</div>'
       + '<div class="tx-main"><div class="tx-amt">' + (r.amount != null ? fmtAmount(r.amount) + ' XLM' : '— XLM') + '</div>'
-      + '<div class="tx-route"><b>' + esc(senderLabel(r)) + '</b> → <b>' + esc(r.recipient || 'Unknown') + '</b></div></div>'
+      + '<div class="tx-route"><b>' + esc(senderLabel(r)) + '</b> → <b>' + esc(recipientLabel(r)) + '</b></div></div>'
       + '<span class="pill ' + r.category + '">' + esc(statusLabel(r)) + '</span></div>'
       + '<div class="tx-meta"><span>' + esc(fmtTime(r.createdAt)) + '</span>'
       + (r.channel ? '<span class="badge">' + esc(CHANNELS[r.channel] || r.channel) + '</span>' : '')

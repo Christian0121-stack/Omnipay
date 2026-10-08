@@ -3471,7 +3471,33 @@ async function doChangePassword() {
   try {
     var credential = firebase.auth.EmailAuthProvider.credential(auth.currentUser.email, current);
     await auth.currentUser.reauthenticateWithCredential(credential);
-    await auth.currentUser.updatePassword(newPass);
+    var walletRef = db.collection(USERS_COLLECTION).doc(auth.currentUser.uid);
+    var walletSecret = STATE.wallet && STATE.wallet.secretKey;
+    var oldWallet = null;
+    var newWallet = null;
+    if (walletSecret) {
+      var walletSnap = await walletRef.get();
+      var walletData = walletSnap.data() || {};
+      oldWallet = {
+        walletSecretEncrypted: walletData.walletSecretEncrypted,
+        walletSecretSalt: walletData.walletSecretSalt,
+        walletSecretIv: walletData.walletSecretIv
+      };
+      var rec = await encryptWalletSecret(walletSecret, newPass);
+      if (await decryptWalletSecret(rec.ciphertext, rec.salt, rec.iv, newPass) !== walletSecret) throw new Error('wallet-reencrypt-failed');
+      newWallet = { walletSecretEncrypted: rec.ciphertext, walletSecretSalt: rec.salt, walletSecretIv: rec.iv };
+      await walletRef.update(newWallet);
+    }
+    try {
+      await auth.currentUser.updatePassword(newPass);
+    } catch (pwErr) {
+      if (oldWallet) { try { await walletRef.update(oldWallet); } catch (_) {} }
+      throw pwErr;
+    }
+    if (newWallet && STATE._vaultKey) {
+      var vaults = readOfflineVaults();
+      if (vaults[STATE._vaultKey]) { Object.assign(vaults[STATE._vaultKey], newWallet); writeOfflineVaults(vaults); }
+    }
   } catch (e) {
     showLoading(false);
     if (btn) { btn.disabled = false; btn.textContent = 'Update Password'; }

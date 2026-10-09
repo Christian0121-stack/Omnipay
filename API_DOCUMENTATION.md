@@ -472,6 +472,12 @@ Event types: `login`, `new-device`, `key-changed`, `password-changed`, `profile-
 
 ---
 
+### 3.14 Payment confirmation SMS
+
+After a successful `POST /api/send`, the sender and the recipient each receive a confirmation SMS when a phone number is on file, matching the messages sent for SMS payments. Set `APP_PAYMENT_SMS=false` to turn these off. A failed SMS never affects the payment result.
+
+---
+
 ## 4. SMS Command Reference
 
 Sent as plain text to the gateway phone number.

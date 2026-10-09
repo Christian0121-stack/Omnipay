@@ -405,6 +405,114 @@ var STATE = {
   _balanceGraceUntil: 0   // while Date.now() < this, ignore a live-fetched balance that is HIGHER than what we already know (protects against Horizon's brief read-after-write lag right after a send)
 };
 
+var NET = {
+  detected: (typeof navigator.onLine === 'boolean') ? navigator.onLine : true,
+  forceOffline: false,
+  failures: 0,
+  checking: false,
+  timer: null,
+  ready: false
+};
+
+function isEffectivelyOnline() {
+  return NET.detected && !NET.forceOffline;
+}
+
+function renderConnectivityUI() {
+  var online = isEffectivelyOnline();
+  STATE.isOnline    = online;
+  STATE.offlineMode = !online;
+
+  var statusEl    = document.getElementById('connectStatus');
+  var payStatus   = document.getElementById('payStatusBadge');
+  var payLabel    = document.getElementById('payModeLabel');
+  var heroPending = document.getElementById('heroPending');
+
+  if (statusEl) {
+    statusEl.className = 'status-badge ' + (online ? 'online' : 'offline');
+    statusEl.innerHTML = '<span class="status-dot ' + (online ? 'online' : 'offline') + '"></span>' +
+      (online ? 'Online · Stellar Testnet' : 'Offline · SMS Pay available');
+  }
+  if (payStatus) {
+    payStatus.className = 'status-badge ' + (online ? 'online' : 'offline');
+    payStatus.innerHTML = '<span class="status-dot ' + (online ? 'online' : 'offline') + '"></span>' + (online ? 'Online' : 'Offline');
+  }
+  if (payLabel)    payLabel.textContent = online ? 'Online Mode · Instant Settlement' : 'Offline Mode · Pay by SMS';
+  if (heroPending) heroPending.textContent = online ? 'Online' : 'Offline';
+}
+
+function applyConnectivity(announce) {
+  var before = STATE.isOnline;
+  renderConnectivityUI();
+  if (announce && before !== STATE.isOnline) {
+    if (STATE.isOnline) showAlert('success', '🟢 Back online');
+    else showAlert('yellow', '📴 You are offline · use SMS Pay to send without internet');
+  }
+}
+
+async function probeConnectivity() {
+  if (typeof navigator.onLine === 'boolean' && !navigator.onLine) return false;
+  var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 5000) : null;
+  try {
+    await fetch(STELLAR_HORIZON_TESTNET + '/?_=' + Date.now(), {
+      method: 'GET', mode: 'no-cors', cache: 'no-store',
+      signal: ctrl ? ctrl.signal : undefined
+    });
+    return true;
+  } catch (e) {
+    return false;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function checkConnectivity(announce) {
+  if (NET.checking) return;
+  NET.checking = true;
+  try {
+    var ok = await probeConnectivity();
+    if (!ok && navigator.onLine !== false && NET.detected) {
+      NET.failures++;
+      if (NET.failures < 2) {
+        NET.checking = false;
+        setTimeout(function () { checkConnectivity(announce); }, 1500);
+        return;
+      }
+    }
+    if (ok) NET.failures = 0;
+    NET.detected = ok;
+    applyConnectivity(announce);
+  } finally {
+    NET.checking = false;
+  }
+}
+
+function initConnectivity() {
+  if (NET.ready) return;
+  NET.ready = true;
+  applyConnectivity(false);
+  window.addEventListener('offline', function () {
+    NET.detected = false;
+    NET.failures = 0;
+    applyConnectivity(true);
+  });
+  window.addEventListener('online', function () {
+    NET.failures = 0;
+    checkConnectivity(true);
+  });
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) checkConnectivity(true);
+  });
+  if (navigator.connection && navigator.connection.addEventListener) {
+    navigator.connection.addEventListener('change', function () { checkConnectivity(true); });
+  }
+  NET.timer = setInterval(function () {
+    if (!document.hidden) checkConnectivity(true);
+  }, 10000);
+  checkConnectivity(false);
+}
+
 function getTrustTier(score) {
   if (score <= 25) return { tier:'New',      pct:30, uses:1,  icon:'⚪', color:'#8A8FA8', bg:'rgba(138,143,168,0.2)' };
   if (score <= 50) return { tier:'Building', pct:50, uses:2,  icon:'🟡', color:'#FFA502', bg:'rgba(255,165,2,0.2)' };
@@ -437,7 +545,7 @@ function navTo(screenId) {
   else                        { _stopMonitorAutoRefresh(); }
   if (screenId === 'profile') renderProfile();
 
-  if (screenId === 'pay') { syncSpendableBalance(); _startSendConvAutoRefresh(); }
+  if (screenId === 'pay') { renderConnectivityUI(); checkConnectivity(true); syncSpendableBalance(); _startSendConvAutoRefresh(); }
   else                    { _stopSendConvAutoRefresh(); }
   syncContacts(false);
 }
@@ -1953,7 +2061,7 @@ function renderHome() {
   fetchLiveXLMBalance();
   document.getElementById('heroVault').textContent   = t.icon+' '+t.tier;
   document.getElementById('heroTrust').textContent   = STATE.trustScore;
-  document.getElementById('heroPending').textContent = STATE.isOnline ? 'Online' : 'Offline';
+  renderConnectivityUI();
 
   document.getElementById('trustScoreVal').textContent        = STATE.trustScore;
   document.getElementById('trustFill').style.width            = STATE.trustScore+'%';
@@ -2550,6 +2658,7 @@ async function doSendMoney() {
   if (!recipient)                 { showAlert('red','⚠️ Search and select a recipient'); return; }
   if (!isFinite(amt) || amt <= 0) { showAlert('red','⚠️ Enter a valid amount'); return; }
   if (amt > STATE.balance)        { showAlert('red','❌ Insufficient balance'); return; }
+  if (!isEffectivelyOnline())     { showAlert('orange','📴 No internet connection. Use SMS Pay to send without internet.'); return; }
 
   if (recipientEl) recipientEl.value = recipient;
   if (!isValidStellarPublicKey(recipient)) {
@@ -3230,28 +3339,15 @@ function doSync() {
 }
 
 function toggleOfflineMode() {
-  document.getElementById('offlineToggle').classList.toggle('on');
-  STATE.isOnline    = !STATE.isOnline;
-  STATE.offlineMode = !STATE.offlineMode;
-
-  var statusEl    = document.getElementById('connectStatus');
-  var payStatus   = document.getElementById('payStatusBadge');
-  var payLabel    = document.getElementById('payModeLabel');
-  var heroPending = document.getElementById('heroPending');
+  var toggle = document.getElementById('offlineToggle');
+  toggle.classList.toggle('on');
+  NET.forceOffline = !toggle.classList.contains('on');
+  renderConnectivityUI();
 
   if (!STATE.isOnline) {
-    statusEl.className   = 'status-badge offline';
-    statusEl.innerHTML   = '<span class="status-dot offline"></span>Offline Mode';
-    if (payStatus)   { payStatus.className = 'status-badge offline'; payStatus.innerHTML = '<span class="status-dot offline"></span>Offline'; }
-    if (payLabel)    payLabel.textContent = 'Offline Mode · Payments stored locally';
-    if (heroPending) heroPending.textContent = 'Offline';
-    showAlert('orange','📴 Offline mode activated — payments stored locally');
+    if (NET.forceOffline) showAlert('orange','📴 Offline mode activated — use SMS Pay to send without internet');
+    else showAlert('yellow','📴 No internet connection detected');
   } else {
-    statusEl.className   = 'status-badge online';
-    statusEl.innerHTML   = '<span class="status-dot online"></span>Online · Stellar Testnet';
-    if (payStatus)   { payStatus.className = 'status-badge online'; payStatus.innerHTML = '<span class="status-dot online"></span>Online'; }
-    if (payLabel)    payLabel.textContent = 'Online Mode · Instant Settlement';
-    if (heroPending) heroPending.textContent = 'Online';
     showAlert('success','✅ Back online — syncing to Stellar…');
     setTimeout(doSync, 1500);
   }
@@ -4599,6 +4695,7 @@ var SESSION_RESTORED = false;
 
 window.addEventListener('DOMContentLoaded', function(){
   initTheme();
+  initConnectivity();
   updateFreighterUI();
   if (db) {
     setFbStatus('connected','🟢 Firebase connected');
@@ -4789,8 +4886,6 @@ function renderVault() {
   updateOmniCardUI();
 }
 
-window.addEventListener('offline', function(){ showAlert('yellow','📴 You are offline'); });
-window.addEventListener('online', function(){ showAlert('green','🟢 Back online'); });
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function(){

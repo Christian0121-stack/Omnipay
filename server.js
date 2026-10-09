@@ -718,8 +718,10 @@ function parseCommand(text) {
     if (sigIdx !== -1) {
       sendParts = parts.slice(0, sigIdx);
       const sigParts = parts.slice(sigIdx + 1);
-      if (sigParts.length !== 4) return { type: 'UNKNOWN' };
-      sig = { timestamp: sigParts[0], nonce: sigParts[1], requestId: sigParts[2], signature: sigParts[3] };
+      if (sigParts.length < 4) return { type: 'UNKNOWN' };
+      const signatureValue = sigParts.slice(3).join('+');
+      if (!/^[A-Za-z0-9+/]+={0,2}$/.test(signatureValue)) return { type: 'UNKNOWN' };
+      sig = { timestamp: sigParts[0], nonce: sigParts[1], requestId: sigParts[2], signature: signatureValue };
     }
 
     const amountResult = parseStrictAmount(sendParts[1]);

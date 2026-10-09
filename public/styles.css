@@ -685,7 +685,13 @@
     transition: box-shadow 0.22s, transform 0.22s;
   }
   .qa-icon svg { width: 24px; height: 24px; flex-shrink: 0; }
-  #app.dark .qa-icon { color: #7FB0FF; }
+  #app.dark .qa-icon {
+    color: #8DB8FF;
+    background: linear-gradient(145deg, rgba(37,99,235,0.32), rgba(37,99,235,0.14));
+    border-color: rgba(141,184,255,0.34);
+    box-shadow: 0 4px 14px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.08);
+  }
+  #app.dark .quick-action:hover .qa-icon { border-color: rgba(141,184,255,0.55); box-shadow: 0 8px 20px rgba(37,99,235,0.28), inset 0 1px 0 rgba(255,255,255,0.1); }
   .quick-action:hover .qa-icon { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(0,0,0,0.14); }
   .qa-label { font-size: 11px; font-weight: 600; color: var(--text); text-align: center; line-height: 1.3; }
 

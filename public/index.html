@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-title" content="OmniPay">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="referrer" content="strict-origin-when-cross-origin">
-<script>try{if(localStorage.getItem('omnipay_theme_v2')!=='light')document.documentElement.style.background='#04091A';}catch(e){document.documentElement.style.background='#04091A';}</script>
+<script>try{if(localStorage.getItem('omnipay_theme_v3')==='dark')document.documentElement.style.background='#04091A';}catch(e){}</script>
 <title>OmniPay — Disaster-Resilient Payments</title>
 <link rel="icon" type="image/x-icon" href="OMNIPAYLOGO.ico">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -19,9 +19,9 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
-<body class="dark-body">
-<div id="app" class="dark">
-<script>try{if(localStorage.getItem('omnipay_theme_v2')==='light'){document.body.classList.remove('dark-body');document.getElementById('app').classList.remove('dark');}}catch(e){}</script>
+<body>
+<div id="app">
+<script>try{if(localStorage.getItem('omnipay_theme_v3')==='dark'){document.body.classList.add('dark-body');document.getElementById('app').classList.add('dark');}}catch(e){}</script>
 
   <div id="loadingOverlay">
     <div class="loading-ring"></div>
@@ -268,6 +268,13 @@
           <div class="input-wrapper">
             <input type="password" id="regPass" placeholder="e.g. Secure1pass" autocomplete="new-password" oninput="this.classList.remove('error')">
             <button class="input-toggle" onclick="togglePass('regPass',this)">👁</button>
+          </div>
+        </div>
+        <div class="input-group">
+          <label>Confirm Password</label>
+          <div class="input-wrapper">
+            <input type="password" id="regPassConfirm" placeholder="Re-enter password" autocomplete="new-password" oninput="this.classList.remove('error')">
+            <button class="input-toggle" onclick="togglePass('regPassConfirm',this)">👁</button>
           </div>
         </div>
         <div class="input-group">
@@ -1743,7 +1750,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/stellar-sdk/10.4.1/stellar-sdk.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
-<script>try{if(localStorage.getItem('omnipay_theme_v2')==='light'){document.querySelectorAll('img[data-logo-light]').forEach(function(i){i.src=i.getAttribute('data-logo-light');});}}catch(e){}</script>
+<script>try{if(localStorage.getItem('omnipay_theme_v3')!=='dark'){document.querySelectorAll('img[data-logo-light]').forEach(function(i){i.src=i.getAttribute('data-logo-light');});}}catch(e){}</script>
 <script src="script.js"></script>
 </body>
 </html>

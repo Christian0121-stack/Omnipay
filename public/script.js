@@ -1485,6 +1485,7 @@ async function doRegister() {
   var phone = document.getElementById('regPhone').value.trim();
   var email = document.getElementById('regEmail').value.trim();
   var pass  = document.getElementById('regPass').value;
+  var passConfirm = document.getElementById('regPassConfirm').value;
   var pin   = document.getElementById('regPin').value.trim();
   var terms = document.getElementById('regTerms').checked;
   var type  = document.getElementById('regType').value;
@@ -1496,6 +1497,7 @@ async function doRegister() {
     { id:'regPhone', val:phone,  label:'Mobile Number' },
     { id:'regEmail', val:email,  label:'Email Address' },
     { id:'regPass',  val:pass,   label:'Password' },
+    { id:'regPassConfirm', val:passConfirm, label:'Confirm Password' },
     { id:'regPin',   val:pin,    label:'PIN' }
   ];
   var firstEmpty = null;
@@ -1523,6 +1525,7 @@ async function doRegister() {
   if (!terms) { showAlert('orange','📋 Please accept the Terms of Service'); return; }
   if (pass.length < 6) { showAlert('orange','🔐 Password must be at least 6 characters'); return; }
   if (!/\d/.test(pass)) { showAlert('orange','🔢 Password must contain at least one number'); return; }
+  if (pass !== passConfirm) { document.getElementById('regPassConfirm').classList.add('error'); showAlert('orange','🔐 Passwords do not match'); return; }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { showAlert('orange','📧 Enter a valid email address'); return; }
   if (!/^\d{4,6}$/.test(pin)) { document.getElementById('regPin').classList.add('error'); showAlert('orange','🔢 PIN must be 4–6 digits'); return; }
 
@@ -1800,7 +1803,7 @@ async function finishWalletSetup() {
   delete pendingCopy._password;
   PENDING_USER = null;
 
-  ['regFirst','regLast','regUser','regPhone','regEmail','regPass','regPin'].forEach(function(id){
+  ['regFirst','regLast','regUser','regPhone','regEmail','regPass','regPassConfirm','regPin'].forEach(function(id){
     var el = document.getElementById(id);
     if (el) el.value = '';
   });
@@ -3736,7 +3739,7 @@ function applyTheme(dark) {
     var next = img.getAttribute(dark ? 'data-logo-dark' : 'data-logo-light');
     if (next && img.getAttribute('src') !== next) img.setAttribute('src', next);
   });
-  try { localStorage.setItem('omnipay_theme_v2', dark ? 'dark' : 'light'); } catch(e) {}
+  try { localStorage.setItem('omnipay_theme_v3', dark ? 'dark' : 'light'); } catch(e) {}
 }
 
 function toggleTheme() {
@@ -3744,8 +3747,8 @@ function toggleTheme() {
 }
 
 function initTheme() {
-  var saved = 'dark';
-  try { saved = localStorage.getItem('omnipay_theme_v2') || 'dark'; } catch(e) {}
+  var saved = 'light';
+  try { saved = localStorage.getItem('omnipay_theme_v3') || 'light'; } catch(e) {}
   applyTheme(saved === 'dark');
 }
 
@@ -4498,7 +4501,8 @@ function restoreSession() {
     var raw = sessionStorage.getItem('omnipay_session');
     if (!raw) return false;
     var d = JSON.parse(raw);
-    if (!d || !d.isLoggedIn || !auth || !auth.currentUser || d.uid !== auth.currentUser.uid) {
+    if (!auth || !auth.currentUser) return false;
+    if (!d || !d.isLoggedIn || d.uid !== auth.currentUser.uid) {
       sessionStorage.removeItem('omnipay_session');
       return false;
     }

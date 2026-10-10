@@ -9,8 +9,10 @@ var firebaseConfig = {
 };
 
 var fbApp, auth, db;
+var API_BASE = (window.location.protocol === 'file:' || !window.location.host) ? 'http://localhost:3000' : '';
 var USERS_COLLECTION = 'users';
 var USERNAME_LOOKUP_COLLECTION = 'usernames';
+var SMS_RELAY_NUMBER = '09612490625';
 try {
   fbApp = firebase.initializeApp(firebaseConfig);
   auth  = firebase.auth();
@@ -403,6 +405,114 @@ var STATE = {
   _balanceGraceUntil: 0   // while Date.now() < this, ignore a live-fetched balance that is HIGHER than what we already know (protects against Horizon's brief read-after-write lag right after a send)
 };
 
+var NET = {
+  detected: (typeof navigator.onLine === 'boolean') ? navigator.onLine : true,
+  forceOffline: false,
+  failures: 0,
+  checking: false,
+  timer: null,
+  ready: false
+};
+
+function isEffectivelyOnline() {
+  return NET.detected && !NET.forceOffline;
+}
+
+function renderConnectivityUI() {
+  var online = isEffectivelyOnline();
+  STATE.isOnline    = online;
+  STATE.offlineMode = !online;
+
+  var statusEl    = document.getElementById('connectStatus');
+  var payStatus   = document.getElementById('payStatusBadge');
+  var payLabel    = document.getElementById('payModeLabel');
+  var heroPending = document.getElementById('heroPending');
+
+  if (statusEl) {
+    statusEl.className = 'status-badge ' + (online ? 'online' : 'offline');
+    statusEl.innerHTML = '<span class="status-dot ' + (online ? 'online' : 'offline') + '"></span>' +
+      (online ? 'Online · Stellar Testnet' : 'Offline · SMS Pay available');
+  }
+  if (payStatus) {
+    payStatus.className = 'status-badge ' + (online ? 'online' : 'offline');
+    payStatus.innerHTML = '<span class="status-dot ' + (online ? 'online' : 'offline') + '"></span>' + (online ? 'Online' : 'Offline');
+  }
+  if (payLabel)    payLabel.textContent = online ? 'Online Mode · Instant Settlement' : 'Offline Mode · Pay by SMS';
+  if (heroPending) heroPending.textContent = online ? 'Online' : 'Offline';
+}
+
+function applyConnectivity(announce) {
+  var before = STATE.isOnline;
+  renderConnectivityUI();
+  if (announce && before !== STATE.isOnline) {
+    if (STATE.isOnline) showAlert('success', '🟢 Back online');
+    else showAlert('yellow', '📴 You are offline · use SMS Pay to send without internet');
+  }
+}
+
+async function probeConnectivity() {
+  if (typeof navigator.onLine === 'boolean' && !navigator.onLine) return false;
+  var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 5000) : null;
+  try {
+    await fetch(STELLAR_HORIZON_TESTNET + '/?_=' + Date.now(), {
+      method: 'GET', mode: 'no-cors', cache: 'no-store',
+      signal: ctrl ? ctrl.signal : undefined
+    });
+    return true;
+  } catch (e) {
+    return false;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function checkConnectivity(announce) {
+  if (NET.checking) return;
+  NET.checking = true;
+  try {
+    var ok = await probeConnectivity();
+    if (!ok && navigator.onLine !== false && NET.detected) {
+      NET.failures++;
+      if (NET.failures < 2) {
+        NET.checking = false;
+        setTimeout(function () { checkConnectivity(announce); }, 1500);
+        return;
+      }
+    }
+    if (ok) NET.failures = 0;
+    NET.detected = ok;
+    applyConnectivity(announce);
+  } finally {
+    NET.checking = false;
+  }
+}
+
+function initConnectivity() {
+  if (NET.ready) return;
+  NET.ready = true;
+  applyConnectivity(false);
+  window.addEventListener('offline', function () {
+    NET.detected = false;
+    NET.failures = 0;
+    applyConnectivity(true);
+  });
+  window.addEventListener('online', function () {
+    NET.failures = 0;
+    checkConnectivity(true);
+  });
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) checkConnectivity(true);
+  });
+  if (navigator.connection && navigator.connection.addEventListener) {
+    navigator.connection.addEventListener('change', function () { checkConnectivity(true); });
+  }
+  NET.timer = setInterval(function () {
+    if (!document.hidden) checkConnectivity(true);
+  }, 10000);
+  checkConnectivity(false);
+}
+
 function getTrustTier(score) {
   if (score <= 25) return { tier:'New',      pct:30, uses:1,  icon:'⚪', color:'#8A8FA8', bg:'rgba(138,143,168,0.2)' };
   if (score <= 50) return { tier:'Building', pct:50, uses:2,  icon:'🟡', color:'#FFA502', bg:'rgba(255,165,2,0.2)' };
@@ -431,11 +541,13 @@ function navTo(screenId) {
   if (nav) nav.classList.add('active');
   if (screenId === 'home')    renderHome();
   if (screenId === 'vault')   renderVault();
-  if (screenId === 'history') renderHistory('all');
+  if (screenId === 'history') { renderHistory(); loadMonitoringData(true); _startMonitorAutoRefresh(); }
+  else                        { _stopMonitorAutoRefresh(); }
   if (screenId === 'profile') renderProfile();
 
-  if (screenId === 'pay') { syncSpendableBalance(); _startSendConvAutoRefresh(); }
+  if (screenId === 'pay') { renderConnectivityUI(); checkConnectivity(true); syncSpendableBalance(); _startSendConvAutoRefresh(); }
   else                    { _stopSendConvAutoRefresh(); }
+  syncContacts(false);
 }
 
 function switchSettingsTab(tab, btn) {
@@ -445,6 +557,279 @@ function switchSettingsTab(tab, btn) {
   var panel = document.getElementById('spanel-' + tab);
   if (panel) panel.classList.add('active');
   if (tab === 'profile-edit') populateProfileEditForm();
+  if (tab === 'privacy') loadPrivacySettings();
+  if (tab === 'activity') loadActivity();
+  if (tab === 'contacts') { renderContactsList(); syncContacts(false); }
+}
+
+var ACTIVITY = { alerts: [], busy: false };
+
+var ACTIVITY_META = {
+  'login':            { icon: '🔐', bg: 'linear-gradient(135deg,#E8FFF6,#C6F9E8)', title: 'Signed in' },
+  'new-device':       { icon: '📲', bg: 'linear-gradient(135deg,#FFF3E0,#FFE0B2)', title: 'New device signed in' },
+  'key-changed':      { icon: '🔑', bg: 'linear-gradient(135deg,#FFE9E9,#FFD0D0)', title: 'Wallet key changed' },
+  'password-changed': { icon: '🛡️', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)', title: 'Password changed' },
+  'profile-updated':  { icon: '✏️', bg: 'linear-gradient(135deg,#F0E8FF,#DDD5FF)', title: 'Profile updated' },
+  'phone-changed':    { icon: '📱', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)', title: 'Mobile number changed' },
+  'privacy-changed':  { icon: '🙈', bg: 'linear-gradient(135deg,#F0E8FF,#DDD5FF)', title: 'Privacy settings changed' },
+  'logout':           { icon: '🚪', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)', title: 'Signed out' },
+  'payment-sent':     { icon: '💸', bg: 'linear-gradient(135deg,#E8FFF6,#C6F9E8)', title: 'Payment sent' },
+  'payment-rejected': { icon: '🚫', bg: 'linear-gradient(135deg,#FFE9E9,#FFD0D0)', title: 'Payment rejected' },
+  'payment-pending':  { icon: '⏳', bg: 'linear-gradient(135deg,#FFF3E0,#FFE0B2)', title: 'Payment in progress' }
+};
+
+var ACTIVITY_REASONS = {
+  'incorrect-pin': 'Incorrect PIN',
+  'pin-locked': 'PIN locked',
+  'duplicate-request': 'Duplicate request',
+  'nonce-reused': 'Request code already used',
+  'signature-required': 'Signature required',
+  'no-registered-signing-key': 'No signing key on file',
+  'insufficient-balance': 'Insufficient balance',
+  'recipient-not-found': 'Recipient not found',
+  'unknown-sender': 'Unknown sender',
+  'self-send': 'Cannot send to yourself',
+  'wallet-not-setup': 'Wallet not set up',
+  'malformed-command': 'Invalid command format',
+  'malformed-transaction': 'Invalid transaction'
+};
+
+function activityReason(code) {
+  if (!code) return '';
+  if (String(code).indexOf('bad-signature') === 0) return 'Invalid signature';
+  if (ACTIVITY_REASONS[code]) return ACTIVITY_REASONS[code];
+  var text = String(code).replace(/-/g, ' ');
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function activityEventLines(e) {
+  if (String(e.type).indexOf('payment-') === 0) {
+    var via = String(e.channel || '').toLowerCase() === 'sms' ? 'SMS' : 'App';
+    var head = (e.amount != null ? e.amount + ' to ' : 'To ') + (e.recipient || 'unknown recipient') + ' · ' + via;
+    var extra = e.type === 'payment-rejected' ? activityReason(e.detail) : (e.txHash ? 'Tx ' + String(e.txHash).slice(0, 12) + '…' : '');
+    return [head, extra, formatActivityTime(e.createdAt)];
+  }
+  var where = e.device + (e.location && e.location !== 'Location unavailable' ? ' · ' + e.location : '');
+  return [where, e.detail, formatActivityTime(e.createdAt)];
+}
+
+function getActivityDeviceId() {
+  var id = '';
+  try { id = localStorage.getItem('omnipay_device_id') || ''; } catch (_) {}
+  if (/^[A-Za-z0-9_-]{16,64}$/.test(id)) return id;
+  try {
+    var bytes = new Uint8Array(18);
+    window.crypto.getRandomValues(bytes);
+    id = Array.prototype.map.call(bytes, function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+    localStorage.setItem('omnipay_device_id', id);
+    return id;
+  } catch (_) {
+    return '';
+  }
+}
+
+async function activityRequest(method, path, body) {
+  if (!navigator.onLine) throw new Error('offline');
+  if (!auth || !auth.currentUser) throw new Error('signed-out');
+  var token = await auth.currentUser.getIdToken();
+  var opts = { method: method, headers: { 'Authorization': 'Bearer ' + token } };
+  if (body) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  var resp = await fetch(API_BASE + path, opts);
+  if (!resp.ok) throw new Error('http-' + resp.status);
+  return resp.json();
+}
+
+function activityAlertText(a) {
+  var where = a.device + (a.location && a.location !== 'Location unavailable' ? ' · ' + a.location : '');
+  if (a.type === 'key-changed') return 'Your wallet signing key was changed (' + where + ').';
+  return 'New sign-in from ' + where + '.';
+}
+
+async function reportLoginActivity() {
+  try {
+    var data = await activityRequest('POST', '/api/activity/login', { deviceId: getActivityDeviceId() });
+    var alerts = (data && data.alerts) || [];
+    if (!alerts.length) return;
+    ACTIVITY.alerts = alerts;
+    var btn = document.getElementById('activityTabBtn');
+    if (btn) btn.classList.add('has-alert');
+    showAlert('red', alerts.map(activityAlertText).join(' ') + ' Not you? Change your password.');
+  } catch (_) {}
+}
+
+function activityEl(tag, className, text) {
+  var el = document.createElement(tag);
+  if (className) el.className = className;
+  if (text != null) el.textContent = text;
+  return el;
+}
+
+function activityRow(meta, title, lines, tag, warn) {
+  var row = activityEl('div', 'settings-item activity-row');
+  var icon = activityEl('div', 'settings-icon', meta.icon);
+  icon.style.background = meta.bg;
+  var info = activityEl('div', 'settings-info');
+  var h = activityEl('h4', null, title);
+  if (tag) h.appendChild(activityEl('span', 'activity-tag' + (warn ? ' warn' : ''), tag));
+  info.appendChild(h);
+  lines.forEach(function (line) { if (line) info.appendChild(activityEl('p', null, line)); });
+  row.appendChild(icon);
+  row.appendChild(info);
+  return row;
+}
+
+function formatActivityTime(ms) {
+  if (!ms) return '';
+  return new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+function renderActivityAlerts() {
+  var box = document.getElementById('activityAlerts');
+  if (!box) return;
+  box.textContent = '';
+  if (!ACTIVITY.alerts.length) return;
+  var card = activityEl('div', 'activity-alert');
+  card.setAttribute('role', 'alert');
+  card.appendChild(activityEl('h4', null, '🚨 Security alert'));
+  ACTIVITY.alerts.forEach(function (a) { card.appendChild(activityEl('p', null, activityAlertText(a))); });
+  var change = activityEl('button', 'activity-btn', 'Change password');
+  change.type = 'button';
+  change.onclick = function () { showChangePasswordModal(); };
+  var ok = activityEl('button', 'activity-btn ghost', 'This was me');
+  ok.type = 'button';
+  ok.onclick = function () { ACTIVITY.alerts = []; renderActivityAlerts(); };
+  card.appendChild(change);
+  card.appendChild(ok);
+  box.appendChild(card);
+}
+
+function renderActivity(data) {
+  renderActivityAlerts();
+  var devBox = document.getElementById('activityDevices');
+  var listBox = document.getElementById('activityList');
+  if (!devBox || !listBox) return;
+  devBox.textContent = '';
+  listBox.textContent = '';
+
+  var devices = data.devices || [];
+  if (!devices.length) devBox.appendChild(activityEl('p', 'activity-empty', 'No devices recorded yet.'));
+  devices.forEach(function (d) {
+    devBox.appendChild(activityRow(
+      { icon: d.thisDevice ? '📱' : '💻', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)' },
+      d.label,
+      ['Last active ' + formatActivityTime(d.lastSeen), 'First seen ' + formatActivityTime(d.firstSeen)],
+      d.thisDevice ? 'This device' : '',
+      false
+    ));
+  });
+
+  var events = data.events || [];
+  if (!events.length) listBox.appendChild(activityEl('p', 'activity-empty', 'No activity yet.'));
+  events.forEach(function (e) {
+    var meta = ACTIVITY_META[e.type] || ACTIVITY_META.login;
+    var tag = e.type === 'payment-rejected' ? 'Rejected' : (e.type === 'new-device' || e.type === 'key-changed' ? 'Review' : '');
+    listBox.appendChild(activityRow(meta, meta.title, activityEventLines(e), tag, true));
+  });
+}
+
+async function loadActivity() {
+  var btn = document.getElementById('activityTabBtn');
+  if (btn) btn.classList.remove('has-alert');
+  renderActivityAlerts();
+  if (ACTIVITY.busy) return;
+  ACTIVITY.busy = true;
+  try {
+    var id = getActivityDeviceId();
+    renderActivity(await activityRequest('GET', '/api/activity' + (id ? '?deviceId=' + encodeURIComponent(id) : '')));
+  } catch (err) {
+    showAlert('yellow', '⚠️ Could not load your activity. Please try again.');
+  } finally {
+    ACTIVITY.busy = false;
+  }
+}
+
+var PRIVACY = {
+  keys: ['showFullName', 'findByName', 'findByPhone', 'hideFromSearch'],
+  ids: { showFullName: 'privShowFullName', findByName: 'privFindByName', findByPhone: 'privFindByPhone', hideFromSearch: 'privHideFromSearch' },
+  values: { showFullName: false, findByName: true, findByPhone: true, hideFromSearch: false },
+  loaded: false,
+  busy: false
+};
+
+function renderPrivacySettings() {
+  PRIVACY.keys.forEach(function (key) {
+    var el = document.getElementById(PRIVACY.ids[key]);
+    if (!el) return;
+    el.classList.toggle('on', !!PRIVACY.values[key]);
+    el.setAttribute('aria-checked', PRIVACY.values[key] ? 'true' : 'false');
+  });
+  document.querySelectorAll('#spanel-privacy [data-hide-dim]').forEach(function (row) {
+    row.classList.toggle('is-disabled', !!PRIVACY.values.hideFromSearch);
+  });
+}
+
+function applyPrivacySettings(remote) {
+  var next = {};
+  PRIVACY.keys.forEach(function (key) {
+    next[key] = typeof remote[key] === 'boolean' ? remote[key] : PRIVACY.values[key];
+  });
+  PRIVACY.values = next;
+  PRIVACY.loaded = true;
+  renderPrivacySettings();
+}
+
+async function privacyRequest(method, body) {
+  if (!navigator.onLine) throw new Error('offline');
+  if (!auth || !auth.currentUser) throw new Error('signed-out');
+  var token = await auth.currentUser.getIdToken();
+  var opts = { method: method, headers: { 'Authorization': 'Bearer ' + token } };
+  if (body) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  var resp = await fetch(API_BASE + '/api/privacy-settings', opts);
+  if (!resp.ok) throw new Error('http-' + resp.status);
+  var data = await resp.json();
+  return data.privacy || {};
+}
+
+async function loadPrivacySettings() {
+  renderPrivacySettings();
+  try {
+    applyPrivacySettings(await privacyRequest('GET'));
+  } catch (err) {
+    if (!PRIVACY.loaded) showAlert('yellow', '⚠️ Could not load your privacy settings. Please try again.');
+  }
+}
+
+async function togglePrivacy(key) {
+  if (PRIVACY.busy) return;
+  if (!PRIVACY.loaded) {
+    showAlert('yellow', '⚠️ Privacy settings are still loading. Please try again.');
+    loadPrivacySettings();
+    return;
+  }
+  var previous = Object.assign({}, PRIVACY.values);
+  var next = Object.assign({}, PRIVACY.values);
+  next[key] = !next[key];
+  PRIVACY.values = next;
+  PRIVACY.busy = true;
+  renderPrivacySettings();
+  try {
+    applyPrivacySettings(await privacyRequest('POST', { privacy: next }));
+    showAlert('success', '✅ Privacy setting updated!');
+  } catch (err) {
+    PRIVACY.values = previous;
+    renderPrivacySettings();
+    showAlert('red', err && err.message === 'offline'
+      ? '❌ You need an internet connection to change privacy settings.'
+      : '❌ Could not save your privacy setting. Please try again.');
+  } finally {
+    PRIVACY.busy = false;
+  }
 }
 
 function populateProfileEditForm() {
@@ -478,7 +863,6 @@ async function doSaveProfile() {
   var updates = {
     name:      fullName,
     nameLower: fullName.toLowerCase(),
-    phone:     phone,
     email:     email,
     type:      type
   };
@@ -494,7 +878,6 @@ async function doSaveProfile() {
   }
 
   STATE.user.name  = fullName;
-  STATE.user.phone = phone;
   STATE.user.email = email;
   STATE.user.type  = type;
 
@@ -502,9 +885,11 @@ async function doSaveProfile() {
   if (btn) { btn.disabled = false; btn.textContent = '💾 Save Profile'; }
   renderProfile();
   showAlert('success','✅ Profile updated successfully!');
+  activityRequest('POST', '/api/activity/event', { type: 'profile-updated', deviceId: getActivityDeviceId() }).catch(function(){});
 }
 
 function onRegCountryChange(sel) {
+  syncRegPhoneToCountry();
 }
 
 function _getCountryConfig(country) {
@@ -576,10 +961,124 @@ async function _updateXLMConversion(xlmAmt) {
   }
 }
 
+var OFFLINE_VAULT_KEY = 'omnipay_offline_vault_v1';
+
+function readOfflineVaults() {
+  try { return JSON.parse(localStorage.getItem(OFFLINE_VAULT_KEY)) || {}; } catch (e) { return {}; }
+}
+
+function writeOfflineVaults(map) {
+  try { localStorage.setItem(OFFLINE_VAULT_KEY, JSON.stringify(map)); } catch (e) {}
+}
+
+function saveOfflineVault(username, account, email) {
+  var map = readOfflineVaults();
+  var key = String(username).toLowerCase();
+  var prev = map[key] || {};
+  map[key] = {
+    uid: account.uid,
+    username: account.username || username,
+    name: account.name || username,
+    phone: account.phone || '',
+    email: email || account.email || '',
+    type: account.type || 'personal',
+    country: account.country || '',
+    walletPublic: account.walletPublic || '',
+    walletSecretEncrypted: account.walletSecretEncrypted,
+    walletSecretSalt: account.walletSecretSalt,
+    walletSecretIv: account.walletSecretIv,
+    signerReady: !!prev.signerReady
+  };
+  writeOfflineVaults(map);
+}
+
+function markOfflineSignerReady() {
+  var key = STATE._vaultKey;
+  if (!key) return;
+  var map = readOfflineVaults();
+  if (map[key]) { map[key].signerReady = true; writeOfflineVaults(map); }
+}
+
+function isNetworkFailure(err) {
+  var code = err && err.code ? String(err.code) : '';
+  var msg  = err && err.message ? String(err.message).toLowerCase() : '';
+  return code === 'auth/network-request-failed' || code === 'unavailable' ||
+    msg.indexOf('offline') !== -1 || msg.indexOf('network') !== -1 || msg.indexOf('failed to fetch') !== -1;
+}
+
+async function doOfflineLogin(username, password) {
+  var key   = username.toLowerCase();
+  var vault = readOfflineVaults()[key];
+  if (!vault || !vault.walletSecretEncrypted) {
+    showAlert('red','📴 Offline access is not set up on this device. Sign in once while online.');
+    return false;
+  }
+  showLoading(true, 'Unlocking wallet…');
+  var secret = await decryptWalletSecret(vault.walletSecretEncrypted, vault.walletSecretSalt, vault.walletSecretIv, password);
+  showLoading(false);
+  if (!secret) {
+    showAlert('red','❌ Invalid username or password');
+    var passEl = document.getElementById('loginPass');
+    passEl.classList.add('error');
+    setTimeout(function(){ passEl.classList.remove('error'); }, 2000);
+    return false;
+  }
+  STATE.isLoggedIn  = true;
+  STATE.offlineMode = true;
+  STATE.uid         = vault.uid;
+  STATE._vaultKey   = key;
+  STATE.user = {
+    username: vault.username,
+    name:     vault.name,
+    phone:    vault.phone,
+    email:    vault.email,
+    type:     vault.type,
+    country:  vault.country || '🇵🇭 Philippines'
+  };
+  STATE.wallet = {
+    publicKey:       vault.walletPublic,
+    secretKey:       secret,
+    xlmBalance:      0,
+    contractAddress: ''
+  };
+  if (!Array.isArray(STATE.wallets) || STATE.wallets.length === 0) {
+    STATE.wallets = [{ publicKey: vault.walletPublic, label: 'Primary Wallet', xlmBalance: 0, addedAt: Date.now() }];
+  }
+  STATE.activeWalletIndex = 0;
+  document.getElementById('bottomNav').style.display = 'flex';
+  navTo('pay');
+  setTimeout(function(){
+    var tabs = document.querySelectorAll('.pay-tab');
+    for (var i = 0; i < tabs.length; i++) {
+      if (tabs[i].textContent.indexOf('SMS Pay') !== -1) { switchPayTab('sms', tabs[i]); break; }
+    }
+  }, 60);
+  setFbStatus('', '📴 Offline mode');
+  showAlert('yellow','📴 Offline mode: you can sign and send SMS payments.');
+  return true;
+}
+
+async function prepareSettlementSigner(secretKey) {
+  var vault = readOfflineVaults()[STATE._vaultKey];
+  var ready = !!(vault && vault.signerReady) || !!STATE._settlementSignerReady;
+  if (!navigator.onLine) {
+    if (!ready) showAlert('yellow','⚠️ Signer setup not confirmed on this device. The payment may be rejected until you sign once while online.');
+    return;
+  }
+  try {
+    await ensureSettlementSigner(secretKey);
+    markOfflineSignerReady();
+  } catch (err) {
+    if (ready && isNetworkFailure(err)) return;
+    throw err;
+  }
+}
+
 async function doLogin() {
   var username = document.getElementById('loginUser').value.trim();
   var password = document.getElementById('loginPass').value;
   if (!username || !password) { showAlert('red','⚠️ Enter username and password'); return; }
+  if (!navigator.onLine) { await doOfflineLogin(username, password); return; }
   if (!auth || !db) { showAlert('red','❌ Authentication is unavailable. Refresh and try again.'); return; }
 
   var btn = document.getElementById('loginBtn');
@@ -613,7 +1112,15 @@ async function doLogin() {
   showLoading(false);
   if (btn) { btn.disabled = false; btn.textContent = 'Sign In →'; }
 
+  if (!account && loginError && isNetworkFailure(loginError)) {
+    await doOfflineLogin(username, password);
+    return;
+  }
+
   if (account) {
+    saveOfflineVault(username, account, credential.user.email);
+    STATE._vaultKey   = username.toLowerCase();
+    STATE.offlineMode = false;
     STATE.isLoggedIn = true;
     STATE.uid  = credential.user.uid;
     STATE.user = {
@@ -660,9 +1167,9 @@ async function doLogin() {
     navTo('home');
     saveSession();
     var firstName = STATE.user.name.split(' ')[0];
-    showAlert('success','👋 Welcome back, ' + firstName + '!');
     setFbStatus('connected','🟢 Signed in as ' + firstName);
     startInboxListener(); // begin real-time incoming-payment listener
+    reportLoginActivity();
   } else {
     if (loginError && loginError.code === 'permission-denied') {
       showAlert('red','❌ Login is unavailable. Firestore rules need to allow reading the "usernames" collection.');
@@ -695,6 +1202,282 @@ async function doForgotPassword() {
   }
 }
 
+var PHONE_CHANGE = { pendingLink: '', verified: false, keepSession: false };
+var PHONE_CHANGE_EMAIL_KEY = 'omnipay_phone_change_email';
+
+function phoneChangeSetStep(step) {
+  ['Email', 'Sent', 'New'].forEach(function(name) {
+    var el = document.getElementById('cpnStep' + name);
+    if (el) el.style.display = name === step ? '' : 'none';
+  });
+}
+
+function setPhoneChangeHint(text) {
+  var el = document.getElementById('cpnEmailHint');
+  if (el) el.textContent = text;
+}
+
+function showChangePhoneModal() {
+  PHONE_CHANGE.pendingLink = '';
+  PHONE_CHANGE.verified = false;
+  var known = (STATE.isLoggedIn && STATE.user && STATE.user.email) || '';
+  var emailEl = document.getElementById('cpnEmail');
+  emailEl.value = known;
+  emailEl.readOnly = !!known;
+  setPhoneChangeHint('Lost your SIM or switching numbers? We\u2019ll email a secure link to your account email to confirm it\u2019s you.');
+  phoneChangeSetStep('Email');
+  showModal('changePhoneModal');
+}
+
+function closePhoneChangeModal() {
+  closeModal('changePhoneModal');
+  if (PHONE_CHANGE.verified && !PHONE_CHANGE.keepSession && !STATE.isLoggedIn && auth) auth.signOut().catch(function(){});
+  PHONE_CHANGE.verified = false;
+  PHONE_CHANGE.pendingLink = '';
+}
+
+function waitForAuthReady() {
+  return new Promise(function(resolve) {
+    if (!auth) { resolve(null); return; }
+    var off = auth.onAuthStateChanged(function(user) { off(); resolve(user); });
+  });
+}
+
+function onChangePhoneInput(el) {
+  var value = String(el.value || '');
+  var next = /^\+(?!63)/.test(value.trim()) ? value.replace(/[^\d+\s()-]/g, '') : formatPhPhone(value);
+  if (next !== el.value) el.value = next;
+}
+
+function validateChangePhone(phone) {
+  var value = String(phone || '').trim();
+  if (/^\+63/.test(value)) {
+    return /^\+63 9\d{2} \d{3} \d{4}$/.test(value) ? '' : 'Enter your complete mobile number (+63 9XX XXX XXXX)';
+  }
+  var digits = value.replace(/\D/g, '');
+  return (/^\+/.test(value) && digits.length >= 7 && digits.length <= 15) ? '' : 'Enter a valid mobile number with country code';
+}
+
+async function onPhoneChangeEmailAction() {
+  var email = document.getElementById('cpnEmail').value.trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { showAlert('orange', '\ud83d\udce7 Enter a valid email address'); return; }
+  if (!auth) { showAlert('red', '\u274c Authentication is unavailable. Refresh and try again.'); return; }
+  if (!navigator.onLine) { showAlert('red', '\u274c You need an internet connection to change your number.'); return; }
+  if (PHONE_CHANGE.pendingLink) { await completePhoneChangeLink(email); return; }
+
+  var btn = document.getElementById('cpnSendBtn');
+  if (btn) btn.disabled = true;
+  showLoading(true, 'Sending verification link\u2026');
+  try {
+    await auth.sendSignInLinkToEmail(email, {
+      url: window.location.origin + window.location.pathname + '?change-number=1',
+      handleCodeInApp: true
+    });
+    try { localStorage.setItem(PHONE_CHANGE_EMAIL_KEY, email); } catch (_) {}
+    showLoading(false);
+    var againBtn = document.getElementById('cpnAgainBtn');
+    if (againBtn) againBtn.style.display = document.getElementById('cpnEmail').readOnly ? 'none' : '';
+    phoneChangeSetStep('Sent');
+  } catch (e) {
+    showLoading(false);
+    var code = e && e.code ? e.code : '';
+    var message = '\u274c Could not send the verification link. Check the email and try again.';
+    if (code === 'auth/operation-not-allowed') message = '\u274c Email link sign-in is turned off. Enable it in Firebase Console \u2192 Authentication \u2192 Sign-in method \u2192 Email/Password.';
+    else if (code === 'auth/unauthorized-continue-uri') message = '\u274c This website address is not authorized in Firebase Console \u2192 Authentication \u2192 Settings \u2192 Authorized domains.';
+    else if (code === 'auth/too-many-requests') message = '\u274c Too many requests. Please wait a few minutes and try again.';
+    showAlert('red', message);
+  }
+  if (btn) btn.disabled = false;
+}
+
+function handlePhoneChangeLink() {
+  if (!auth || typeof auth.isSignInWithEmailLink !== 'function' || !auth.isSignInWithEmailLink(window.location.href)) return;
+  PHONE_CHANGE.pendingLink = window.location.href;
+  var stored = '';
+  try { stored = localStorage.getItem(PHONE_CHANGE_EMAIL_KEY) || ''; } catch (_) {}
+  if (stored) { completePhoneChangeLink(stored); return; }
+  var emailEl = document.getElementById('cpnEmail');
+  emailEl.value = '';
+  emailEl.readOnly = false;
+  setPhoneChangeHint('To finish, confirm the email address this verification link was sent to.');
+  phoneChangeSetStep('Email');
+  showModal('changePhoneModal');
+}
+
+async function completePhoneChangeLink(email) {
+  showModal('changePhoneModal');
+  showLoading(true, 'Verifying your email\u2026');
+  var link = PHONE_CHANGE.pendingLink;
+  try {
+    var before = await waitForAuthReady();
+    var cred = await auth.signInWithEmailLink(email, link);
+    var profile = await db.collection(USERS_COLLECTION).doc(cred.user.uid).get();
+    if (!profile.exists) {
+      try { await cred.user.delete(); } catch (_) { try { await auth.signOut(); } catch (__) {} }
+      throw { code: 'omnipay/no-account' };
+    }
+    PHONE_CHANGE.keepSession = !!before && before.uid === cred.user.uid;
+    PHONE_CHANGE.verified = true;
+    PHONE_CHANGE.pendingLink = '';
+    try { localStorage.removeItem(PHONE_CHANGE_EMAIL_KEY); } catch (_) {}
+    try { window.history.replaceState(null, '', window.location.pathname); } catch (_) {}
+    showLoading(false);
+    document.getElementById('cpnPhone').value = '+63 9';
+    phoneChangeSetStep('New');
+  } catch (e) {
+    showLoading(false);
+    var code = e && e.code ? e.code : '';
+    var message = '\u274c Could not verify your email. Request a new link and try again.';
+    if (code === 'omnipay/no-account') message = '\u274c No OmniPay account uses that email address.';
+    else if (code === 'auth/invalid-email') message = '\u274c That email does not match the verification link.';
+    else if (code === 'auth/network-request-failed') message = '\u274c Network problem. Check your connection and try again.';
+    else if (code === 'auth/invalid-action-code' || code === 'auth/expired-action-code') {
+      message = '\u274c This link has expired or was already used. Request a new one.';
+      PHONE_CHANGE.pendingLink = '';
+      try { window.history.replaceState(null, '', window.location.pathname); } catch (_) {}
+      setPhoneChangeHint('Enter your account email and we\u2019ll send a fresh verification link.');
+    }
+    if (code !== 'auth/invalid-email' && code !== 'auth/network-request-failed') {
+      PHONE_CHANGE.pendingLink = '';
+      phoneChangeSetStep('Email');
+    }
+    showAlert('red', message);
+  }
+}
+
+async function doChangePhone() {
+  var phone = document.getElementById('cpnPhone').value.trim();
+  var issue = validateChangePhone(phone);
+  if (issue) { showAlert('red', '\u26a0\ufe0f ' + issue); return; }
+  if (!auth || !auth.currentUser) {
+    showAlert('red', '\u274c Verification expired. Please verify your email again.');
+    phoneChangeSetStep('Email');
+    return;
+  }
+  var btn = document.getElementById('cpnSaveBtn');
+  if (btn) btn.disabled = true;
+  showLoading(true, 'Updating number\u2026');
+  try {
+    var uid = auth.currentUser.uid;
+    var token = await auth.currentUser.getIdToken(true);
+    var resp = await fetch(API_BASE + '/api/change-phone', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: phone, deviceId: getActivityDeviceId() })
+    });
+    var data = {};
+    try { data = await resp.json(); } catch (_) {}
+    if (!resp.ok) throw { code: data.error || ('http-' + resp.status) };
+
+    var vaults = readOfflineVaults();
+    Object.keys(vaults).forEach(function(key) { if (vaults[key] && vaults[key].uid === uid) vaults[key].phone = phone; });
+    writeOfflineVaults(vaults);
+
+    var inApp = STATE.isLoggedIn && STATE.uid === uid;
+    if (inApp) {
+      STATE.user.phone = phone;
+      saveSession();
+      renderProfile();
+      populateProfileEditForm();
+    }
+    var keep = PHONE_CHANGE.keepSession || inApp;
+    PHONE_CHANGE.verified = false;
+    closeModal('changePhoneModal');
+    showLoading(false);
+    if (btn) btn.disabled = false;
+    if (!keep) { try { await auth.signOut(); } catch (_) {} }
+    showAlert('success', inApp ? '\u2705 Mobile number updated!' : '\u2705 Mobile number updated! Sign in to continue.');
+  } catch (e) {
+    showLoading(false);
+    if (btn) btn.disabled = false;
+    var code = e && e.code ? e.code : '';
+    var message = '\u274c Could not update your number. Please try again.';
+    if (code === 'phone-in-use') message = '\u274c That number is already linked to another OmniPay account.';
+    else if (code === 'same-phone') message = '\u26a0\ufe0f That is already your current number.';
+    else if (code === 'invalid-phone') message = '\u26a0\ufe0f Enter a valid mobile number.';
+    else if (code === 'recent-verification-required') {
+      message = '\u274c Verification expired. Please verify your email again.';
+      phoneChangeSetStep('Email');
+    }
+    showAlert('red', message);
+  }
+}
+
+window.addEventListener('load', handlePhoneChangeLink);
+
+var PASSWORD_RESET = { code: '' };
+
+function passwordResetSetStep(step) {
+  ['Form', 'Done', 'Invalid'].forEach(function(name) {
+    var el = document.getElementById('rpStep' + name);
+    if (el) el.style.display = name === step ? '' : 'none';
+  });
+}
+
+function cleanResetUrl() {
+  try { window.history.replaceState(null, '', window.location.pathname); } catch (_) {}
+}
+
+async function handlePasswordResetLink() {
+  if (!auth) return;
+  var params = new URLSearchParams(window.location.search);
+  if (params.get('mode') !== 'resetPassword' || !params.get('oobCode')) return;
+  PASSWORD_RESET.code = params.get('oobCode');
+  showModal('resetPasswordModal');
+  showLoading(true, 'Checking reset link\u2026');
+  try {
+    var email = await auth.verifyPasswordResetCode(PASSWORD_RESET.code);
+    document.getElementById('rpEmail').textContent = email;
+    document.getElementById('rpNew').value = '';
+    document.getElementById('rpConfirm').value = '';
+    passwordResetSetStep('Form');
+  } catch (e) {
+    PASSWORD_RESET.code = '';
+    cleanResetUrl();
+    passwordResetSetStep('Invalid');
+  }
+  showLoading(false);
+}
+
+async function doResetPassword() {
+  var newPass = document.getElementById('rpNew').value;
+  var confirm = document.getElementById('rpConfirm').value;
+  if (!newPass || newPass.length < 6) { showAlert('orange', '\ud83d\udd10 New password must be at least 6 characters'); return; }
+  if (!/\d/.test(newPass)) { showAlert('orange', '\ud83d\udd22 New password must contain at least one number'); return; }
+  if (newPass !== confirm) { showAlert('red', '\u26a0\ufe0f New password and confirmation do not match'); return; }
+  if (!PASSWORD_RESET.code) { passwordResetSetStep('Invalid'); return; }
+
+  var btn = document.getElementById('rpSaveBtn');
+  if (btn) btn.disabled = true;
+  showLoading(true, 'Updating password\u2026');
+  try {
+    await auth.confirmPasswordReset(PASSWORD_RESET.code, newPass);
+    PASSWORD_RESET.code = '';
+    cleanResetUrl();
+    passwordResetSetStep('Done');
+  } catch (e) {
+    var code = e && e.code ? e.code : '';
+    if (code === 'auth/expired-action-code' || code === 'auth/invalid-action-code') {
+      PASSWORD_RESET.code = '';
+      cleanResetUrl();
+      passwordResetSetStep('Invalid');
+    } else if (code === 'auth/weak-password') {
+      showAlert('orange', '\ud83d\udd10 Choose a stronger password');
+    } else {
+      showAlert('red', '\u274c Could not update your password. Please try again.');
+    }
+  }
+  showLoading(false);
+  if (btn) btn.disabled = false;
+}
+
+function finishPasswordReset() {
+  closeModal('resetPasswordModal');
+  goTo('login');
+}
+
+window.addEventListener('load', handlePasswordResetLink);
+
 async function doRegister() {
   var first = document.getElementById('regFirst').value.trim();
   var last  = document.getElementById('regLast').value.trim();
@@ -702,6 +1485,7 @@ async function doRegister() {
   var phone = document.getElementById('regPhone').value.trim();
   var email = document.getElementById('regEmail').value.trim();
   var pass  = document.getElementById('regPass').value;
+  var passConfirm = document.getElementById('regPassConfirm').value;
   var pin   = document.getElementById('regPin').value.trim();
   var terms = document.getElementById('regTerms').checked;
   var type  = document.getElementById('regType').value;
@@ -713,6 +1497,7 @@ async function doRegister() {
     { id:'regPhone', val:phone,  label:'Mobile Number' },
     { id:'regEmail', val:email,  label:'Email Address' },
     { id:'regPass',  val:pass,   label:'Password' },
+    { id:'regPassConfirm', val:passConfirm, label:'Confirm Password' },
     { id:'regPin',   val:pin,    label:'PIN' }
   ];
   var firstEmpty = null;
@@ -730,9 +1515,17 @@ async function doRegister() {
     if (firstEmpty.el) { firstEmpty.el.focus(); firstEmpty.el.scrollIntoView({ behavior:'smooth', block:'center' }); }
     return;
   }
+  var phoneIssue = validateRegPhone(phone);
+  if (phoneIssue) {
+    var phoneEl = document.getElementById('regPhone');
+    if (phoneEl) { phoneEl.classList.add('error'); phoneEl.focus(); phoneEl.scrollIntoView({ behavior:'smooth', block:'center' }); }
+    showAlert('red','⚠️ ' + phoneIssue);
+    return;
+  }
   if (!terms) { showAlert('orange','📋 Please accept the Terms of Service'); return; }
   if (pass.length < 6) { showAlert('orange','🔐 Password must be at least 6 characters'); return; }
   if (!/\d/.test(pass)) { showAlert('orange','🔢 Password must contain at least one number'); return; }
+  if (pass !== passConfirm) { document.getElementById('regPassConfirm').classList.add('error'); showAlert('orange','🔐 Passwords do not match'); return; }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { showAlert('orange','📧 Enter a valid email address'); return; }
   if (!/^\d{4,6}$/.test(pin)) { document.getElementById('regPin').classList.add('error'); showAlert('orange','🔢 PIN must be 4–6 digits'); return; }
 
@@ -1010,10 +1803,11 @@ async function finishWalletSetup() {
   delete pendingCopy._password;
   PENDING_USER = null;
 
-  ['regFirst','regLast','regUser','regPhone','regEmail','regPass','regPin'].forEach(function(id){
+  ['regFirst','regLast','regUser','regPhone','regEmail','regPass','regPassConfirm','regPin'].forEach(function(id){
     var el = document.getElementById(id);
     if (el) el.value = '';
   });
+  syncRegPhoneToCountry();
   var terms = document.getElementById('regTerms');
   if (terms) terms.checked = false;
 
@@ -1161,9 +1955,17 @@ function copyInternalWalletAddress() {
 
 function doLogout() {
   stopInboxListener(); // tear down real-time listener before clearing state
+  activityRequest('POST', '/api/activity/event', { type: 'logout', deviceId: getActivityDeviceId() }).catch(function(){});
+  ACTIVITY.alerts = [];
+  var activityTab = document.getElementById('activityTabBtn');
+  if (activityTab) activityTab.classList.remove('has-alert');
   if (auth) auth.signOut().catch(function(){});
   STATE.isLoggedIn = false;
   STATE.uid        = null;
+  STATE._sendPicked = null;
+  STATE._smsPicked  = null;
+  _stopMonitorAutoRefresh();
+  MONITOR.relay = []; MONITOR.loadedAt = 0;
   try { sessionStorage.removeItem('omnipay_session'); } catch(e) {}
   document.getElementById('bottomNav').style.display = 'none';
   goTo('login');
@@ -1262,7 +2064,7 @@ function renderHome() {
   fetchLiveXLMBalance();
   document.getElementById('heroVault').textContent   = t.icon+' '+t.tier;
   document.getElementById('heroTrust').textContent   = STATE.trustScore;
-  document.getElementById('heroPending').textContent = STATE.isOnline ? 'Online' : 'Offline';
+  renderConnectivityUI();
 
   document.getElementById('trustScoreVal').textContent        = STATE.trustScore;
   document.getElementById('trustFill').style.width            = STATE.trustScore+'%';
@@ -1387,18 +2189,360 @@ function updateOfflinePayUI() {
   if (el3) { var pct = STATE.balance > 0 ? (STATE.vaultLocked / STATE.balance)*100 : 0; el3.style.width=pct+'%'; }
 }
 
-function renderHistory(filter) {
-  var allTxs = normalizeTransactionState();
-  var txs = filter === 'all' ? allTxs : allTxs.filter(function(tx){
-    return tx.status === filter || (filter === 'offline' && tx.mode === 'offline');
+var MONITOR = { relay: [], loadedAt: 0, loading: false, filter: 'all' };
+
+var MONITOR_STAGES = [
+  { key: 'received',  label: 'Received' },
+  { key: 'validated', label: 'Validated' },
+  { key: 'submitted', label: 'Submitted' },
+  { key: 'confirmed', label: 'Confirmed' },
+  { key: 'settled',   label: 'Settled' }
+];
+
+var MONITOR_CHANNELS = { sms: 'SMS', api: 'Signed API', web: 'App' };
+
+var MONITOR_REASONS = {
+  'insufficient-balance': 'Insufficient balance',
+  'self-send': 'Cannot send to yourself',
+  'recipient-not-found': 'Recipient not found',
+  'incorrect-pin': 'Incorrect PIN',
+  'pin-locked': 'Too many wrong PIN attempts',
+  'signature-required': 'Signature required',
+  'no-registered-signing-key': 'No signing key registered',
+  'duplicate-request': 'Duplicate request',
+  'nonce-reused': 'Nonce already used',
+  'unknown-sender': 'Unknown sender',
+  'wallet-not-setup': 'Wallet not set up',
+  'malformed-command': 'Malformed command',
+  'malformed-transaction': 'Malformed transaction',
+  'sender-not-found': 'Sender not found',
+  'settlement-signer-not-enabled': 'SMS settlement not enabled for this wallet',
+  'settlement-signer-not-configured': 'Settlement unavailable'
+};
+
+async function loadMonitoringData(force) {
+  if (MONITOR.loading || !navigator.onLine || !auth || !auth.currentUser) return;
+  if (!force && Date.now() - MONITOR.loadedAt < 15000) return;
+  MONITOR.loading = true;
+  try {
+    var token = await auth.currentUser.getIdToken();
+    var resp = await fetch(API_BASE + '/api/my-transactions', { headers: { 'Authorization': 'Bearer ' + token } });
+    if (!resp.ok) throw new Error('http-' + resp.status);
+    var data = await resp.json();
+    MONITOR.relay = Array.isArray(data.transactions) ? data.transactions : [];
+    MONITOR.loadedAt = Date.now();
+    var screen = document.getElementById('history');
+    if (screen && screen.classList.contains('active')) renderHistory();
+  } catch (e) {
+  } finally {
+    MONITOR.loading = false;
+  }
+}
+
+var MONITOR_REFRESH_MS = 5000;
+var MONITOR_FINAL_STATUSES = { settled: true, failed: true, validation_failed: true };
+var _monitorRefreshId = null;
+
+function monitorHasPending() {
+  var relay = Array.isArray(MONITOR.relay) ? MONITOR.relay : [];
+  return relay.some(function(r) { return !MONITOR_FINAL_STATUSES[r.status]; });
+}
+
+var _monitorStreamAbort = null;
+var _monitorStreamLive = false;
+var _monitorStreamRetryId = null;
+
+function _monitorStreamSupported() {
+  return typeof ReadableStream !== 'undefined' && typeof AbortController !== 'undefined' && typeof TextDecoder !== 'undefined';
+}
+
+function _monitorScreenActive() {
+  var screen = document.getElementById('history');
+  return !!(screen && screen.classList.contains('active'));
+}
+
+function _applyMonitorStreamData(list) {
+  MONITOR.relay = Array.isArray(list) ? list : [];
+  MONITOR.loadedAt = Date.now();
+  if (_monitorScreenActive()) renderHistory();
+}
+
+function _handleMonitorStreamEvent(block) {
+  block.split('\n').forEach(function(line) {
+    if (line.indexOf('data:') !== 0) return;
+    try {
+      var payload = JSON.parse(line.slice(5).trim());
+      _applyMonitorStreamData(payload.transactions);
+    } catch (e) {}
   });
-  var el = document.getElementById('fullTxList');
-  if (txs.length === 0) {
-    el.innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div><h4>No transactions</h4><p>No '+filter+' transactions found</p></div>';
-  } else {
-    el.innerHTML = txs.map(function(tx){ return renderTxItem(tx); }).join('');
+}
+
+async function _startMonitorStream() {
+  _stopMonitorStream();
+  if (!_monitorStreamSupported() || !navigator.onLine || !auth || !auth.currentUser) return;
+  var controller = new AbortController();
+  _monitorStreamAbort = controller;
+  try {
+    var token = await auth.currentUser.getIdToken();
+    var resp = await fetch(API_BASE + '/api/my-transactions/stream', {
+      headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'text/event-stream' },
+      signal: controller.signal
+    });
+    if (!resp.ok || !resp.body) throw new Error('http-' + resp.status);
+    _monitorStreamLive = true;
+    var reader = resp.body.getReader();
+    var decoder = new TextDecoder();
+    var buffer = '';
+    while (true) {
+      var chunk = await reader.read();
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      var blocks = buffer.split('\n\n');
+      buffer = blocks.pop();
+      blocks.forEach(_handleMonitorStreamEvent);
+    }
+  } catch (e) {}
+  if (_monitorStreamAbort !== controller) return;
+  _monitorStreamAbort = null;
+  _monitorStreamLive = false;
+  if (_monitorScreenActive() && STATE.isLoggedIn) {
+    _monitorStreamRetryId = setTimeout(function() {
+      _monitorStreamRetryId = null;
+      if (_monitorScreenActive() && STATE.isLoggedIn && !document.hidden) _startMonitorStream();
+    }, MONITOR_REFRESH_MS);
+  }
+}
+
+function _stopMonitorStream() {
+  if (_monitorStreamRetryId) { clearTimeout(_monitorStreamRetryId); _monitorStreamRetryId = null; }
+  var controller = _monitorStreamAbort;
+  _monitorStreamAbort = null;
+  _monitorStreamLive = false;
+  if (controller) { try { controller.abort(); } catch (e) {} }
+}
+
+function _startMonitorAutoRefresh() {
+  _stopMonitorAutoRefresh();
+  _monitorRefreshId = setInterval(function() {
+    var screen = document.getElementById('history');
+    if (!screen || !screen.classList.contains('active')) { _stopMonitorAutoRefresh(); return; }
+    if (document.hidden) return;
+    if (_monitorStreamLive) return;
+    loadMonitoringData(monitorHasPending());
+  }, MONITOR_REFRESH_MS);
+  _startMonitorStream();
+}
+
+function _stopMonitorAutoRefresh() {
+  if (_monitorRefreshId) { clearInterval(_monitorRefreshId); _monitorRefreshId = null; }
+  _stopMonitorStream();
+}
+
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden) return;
+  var screen = document.getElementById('history');
+  if (screen && screen.classList.contains('active')) {
+    loadMonitoringData(true);
+    _startMonitorStream();
+  }
+});
+
+function monitorReason(detail) {
+  var text = String(detail == null ? '' : detail).trim();
+  if (!text) return '';
+  if (MONITOR_REASONS[text]) return MONITOR_REASONS[text];
+  if (text.indexOf('bad-signature') === 0) return 'Signature check failed';
+  if (text.indexOf('xdr-mismatch') === 0) return 'Signed transaction did not match the request';
+  if (text.indexOf('soroban') === 0) return 'Contract settlement failed';
+  return text.length > 80 ? text.slice(0, 80) + '…' : text;
+}
+
+function monitorParty(label) {
+  var text = String(label || '').replace(/^(To|From)\s+/i, '').trim();
+  if (/^G[A-Z2-7]{55}$/.test(text)) return text.substring(0, 4) + '…' + text.slice(-4);
+  return text || 'Unknown';
+}
+
+function monitorSelfName() {
+  return (STATE.user && (STATE.user.name || STATE.user.username)) || 'You';
+}
+
+function monitorFromRelay(r, tx) {
+  var reached = {};
+  (r.statusHistory || []).forEach(function(h) { reached[h.status] = true; });
+  reached[r.status] = true;
+
+  var settled = r.status === 'settled';
+  var failed = r.status === 'failed' || r.status === 'validation_failed';
+  var reachedIdx = -1;
+  MONITOR_STAGES.forEach(function(s, i) { if (reached[s.key]) reachedIdx = i; });
+
+  var validation = { key: 'pending', label: 'Pending' };
+  if (r.status === 'validation_failed') validation = { key: 'failed', label: 'Validation Failed' };
+  else if (reached.validated) validation = { key: 'ok', label: 'Validated' };
+
+  var settlement = { key: 'pending', label: 'Awaiting' };
+  if (settled || reached.confirmed) settlement = { key: 'ok', label: 'Confirmed' };
+  else if (failed && reached.submitted) settlement = { key: 'failed', label: 'Failed' };
+  else if (reached.submitted) settlement = { key: 'pending', label: 'Submitted' };
+  else if (r.status === 'validation_failed') settlement = { key: 'idle', label: 'Not started' };
+  else if (failed) settlement = { key: 'failed', label: 'Failed' };
+
+  var detail = '';
+  if (failed) {
+    var history = r.statusHistory || [];
+    for (var i = history.length - 1; i >= 0; i--) {
+      if (history[i].detail) { detail = history[i].detail; break; }
+    }
   }
 
+  var toRaw = (tx && /^To\s+@/i.test(tx.name || '')) ? tx.name : r.recipient;
+  return {
+    ts: r.createdAt || (tx && tx.ts) || 0,
+    direction: 'send',
+    amountText: (Number(r.amount) || 0).toLocaleString('en', { minimumFractionDigits: 4, maximumFractionDigits: 7 }) + ' XLM',
+    from: monitorSelfName(),
+    to: monitorParty(toRaw),
+    outcome: settled ? 'settled' : (failed ? 'failed' : 'pending'),
+    validation: validation,
+    settlement: settlement,
+    reachedIdx: reachedIdx,
+    txHash: r.txHash || (tx && tx.txHash) || '',
+    sorobanTxHash: r.sorobanTxHash || (tx && tx.sorobanTxHash) || '',
+    channel: MONITOR_CHANNELS[r.channel] || '',
+    detail: monitorReason(detail)
+  };
+}
+
+function monitorFromTx(tx) {
+  var isReceive = tx.type === 'receive';
+  var outcome = tx.status === 'synced' ? 'settled' : (tx.status === 'failed' ? 'failed' : 'pending');
+  var validation = { key: 'pending', label: 'Pending' };
+  var settlement = { key: 'pending', label: 'Awaiting sync' };
+  var reachedIdx = 0;
+  if (outcome === 'settled') {
+    validation = { key: 'ok', label: 'Validated' };
+    settlement = { key: 'ok', label: 'Confirmed' };
+    reachedIdx = MONITOR_STAGES.length - 1;
+  } else if (outcome === 'failed') {
+    validation = { key: 'failed', label: 'Validation Failed' };
+    settlement = { key: 'idle', label: 'Not started' };
+  }
+  var party = monitorParty(tx.name);
+  return {
+    ts: tx.ts || 0,
+    direction: isReceive ? 'receive' : 'send',
+    amountText: fmtTxAmt(tx),
+    from: isReceive ? party : monitorSelfName(),
+    to: isReceive ? monitorSelfName() : party,
+    outcome: outcome,
+    validation: validation,
+    settlement: settlement,
+    reachedIdx: reachedIdx,
+    txHash: tx.txHash || '',
+    sorobanTxHash: tx.sorobanTxHash || '',
+    channel: tx.mode === 'offline' ? 'Offline' : '',
+    detail: ''
+  };
+}
+
+function buildMonitorItems() {
+  var txs = normalizeTransactionState();
+  var relay = Array.isArray(MONITOR.relay) ? MONITOR.relay : [];
+  var relayByHash = {};
+  var used = {};
+  relay.forEach(function(r) { if (r.txHash) relayByHash[r.txHash] = r; });
+
+  var items = txs.map(function(tx) {
+    var r = tx.txHash ? relayByHash[tx.txHash] : null;
+    if (r) { used[r.id] = true; return monitorFromRelay(r, tx); }
+    return monitorFromTx(tx);
+  });
+  relay.forEach(function(r) { if (!used[r.id]) items.push(monitorFromRelay(r, null)); });
+
+  items.sort(function(a, b) { return (a.ts || 0) - (b.ts || 0); });
+  items.forEach(function(item, i) { item.num = i + 1; });
+  return items.reverse();
+}
+
+function monitorRow(label, valueHtml) {
+  return '<div class="mon-row"><span class="mon-label">' + label + '</span><span class="mon-value">' + valueHtml + '</span></div>';
+}
+
+function monitorHashRow(label, hash) {
+  var safeHash = /^[A-Za-z0-9]+$/.test(String(hash || '')) ? String(hash) : '';
+  if (!safeHash) return monitorRow(label, '<span class="mon-muted">—</span>');
+  var short = safeHash.substring(0, 10) + '…' + safeHash.slice(-6);
+  return monitorRow(label,
+    '<span class="mon-hash" title="' + safeText(safeHash) + '">' + safeText(short) + '</span>' +
+    '<button type="button" class="mon-link-btn" data-tx-hash="' + safeText(safeHash) + '" onclick="copyTxHash(this.dataset.txHash)">📋 Copy</button>' +
+    '<a class="mon-link-btn" href="https://stellar.expert/explorer/testnet/tx/' + encodeURIComponent(safeHash) + '" target="_blank" rel="noopener noreferrer">⭐ View on Explorer</a>'
+  );
+}
+
+function monitorStagesHtml(item) {
+  var failed = item.outcome === 'failed';
+  var last = failed ? item.reachedIdx : MONITOR_STAGES.length - 1;
+  var chips = '';
+  for (var i = 0; i <= last; i++) {
+    var done = i <= item.reachedIdx;
+    chips += '<span class="mon-stage' + (done ? ' done' : '') + '">' + (done ? '✓ ' : '') + MONITOR_STAGES[i].label + '</span>';
+  }
+  if (failed) chips += '<span class="mon-stage failed">✕ Failed</span>';
+  return '<div class="mon-stages">' + chips + '</div>';
+}
+
+function monitorCardHtml(item) {
+  var isReceive = item.direction === 'receive';
+  var pill = item.outcome === 'settled' ? 'Settled ✓' : (item.outcome === 'failed' ? 'Failed ✕' : 'Pending ⏳');
+  var when = item.ts
+    ? new Date(item.ts).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    : '';
+  var meta = [when, item.channel ? 'via ' + item.channel : ''].filter(Boolean).join(' · ');
+
+  var html = '<div class="mon-card ' + item.outcome + '">'
+    + '<div class="mon-head">'
+    +   '<div class="mon-head-main"><div class="mon-title">Transaction #' + String(item.num).padStart(3, '0') + '</div>'
+    +   '<div class="mon-time">' + safeText(meta) + '</div></div>'
+    +   '<div class="mon-amount ' + (isReceive ? 'credit' : 'debit') + '">' + (isReceive ? '+' : '-') + safeText(item.amountText) + '</div>'
+    + '</div>'
+    + '<div class="mon-route"><span class="mon-party">' + safeText(item.from) + '</span><span class="mon-arrow">→</span><span class="mon-party">' + safeText(item.to) + '</span></div>'
+    + '<div class="mon-rows">'
+    +   monitorRow('Status', '<span class="mon-pill ' + item.outcome + '">' + pill + '</span>')
+    +   monitorRow('Validation', '<span class="mon-state ' + item.validation.key + '">' + safeText(item.validation.label) + '</span>')
+    +   monitorRow('Settlement', '<span class="mon-state ' + item.settlement.key + '">' + safeText(item.settlement.label) + '</span>')
+    +   (item.detail ? monitorRow('Reason', '<span class="mon-state failed">' + safeText(item.detail) + '</span>') : '')
+    +   monitorHashRow('Stellar TX', item.txHash)
+    +   (item.sorobanTxHash ? monitorHashRow('Contract TX', item.sorobanTxHash) : '')
+    + '</div>'
+    + monitorStagesHtml(item)
+    + '</div>';
+  return html;
+}
+
+function renderHistory(filter) {
+  if (filter) MONITOR.filter = filter;
+  var active = MONITOR.filter;
+  var items = buildMonitorItems();
+  var counts = { settled: 0, pending: 0, failed: 0 };
+  items.forEach(function(item) { counts[item.outcome] += 1; });
+
+  var summary = document.getElementById('monSummary');
+  if (summary) {
+    summary.innerHTML =
+      '<div class="mon-stat settled"><div class="mon-stat-val">' + counts.settled + '</div><div class="mon-stat-lbl">Settled</div></div>' +
+      '<div class="mon-stat pending"><div class="mon-stat-val">' + counts.pending + '</div><div class="mon-stat-lbl">Pending</div></div>' +
+      '<div class="mon-stat failed"><div class="mon-stat-val">' + counts.failed + '</div><div class="mon-stat-lbl">Failed</div></div>';
+  }
+
+  var shown = active === 'all' ? items : items.filter(function(item) { return item.outcome === active; });
+  var el = document.getElementById('fullTxList');
+  if (!el) return;
+  if (!shown.length) {
+    el.innerHTML = '<div class="card"><div class="empty-state"><div class="empty-icon">📭</div><h4>No transactions</h4><p>No ' + (active === 'all' ? '' : active + ' ') + 'transactions found</p></div></div>';
+  } else {
+    el.innerHTML = shown.map(monitorCardHtml).join('');
+  }
 }
 
 function filterTx(filter, el) {
@@ -1482,6 +2626,31 @@ function processManualPay() {
   doPaymentSuccess(amt, 'Aling Nena Store', STATE.isOnline ? 'online' : 'offline');
 }
 
+var _sendConfirmAction = null;
+
+function askSendConfirm(amount, name, sub, action) {
+  _sendConfirmAction = action;
+  var amountEl = document.getElementById('sendConfirmAmount');
+  var toEl = document.getElementById('sendConfirmTo');
+  var subEl = document.getElementById('sendConfirmSub');
+  if (amountEl) amountEl.textContent = String(parseFloat(Number(amount).toFixed(7))) + ' XLM';
+  if (toEl) toEl.textContent = name || 'this recipient';
+  if (subEl) subEl.textContent = sub || '';
+  showModal('sendConfirmModal');
+}
+
+function confirmSendAction() {
+  var action = _sendConfirmAction;
+  _sendConfirmAction = null;
+  closeModal('sendConfirmModal');
+  if (action) action();
+}
+
+function cancelSendAction() {
+  _sendConfirmAction = null;
+  closeModal('sendConfirmModal');
+}
+
 async function doSendMoney() {
   syncSpendableBalance();
   var recipientEl = document.getElementById('sendRecipient');
@@ -1489,9 +2658,10 @@ async function doSendMoney() {
   var amt       = parseFloat(document.getElementById('sendAmount').value);
   var note      = (document.getElementById('sendNote') || {}).value || '';
 
-  if (!recipient)                 { showAlert('red','⚠️ Enter a Stellar recipient address (G…)'); return; }
+  if (!recipient)                 { showAlert('red','⚠️ Search and select a recipient'); return; }
   if (!isFinite(amt) || amt <= 0) { showAlert('red','⚠️ Enter a valid amount'); return; }
   if (amt > STATE.balance)        { showAlert('red','❌ Insufficient balance'); return; }
+  if (!isEffectivelyOnline())     { showAlert('orange','📴 No internet connection. Use SMS Pay to send without internet.'); return; }
 
   if (recipientEl) recipientEl.value = recipient;
   if (!isValidStellarPublicKey(recipient)) {
@@ -1499,6 +2669,17 @@ async function doSendMoney() {
     showAlert('red','❌ ' + stellarAddressError(recipient));
     return;
   }
+
+  if (!STATE._sendConfirmed) {
+    var chipName = document.getElementById('sendRecipientName');
+    var chipSub = document.getElementById('sendRecipientSub');
+    askSendConfirm(amt, chipName ? chipName.textContent : recipient, chipSub ? chipSub.textContent : '', function () {
+      STATE._sendConfirmed = true;
+      doSendMoney();
+    });
+    return;
+  }
+  STATE._sendConfirmed = false;
 
   var secretKey = STATE.wallet.secretKey;
   var primaryPublic = null;
@@ -1578,7 +2759,8 @@ async function confirmSignPayment() {
       timestamp: timestamp,
       nonce:     nonce,
       requestId: requestId,
-      signature: bytesToBase64(keypair.sign(new TextEncoder().encode(payload)))
+      signature: bytesToBase64(keypair.sign(new TextEncoder().encode(payload))),
+      pin:       pin
     };
   } catch (err) {
     fail('Could not sign payment: ' + (err && err.message ? err.message : 'unknown error'));
@@ -1593,6 +2775,54 @@ async function confirmSignPayment() {
   await executeSendMoney(auth);
 }
 
+var RELAY_ERROR_MESSAGES = {
+  'invalid signature':        'Signature check failed. Payment was not sent.',
+  'unauthorized sender':      'Your account is not authorized to sign payments. Log in again.',
+  'duplicate-request':        'Duplicate request ignored. No additional payment was made.',
+  'nonce-reused':             'This request was already used. No additional payment was made.',
+  'invalid-requestid':        'Invalid request ID.',
+  'invalid-nonce':            'Invalid nonce.',
+  'incorrect pin':            'Incorrect PIN. Payment was not sent.',
+  'recipient not found':      'Recipient is not registered on OmniPay.',
+  'insufficient-balance':     'Insufficient balance.',
+  'self-send':                'You cannot send money to yourself.',
+  'signer-not-enabled':       'Settlement is not enabled on your wallet yet. Try again.',
+  'settlement-not-configured':'Settlement is unavailable right now.',
+  'too many wrong PIN attempts, try again later': 'Too many wrong PIN attempts. Try again later.'
+};
+
+function relayErrorMessage(status, data) {
+  data = data || {};
+  var key = data.error || '';
+  var msg = RELAY_ERROR_MESSAGES[key]
+    || (data.reason && (MONITOR_REASONS[data.reason] || data.reason))
+    || key
+    || ('Relay error (HTTP ' + status + ')');
+  if (data.detail && typeof data.detail === 'string' && !RELAY_ERROR_MESSAGES[key]) msg += ' (' + data.detail + ')';
+  if (data.relayId) msg += ' [ref ' + String(data.relayId).slice(0, 8) + ']';
+  return msg;
+}
+
+async function postSignedSend(signedAuth, recipient, amtStr) {
+  var resp = await fetch(API_BASE + '/api/send', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      senderId:    STATE.uid,
+      recipientId: recipient,
+      amount:      amtStr,
+      timestamp:   signedAuth.timestamp,
+      nonce:       signedAuth.nonce,
+      requestId:   signedAuth.requestId,
+      signature:   signedAuth.signature,
+      pin:         signedAuth.pin
+    })
+  });
+  var data = await resp.json().catch(function(){ return {}; });
+  if (!resp.ok || !data.ok) throw new Error(relayErrorMessage(resp.status, data));
+  return data;
+}
+
 async function executeSendMoney(signedAuth) {
   syncSpendableBalance();
   var recipientEl = document.getElementById('sendRecipient');
@@ -1600,7 +2830,7 @@ async function executeSendMoney(signedAuth) {
   var amt       = parseFloat(document.getElementById('sendAmount').value);
   var note      = (document.getElementById('sendNote') || {}).value || 'Online payment';
 
-  if (!recipient)          { showAlert('red','⚠️ Enter a Stellar recipient address (G…)'); return; }
+  if (!recipient)          { showAlert('red','⚠️ Search and select a recipient'); return; }
   if (!isFinite(amt) || amt <= 0)    { showAlert('red','⚠️ Enter a valid amount'); return; }
   if (amt > STATE.balance) { showAlert('red','❌ Insufficient balance'); return; }
 
@@ -1663,77 +2893,87 @@ async function executeSendMoney(signedAuth) {
       throw new Error('Recipient wallet is not activated on Stellar Testnet. Ask the recipient to fund or activate the account first.');
     }
 
-    var accountResp = await fetch(STELLAR_HORIZON_TESTNET + '/accounts/' + encodeURIComponent(sourcePublic));
-    if (accountResp.status === 404 && !useFreighter) {
-      showLoading(true, 'Funding your Testnet wallet…');
-      await fundTestnetAccount(sourcePublic);
-      accountResp = await fetch(STELLAR_HORIZON_TESTNET + '/accounts/' + encodeURIComponent(sourcePublic));
-    }
-    if (!accountResp.ok) {
-      var errBody = await accountResp.json().catch(function(){ return {}; });
-      throw new Error('Sender account is not active on Stellar Testnet. Fund it via Friendbot first. (' + (errBody.detail || accountResp.status) + ')');
-    }
-    var accountData = await accountResp.json();
-
-    var account = new StellarSdk.Account(sourcePublic, accountData.sequence);
-
-    var txBuilder = new StellarSdk.TransactionBuilder(account, {
-      fee: StellarSdk.BASE_FEE,
-      networkPassphrase: StellarSdk.Networks.TESTNET
-    })
-      .addOperation(StellarSdk.Operation.payment({
-        destination: recipient,
-        asset:       StellarSdk.Asset.native(),
-        amount:      amtStr
-      }))
-      .addMemo(StellarSdk.Memo.text(note.substring(0, 28)))
-      .setTimeout(180);
-
-    var tx = txBuilder.build();
-    var txXdr;
-
-    if (useFreighter) {
-      var xdrUnsigned = tx.toXDR();
-      var api = getFreighterAPI();
-      var signResult = await api.signTransaction(xdrUnsigned, {
-        networkPassphrase: STELLAR_TESTNET_PASSPHRASE,
-        network: 'TESTNET'
-      });
-      if (typeof signResult === 'string') {
-        txXdr = signResult;
-      } else if (signResult && signResult.signedTxXdr) {
-        txXdr = signResult.signedTxXdr;
-      } else if (signResult && signResult.xdr) {
-        txXdr = signResult.xdr;
-      } else {
-        throw new Error('Freighter returned an unexpected signing result');
-      }
+    var txHash;
+    var sentViaSend = false;
+    if (signedAuth && !useFreighter) {
+      showLoading(true, 'Sending through OmniPay Relay…');
+      await prepareSettlementSigner(secretKey);
+      var sendData = await postSignedSend(signedAuth, recipient, amtStr);
+      txHash = sendData.txHash;
+      sentViaSend = true;
     } else {
-      tx.sign(StellarSdk.Keypair.fromSecret(secretKey));
-      txXdr = tx.toEnvelope().toXDR('base64');
-    }
+      var accountResp = await fetch(STELLAR_HORIZON_TESTNET + '/accounts/' + encodeURIComponent(sourcePublic));
+      if (accountResp.status === 404 && !useFreighter) {
+        showLoading(true, 'Funding your Testnet wallet…');
+        await fundTestnetAccount(sourcePublic);
+        accountResp = await fetch(STELLAR_HORIZON_TESTNET + '/accounts/' + encodeURIComponent(sourcePublic));
+      }
+      if (!accountResp.ok) {
+        var errBody = await accountResp.json().catch(function(){ return {}; });
+        throw new Error('Sender account is not active on Stellar Testnet. Fund it via Friendbot first. (' + (errBody.detail || accountResp.status) + ')');
+      }
+      var accountData = await accountResp.json();
 
-    var submitResp = await fetch('/api/submit-payment', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        senderId:    STATE.uid,
-        recipientId: recipient,
-        amount:      amtStr,
-        signedXdr:   txXdr,
-        timestamp:   signedAuth ? signedAuth.timestamp : undefined,
-        nonce:       signedAuth ? signedAuth.nonce : undefined,
-        requestId:   signedAuth ? signedAuth.requestId : undefined,
-        signature:   signedAuth ? signedAuth.signature : undefined
+      var account = new StellarSdk.Account(sourcePublic, accountData.sequence);
+
+      var txBuilder = new StellarSdk.TransactionBuilder(account, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: StellarSdk.Networks.TESTNET
       })
-    });
-    var submitData = await submitResp.json();
+        .addOperation(StellarSdk.Operation.payment({
+          destination: recipient,
+          asset:       StellarSdk.Asset.native(),
+          amount:      amtStr
+        }))
+        .addMemo(StellarSdk.Memo.text(note.substring(0, 28)))
+        .setTimeout(180);
 
-    if (!submitResp.ok || !submitData.ok) {
-      throw new Error('Transaction failed: ' + (submitData.detail || submitData.error || 'Unknown relay error'));
+      var tx = txBuilder.build();
+      var txXdr;
+
+      if (useFreighter) {
+        var xdrUnsigned = tx.toXDR();
+        var api = getFreighterAPI();
+        var signResult = await api.signTransaction(xdrUnsigned, {
+          networkPassphrase: STELLAR_TESTNET_PASSPHRASE,
+          network: 'TESTNET'
+        });
+        if (typeof signResult === 'string') {
+          txXdr = signResult;
+        } else if (signResult && signResult.signedTxXdr) {
+          txXdr = signResult.signedTxXdr;
+        } else if (signResult && signResult.xdr) {
+          txXdr = signResult.xdr;
+        } else {
+          throw new Error('Freighter returned an unexpected signing result');
+        }
+      } else {
+        tx.sign(StellarSdk.Keypair.fromSecret(secretKey));
+        txXdr = tx.toEnvelope().toXDR('base64');
+      }
+
+      var submitResp = await fetch(API_BASE + '/api/submit-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          senderId:    STATE.uid,
+          recipientId: recipient,
+          amount:      amtStr,
+          signedXdr:   txXdr,
+          timestamp:   signedAuth ? signedAuth.timestamp : undefined,
+          nonce:       signedAuth ? signedAuth.nonce : undefined,
+          requestId:   signedAuth ? signedAuth.requestId : undefined,
+          signature:   signedAuth ? signedAuth.signature : undefined
+        })
+      });
+      var submitData = await submitResp.json();
+
+      if (!submitResp.ok || !submitData.ok) {
+        throw new Error('Transaction failed: ' + (submitData.detail || submitData.error || 'Unknown relay error'));
+      }
+
+      txHash = submitData.txHash;
     }
-
-    var txHash = submitData.txHash;
     STATE._balanceGraceUntil = Date.now() + 20000;
 
     var signingWalletIdx = -1;
@@ -1780,16 +3020,16 @@ async function executeSendMoney(signedAuth) {
       icon:   '💸'
     });
 
-    syncSenderTxsToFirestore();
+    if (!sentViaSend) syncSenderTxsToFirestore();
 
     var sendBal = document.getElementById('sendBal');
     if (sendBal) sendBal.textContent = (STATE.balance || 0).toFixed(6) + ' XLM';
-    document.getElementById('sendRecipient').value = '';
+    resetSendRecipient();
     document.getElementById('sendAmount').value    = '';
     if (document.getElementById('sendNote')) document.getElementById('sendNote').value = '';
 
     saveSession();
-    renderHistory('all'); // refresh history tab immediately so the log appears
+    renderHistory(); // refresh history tab immediately so the log appears
 
     document.getElementById('successAmt').textContent      = fmtAmt(amt) + ' XLM';
     document.getElementById('successMerchant').textContent = 'Sent to ' + recipient.substring(0,4) + '…' + recipient.slice(-4);
@@ -1824,7 +3064,7 @@ async function executeSendMoney(signedAuth) {
 
 async function ensureSettlementSigner(secretKey) {
   if (STATE._settlementSignerReady) return;
-  var cfgResp = await fetch('/api/settlement-signer');
+  var cfgResp = await fetch(API_BASE + '/api/settlement-signer');
   if (!cfgResp.ok) throw new Error('SMS settlement is not available right now.');
   var cfg = await cfgResp.json();
   var keypair = StellarSdk.Keypair.fromSecret(secretKey);
@@ -1853,13 +3093,12 @@ async function ensureSettlementSigner(secretKey) {
 }
 
 async function doSignAndPrepareSms() {
-  var relayNumber = (document.getElementById('smsRelayNumber').value || '').trim();
+  var relayNumber = SMS_RELAY_NUMBER;
   var recipient   = (document.getElementById('smsRecipient').value || '').trim();
   var amt         = parseFloat(document.getElementById('smsAmount').value);
   var pin         = (document.getElementById('smsPin').value || '').trim();
 
-  if (!relayNumber)                  { showAlert('red','⚠️ Enter the OmniPay relay number'); return; }
-  if (!recipient)                    { showAlert('red','⚠️ Enter a recipient username or phone number'); return; }
+  if (!recipient)                   { showAlert('red','⚠️ Enter a recipient username or phone number'); return; }
   if (!isFinite(amt) || amt <= 0)    { showAlert('red','⚠️ Enter a valid amount'); return; }
   if (!/^\d{4,6}$/.test(pin))        { showAlert('red','🔢 PIN must be 4–6 digits'); return; }
 
@@ -1869,11 +3108,21 @@ async function doSignAndPrepareSms() {
   var senderId = STATE.uid;
   if (!senderId) { showAlert('red','❌ You must be logged in to sign a payment.'); return; }
 
+  if (!STATE._smsConfirmed) {
+    var picked = STATE._smsPicked && STATE._smsPicked.username === recipient ? STATE._smsPicked : null;
+    askSendConfirm(amt, picked ? (picked.name || picked.username) : recipient, picked ? '@' + picked.username : '', function () {
+      STATE._smsConfirmed = true;
+      doSignAndPrepareSms();
+    });
+    return;
+  }
+  STATE._smsConfirmed = false;
+
   var btn = document.querySelector('[onclick="doSignAndPrepareSms()"]');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Signing…'; }
 
   try {
-    await ensureSettlementSigner(secretKey);
+    await prepareSettlementSigner(secretKey);
 
     var amtStr      = amt.toFixed(7);
     var timestamp   = Date.now();
@@ -2001,7 +3250,7 @@ function doPaymentSuccess(amt, merchant, mode, nonce) {
     });
     var sendR = document.getElementById('sendRecipient');
     var sendN = document.getElementById('sendNote');
-    if (sendR) sendR.value = '';
+    if (sendR) resetSendRecipient();
     if (sendN) sendN.value = '';
   }
   saveSession();
@@ -2093,28 +3342,15 @@ function doSync() {
 }
 
 function toggleOfflineMode() {
-  document.getElementById('offlineToggle').classList.toggle('on');
-  STATE.isOnline    = !STATE.isOnline;
-  STATE.offlineMode = !STATE.offlineMode;
-
-  var statusEl    = document.getElementById('connectStatus');
-  var payStatus   = document.getElementById('payStatusBadge');
-  var payLabel    = document.getElementById('payModeLabel');
-  var heroPending = document.getElementById('heroPending');
+  var toggle = document.getElementById('offlineToggle');
+  toggle.classList.toggle('on');
+  NET.forceOffline = !toggle.classList.contains('on');
+  renderConnectivityUI();
 
   if (!STATE.isOnline) {
-    statusEl.className   = 'status-badge offline';
-    statusEl.innerHTML   = '<span class="status-dot offline"></span>Offline Mode';
-    if (payStatus)   { payStatus.className = 'status-badge offline'; payStatus.innerHTML = '<span class="status-dot offline"></span>Offline'; }
-    if (payLabel)    payLabel.textContent = 'Offline Mode · Payments stored locally';
-    if (heroPending) heroPending.textContent = 'Offline';
-    showAlert('orange','📴 Offline mode activated — payments stored locally');
+    if (NET.forceOffline) showAlert('orange','📴 Offline mode activated — use SMS Pay to send without internet');
+    else showAlert('yellow','📴 No internet connection detected');
   } else {
-    statusEl.className   = 'status-badge online';
-    statusEl.innerHTML   = '<span class="status-dot online"></span>Online · Stellar Testnet';
-    if (payStatus)   { payStatus.className = 'status-badge online'; payStatus.innerHTML = '<span class="status-dot online"></span>Online'; }
-    if (payLabel)    payLabel.textContent = 'Online Mode · Instant Settlement';
-    if (heroPending) heroPending.textContent = 'Online';
     showAlert('success','✅ Back online — syncing to Stellar…');
     setTimeout(doSync, 1500);
   }
@@ -2334,7 +3570,33 @@ async function doChangePassword() {
   try {
     var credential = firebase.auth.EmailAuthProvider.credential(auth.currentUser.email, current);
     await auth.currentUser.reauthenticateWithCredential(credential);
-    await auth.currentUser.updatePassword(newPass);
+    var walletRef = db.collection(USERS_COLLECTION).doc(auth.currentUser.uid);
+    var walletSecret = STATE.wallet && STATE.wallet.secretKey;
+    var oldWallet = null;
+    var newWallet = null;
+    if (walletSecret) {
+      var walletSnap = await walletRef.get();
+      var walletData = walletSnap.data() || {};
+      oldWallet = {
+        walletSecretEncrypted: walletData.walletSecretEncrypted,
+        walletSecretSalt: walletData.walletSecretSalt,
+        walletSecretIv: walletData.walletSecretIv
+      };
+      var rec = await encryptWalletSecret(walletSecret, newPass);
+      if (await decryptWalletSecret(rec.ciphertext, rec.salt, rec.iv, newPass) !== walletSecret) throw new Error('wallet-reencrypt-failed');
+      newWallet = { walletSecretEncrypted: rec.ciphertext, walletSecretSalt: rec.salt, walletSecretIv: rec.iv };
+      await walletRef.update(newWallet);
+    }
+    try {
+      await auth.currentUser.updatePassword(newPass);
+    } catch (pwErr) {
+      if (oldWallet) { try { await walletRef.update(oldWallet); } catch (_) {} }
+      throw pwErr;
+    }
+    if (newWallet && STATE._vaultKey) {
+      var vaults = readOfflineVaults();
+      if (vaults[STATE._vaultKey]) { Object.assign(vaults[STATE._vaultKey], newWallet); writeOfflineVaults(vaults); }
+    }
   } catch (e) {
     showLoading(false);
     if (btn) { btn.disabled = false; btn.textContent = 'Update Password'; }
@@ -2349,6 +3611,7 @@ async function doChangePassword() {
 
   closeModal('changePasswordModal');
   showAlert('success','✅ Password updated successfully!');
+  activityRequest('POST', '/api/activity/event', { type: 'password-changed', deviceId: getActivityDeviceId() }).catch(function(){});
 }
 
 function copyWalletAddress() {
@@ -2396,7 +3659,7 @@ function startInboxListener() {
 
         var histEl = document.getElementById('history');
         if (histEl && histEl.classList.contains('active')) {
-          renderHistory('all');
+          renderHistory();
         }
 
         incoming
@@ -2472,7 +3735,11 @@ function applyTheme(dark) {
     body.classList.remove('dark-body');
     if (btn) btn.textContent = '🌙';
   }
-  try { localStorage.setItem('omnipay_theme_v2', dark ? 'dark' : 'light'); } catch(e) {}
+  document.querySelectorAll('img[data-logo-light]').forEach(function(img) {
+    var next = img.getAttribute(dark ? 'data-logo-dark' : 'data-logo-light');
+    if (next && img.getAttribute('src') !== next) img.setAttribute('src', next);
+  });
+  try { localStorage.setItem('omnipay_theme_v3', dark ? 'dark' : 'light'); } catch(e) {}
 }
 
 function toggleTheme() {
@@ -2480,8 +3747,8 @@ function toggleTheme() {
 }
 
 function initTheme() {
-  var saved = 'dark';
-  try { saved = localStorage.getItem('omnipay_theme_v2') || 'dark'; } catch(e) {}
+  var saved = 'light';
+  try { saved = localStorage.getItem('omnipay_theme_v3') || 'light'; } catch(e) {}
   applyTheme(saved === 'dark');
 }
 
@@ -2701,6 +3968,15 @@ async function doSendXLM() {
     return;
   }
 
+  if (!STATE._xlmConfirmed) {
+    askSendConfirm(amtNum, recipientShortKey(dest), dest, function () {
+      STATE._xlmConfirmed = true;
+      doSendXLM();
+    });
+    return;
+  }
+  STATE._xlmConfirmed = false;
+
   if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = 'Building transaction…'; }
   var resultEl = document.getElementById('xlmTxResult');
   if (resultEl) resultEl.style.display = 'none';
@@ -2757,19 +4033,25 @@ async function doSendXLM() {
       throw new Error('Freighter returned an unexpected signing result');
     }
 
-    showLoading(true, 'Submitting to Stellar Testnet…');
-    var submitResp = await fetch(STELLAR_HORIZON_TESTNET + '/transactions', {
+    if (!STATE.uid) throw new Error('Log in to send through the OmniPay Relay.');
+    showLoading(true, 'Sending through OmniPay Relay…');
+    var submitResp = await fetch(API_BASE + '/api/submit-payment', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body:    'tx=' + encodeURIComponent(signedXDR)
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        senderId:    STATE.uid,
+        recipientId: dest,
+        amount:      amtNum.toFixed(7),
+        signedXdr:   signedXDR
+      })
     });
-    var submitData = await submitResp.json();
+    var submitData = await submitResp.json().catch(function(){ return {}; });
 
     showLoading(false);
     if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = '🚀 Send XLM'; }
 
-    if (submitData.successful === true) {
-      var txHash = submitData.hash || '';
+    if (submitResp.ok && submitData.ok === true) {
+      var txHash = submitData.txHash || '';
       renderXLMTxResult(true, txHash, amtNum, dest, '');
 
       STATE.transactions.unshift({
@@ -2788,11 +4070,9 @@ async function doSendXLM() {
       setTimeout(fetchLiveXLMBalance, 4000);
 
     } else {
-      var errCode = '';
-      if (submitData.extras && submitData.extras.result_codes) {
-        errCode = JSON.stringify(submitData.extras.result_codes);
-      }
-      renderXLMTxResult(false, '', amtNum, dest, errCode || submitData.title || 'Transaction was not accepted by the network');
+      var errCode = (submitData.reason || submitData.detail || '');
+      if (errCode && typeof errCode !== 'string') errCode = JSON.stringify(errCode);
+      renderXLMTxResult(false, '', amtNum, dest, errCode || submitData.error || 'Transaction was not accepted by the relay');
     }
 
   } catch (e) {
@@ -3003,7 +4283,7 @@ function handleQRResult(data) {
       var rEl = document.getElementById('sendRecipient');
       var aEl = document.getElementById('sendAmount');
       var nEl = document.getElementById('sendNote');
-      if (rEl) { rEl.value = address; rEl.style.borderColor = 'var(--success)'; }
+      if (rEl) { setSendRecipientFromAddress(address); }
       if (aEl && amount) {
         aEl.value = amount.toFixed(7);
         aEl.style.borderColor = 'var(--success)';
@@ -3160,9 +4440,10 @@ function nextRegStep() {
   var ok = true;
   if (!first)  { document.getElementById('regFirst').classList.add('error'); ok = false; }
   if (!last)   { document.getElementById('regLast').classList.add('error');  ok = false; }
-  if (!phone)  { document.getElementById('regPhone').classList.add('error'); ok = false; }
+  var phoneError = phone ? validateRegPhone(phone) : '';
+  if (!phone || phoneError) { document.getElementById('regPhone').classList.add('error'); ok = false; }
   if (!email || !email.includes('@')) { document.getElementById('regEmail').classList.add('error'); ok = false; }
-  if (!ok) { showAlert('red','⚠️ Please fill in all Personal Information fields correctly'); return; }
+  if (!ok) { showAlert('red', phoneError ? '⚠️ ' + phoneError : '⚠️ Please fill in all Personal Information fields correctly'); return; }
 
   document.getElementById('regStep1').style.display = 'none';
   document.getElementById('regStep2').style.display = 'block';
@@ -3220,7 +4501,8 @@ function restoreSession() {
     var raw = sessionStorage.getItem('omnipay_session');
     if (!raw) return false;
     var d = JSON.parse(raw);
-    if (!d || !d.isLoggedIn || !auth || !auth.currentUser || d.uid !== auth.currentUser.uid) {
+    if (!auth || !auth.currentUser) return false;
+    if (!d || !d.isLoggedIn || d.uid !== auth.currentUser.uid) {
       sessionStorage.removeItem('omnipay_session');
       return false;
     }
@@ -3282,7 +4564,7 @@ function simulateReceive() {
   closeModal('receiveModal');
   showAlert('success', '💰 Received ₱' + amt.toFixed(2) + ' from ' + sender + '!');
   renderHome();
-  renderHistory('all');
+  renderHistory();
 }
 
 function showWalletManagerModal() {
@@ -3417,6 +4699,7 @@ var SESSION_RESTORED = false;
 
 window.addEventListener('DOMContentLoaded', function(){
   initTheme();
+  initConnectivity();
   updateFreighterUI();
   if (db) {
     setFbStatus('connected','🟢 Firebase connected');
@@ -3605,4 +4888,673 @@ function showOmniLinkDetails() {
 
 function renderVault() {
   updateOmniCardUI();
+}
+
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function(){
+    navigator.serviceWorker.register('sw.js').catch(function(){});
+  });
+}
+
+/* ---------- Mobile number (registration) ---------- */
+var PH_PHONE_PREFIX = '+63 9';
+
+function isRegPhilippines() {
+  var sel = document.getElementById('regCountry');
+  return !!sel && /philippines/i.test(sel.value || '');
+}
+
+function formatPhPhone(raw) {
+  var digits = String(raw || '').replace(/\D/g, '');
+  if (digits.indexOf('63') === 0) digits = digits.slice(2);
+  else if (digits.charAt(0) === '0') digits = digits.slice(1);
+  if (digits.charAt(0) === '9') digits = digits.slice(1);
+  var rest = digits.slice(0, 9);
+  var out = PH_PHONE_PREFIX + rest.slice(0, 2);
+  if (rest.length > 2) out += ' ' + rest.slice(2, 5);
+  if (rest.length > 5) out += ' ' + rest.slice(5, 9);
+  return out;
+}
+
+function onRegPhoneInput(el) {
+  if (!el) return;
+  var next;
+  if (isRegPhilippines()) {
+    next = formatPhPhone(el.value);
+  } else {
+    next = String(el.value || '').replace(/[^\d+\s()-]/g, '');
+  }
+  if (next !== el.value) el.value = next;
+}
+
+function onRegPhoneFocus(el) {
+  if (!el || !isRegPhilippines()) return;
+  setTimeout(function () {
+    try { el.setSelectionRange(el.value.length, el.value.length); } catch (e) {}
+  }, 0);
+}
+
+function syncRegPhoneToCountry() {
+  var el = document.getElementById('regPhone');
+  if (!el) return;
+  if (isRegPhilippines()) {
+    el.placeholder = '+63 9XX XXX XXXX';
+    el.maxLength = 20;
+    var current = String(el.value || '').replace(/\s/g, '');
+    el.value = /^(\+?63|0?9)/.test(current) ? formatPhPhone(el.value) : PH_PHONE_PREFIX;
+  } else {
+    el.placeholder = 'e.g. +1 555 123 4567';
+    el.maxLength = 24;
+    if (String(el.value || '').trim() === PH_PHONE_PREFIX) el.value = '';
+  }
+}
+
+function validateRegPhone(phone) {
+  var value = String(phone || '').trim();
+  if (isRegPhilippines()) {
+    if (!/^\+63 9\d{2} \d{3} \d{4}$/.test(value)) return 'Enter your complete mobile number (+63 9XX XXX XXXX)';
+    return '';
+  }
+  var digits = value.replace(/\D/g, '');
+  if (digits.length < 7 || digits.length > 15) return 'Enter a valid mobile number with country code';
+  return '';
+}
+
+(function () {
+  function initRegPhone() { syncRegPhoneToCountry(); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initRegPhone);
+  else initRegPhone();
+})();
+
+/* ---------- Recipient search ---------- */
+var RECIPIENT_SEARCH = { timers: {}, seq: {} };
+
+function recipientInitials(name) {
+  var parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  var first = parts[0].charAt(0);
+  var last = parts.length > 1 ? parts[parts.length - 1].charAt(0) : '';
+  return (first + last).toUpperCase();
+}
+
+function recipientShortKey(key) {
+  var k = String(key || '');
+  return k.length > 14 ? k.slice(0, 6) + '…' + k.slice(-6) : k;
+}
+
+async function fetchRecipientMatches(query) {
+  if (!navigator.onLine) throw new Error('offline');
+  if (!auth || !auth.currentUser) throw new Error('signed-out');
+  var token = await auth.currentUser.getIdToken();
+  var resp = await fetch(API_BASE + '/api/search-recipients?q=' + encodeURIComponent(query), {
+    headers: { 'Authorization': 'Bearer ' + token }
+  });
+  if (!resp.ok) throw new Error('http-' + resp.status);
+  var data = await resp.json();
+  return { results: Array.isArray(data.results) ? data.results : [], selfMatch: !!data.selfMatch };
+}
+
+function recipientSearchError(err, offlineHint) {
+  var msg = err && err.message;
+  if (msg === 'offline') return offlineHint;
+  if (msg === 'signed-out') return 'Sign in online to search for recipients.';
+  if (msg === 'http-429') return 'Too many searches. Please wait a moment and try again.';
+  return 'Search is unavailable right now. Please try again.';
+}
+
+function hideRecipientResults(boxId) {
+  var box = document.getElementById(boxId);
+  if (!box) return;
+  box.innerHTML = '';
+  box.style.display = 'none';
+}
+
+function renderRecipientResults(boxId, results, message, onPick) {
+  var box = document.getElementById(boxId);
+  if (!box) return;
+  box.innerHTML = '';
+  box.style.display = 'block';
+  if (message) {
+    var note = document.createElement('div');
+    note.className = 'recipient-empty';
+    note.textContent = message;
+    box.appendChild(note);
+  }
+  results.forEach(function (r) {
+    var displayName = r.name || r.username || 'OmniPay user';
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'recipient-item';
+    btn.setAttribute('role', 'option');
+
+    var avatar = document.createElement('div');
+    avatar.className = 'recipient-avatar';
+    avatar.textContent = recipientInitials(displayName);
+
+    var info = document.createElement('div');
+    info.className = 'recipient-info';
+    var nameEl = document.createElement('div');
+    nameEl.className = 'recipient-name';
+    nameEl.textContent = (r.isContact ? '★ ' : '') + displayName;
+    var subEl = document.createElement('div');
+    subEl.className = 'recipient-sub';
+    var subParts = [];
+    if (r.username) subParts.push('@' + r.username);
+    if (r._realName && r._realName !== displayName) subParts.push(r._realName);
+    if (r.phone) subParts.push(r.phone);
+    subEl.textContent = subParts.join(' · ');
+    info.appendChild(nameEl);
+    info.appendChild(subEl);
+
+    btn.appendChild(avatar);
+    btn.appendChild(info);
+    btn.addEventListener('click', function () { onPick(r); });
+    box.appendChild(btn);
+  });
+}
+
+function scheduleRecipientSearch(key, boxId, value, onPick, offlineHint) {
+  clearTimeout(RECIPIENT_SEARCH.timers[key]);
+  var q = String(value || '').trim();
+  RECIPIENT_SEARCH.seq[key] = (RECIPIENT_SEARCH.seq[key] || 0) + 1;
+  var saved = key === 'contactAdd' ? [] : contactMatches(q);
+  if (q.length < 2) {
+    if (saved.length) renderRecipientResults(boxId, saved, '', onPick);
+    else hideRecipientResults(boxId);
+    return;
+  }
+  var seq = RECIPIENT_SEARCH.seq[key];
+  if (saved.length) renderRecipientResults(boxId, saved, '', onPick);
+  RECIPIENT_SEARCH.timers[key] = setTimeout(async function () {
+    if (!saved.length) renderRecipientResults(boxId, [], 'Searching…', onPick);
+    try {
+      var found = await fetchRecipientMatches(q);
+      if (seq !== RECIPIENT_SEARCH.seq[key]) return;
+      var results = mergeContactResults(saved, found.results);
+      var emptyMsg = found.selfMatch
+        ? 'That is your own account. Search for someone else to send to.'
+        : 'No users found. Names need at least 3 letters, or try a username or mobile number.';
+      renderRecipientResults(boxId, results, results.length ? '' : emptyMsg, onPick);
+    } catch (err) {
+      if (seq !== RECIPIENT_SEARCH.seq[key]) return;
+      var errMsg = recipientSearchError(err, offlineHint);
+      if (saved.length && err && err.message === 'offline') errMsg = 'You are offline. Showing saved contacts only.';
+      renderRecipientResults(boxId, saved, errMsg, onPick);
+    }
+  }, 300);
+}
+
+function fillSendRecipientChip(name, sub, initials) {
+  var wrap = document.getElementById('sendRecipientSearchWrap');
+  var chip = document.getElementById('sendRecipientChip');
+  var nameEl = document.getElementById('sendRecipientName');
+  var subEl = document.getElementById('sendRecipientSub');
+  var avatar = document.getElementById('sendRecipientAvatar');
+  if (nameEl) nameEl.textContent = name;
+  if (subEl) subEl.textContent = sub;
+  if (avatar) avatar.textContent = initials;
+  if (wrap) wrap.style.display = 'none';
+  if (chip) chip.style.display = 'flex';
+}
+
+function onSendRecipientSearch(input) {
+  if (input) input.classList.remove('error');
+  scheduleRecipientSearch('send', 'sendRecipientResults', input ? input.value : '', pickSendRecipient, 'Search needs an internet connection.');
+}
+
+function pickSendRecipient(r) {
+  var hidden = document.getElementById('sendRecipient');
+  if (hidden) hidden.value = normalizeStellarPublicKey(r.walletPublic);
+  var displayName = r.name || r.username || 'OmniPay user';
+  var sub = (r.username ? '@' + r.username + ' · ' : '') + recipientShortKey(r.walletPublic);
+  fillSendRecipientChip(displayName, sub, recipientInitials(displayName));
+  hideRecipientResults('sendRecipientResults');
+  STATE._sendPicked = r.username ? r : null;
+  refreshSaveButtons();
+}
+
+function resetSendRecipient() {
+  var hidden = document.getElementById('sendRecipient');
+  var search = document.getElementById('sendRecipientSearch');
+  var wrap = document.getElementById('sendRecipientSearchWrap');
+  var chip = document.getElementById('sendRecipientChip');
+  if (hidden) hidden.value = '';
+  if (search) { search.value = ''; search.classList.remove('error'); }
+  if (chip) chip.style.display = 'none';
+  if (wrap) wrap.style.display = '';
+  RECIPIENT_SEARCH.seq.send = (RECIPIENT_SEARCH.seq.send || 0) + 1;
+  hideRecipientResults('sendRecipientResults');
+  STATE._sendPicked = null;
+  refreshSaveButtons();
+}
+
+function changeSendRecipient() {
+  resetSendRecipient();
+  var search = document.getElementById('sendRecipientSearch');
+  if (search) search.focus();
+}
+
+function setSendRecipientFromAddress(address) {
+  var addr = normalizeStellarPublicKey(address);
+  var hidden = document.getElementById('sendRecipient');
+  if (!hidden || !addr) return;
+  hidden.value = addr;
+  fillSendRecipientChip('Wallet address', recipientShortKey(addr), '⭐');
+  fetchRecipientMatches(addr).then(function (found) {
+    if (hidden.value !== addr) return;
+    var match = found.results.filter(function (r) { return r.walletPublic === addr; })[0];
+    if (!match) return;
+    var displayName = match.name || match.username || 'OmniPay user';
+    fillSendRecipientChip(displayName, (match.username ? '@' + match.username + ' · ' : '') + recipientShortKey(addr), recipientInitials(displayName));
+    STATE._sendPicked = match.username ? match : null;
+    refreshSaveButtons();
+  }).catch(function () {});
+}
+
+function onSmsRecipientSearch(input) {
+  var typed = String(input ? input.value : '').trim().toLowerCase();
+  if (STATE._smsPicked && String(STATE._smsPicked.username || '').toLowerCase() !== typed) {
+    STATE._smsPicked = null;
+    refreshSaveButtons();
+  }
+  scheduleRecipientSearch('sms', 'smsRecipientResults', input ? input.value : '', pickSmsRecipient, 'Search is unavailable offline. Type the username or mobile number instead.');
+}
+
+function pickSmsRecipient(r) {
+  var input = document.getElementById('smsRecipient');
+  if (input) input.value = r.username || '';
+  hideRecipientResults('smsRecipientResults');
+  STATE._smsPicked = r.username ? r : null;
+  refreshSaveButtons();
+}
+
+function onSendRecipientFocus(input) {
+  if (String(input ? input.value : '').trim().length < 2) onSendRecipientSearch(input);
+}
+
+function onSmsRecipientFocus(input) {
+  if (String(input ? input.value : '').trim().length < 2) onSmsRecipientSearch(input);
+}
+
+/* ---------- Saved contacts ---------- */
+var CONTACTS_KEY = 'omnipay_contacts_v1';
+var CONTACTS_MAX = 200;
+var CONTACTS = { syncing: false, lastSync: 0, filter: '', editing: '' };
+
+function readContactStore() {
+  try { return JSON.parse(localStorage.getItem(CONTACTS_KEY)) || {}; } catch (e) { return {}; }
+}
+
+function writeContactStore(map) {
+  try { localStorage.setItem(CONTACTS_KEY, JSON.stringify(map)); } catch (e) {}
+}
+
+function getContactBucket() {
+  var empty = { list: [], updatedAt: 0, syncedAt: 0, dirty: false };
+  if (!STATE.uid) return empty;
+  var bucket = readContactStore()[STATE.uid];
+  if (!bucket || !Array.isArray(bucket.list)) return empty;
+  return bucket;
+}
+
+function setContactBucket(bucket) {
+  if (!STATE.uid) return;
+  var map = readContactStore();
+  map[STATE.uid] = bucket;
+  writeContactStore(map);
+}
+
+function getContacts() {
+  return getContactBucket().list.slice();
+}
+
+function contactDisplayName(c) {
+  return c.nickname || c.name || c.username;
+}
+
+function sortContacts(list) {
+  return list.sort(function (a, b) {
+    return contactDisplayName(a).toLowerCase().localeCompare(contactDisplayName(b).toLowerCase());
+  });
+}
+
+function findContact(username) {
+  var u = String(username || '').trim().toLowerCase();
+  if (!u) return null;
+  var list = getContactBucket().list;
+  for (var i = 0; i < list.length; i++) {
+    if (String(list[i].username).toLowerCase() === u) return list[i];
+  }
+  return null;
+}
+
+function contactToResult(c) {
+  return {
+    uid: '',
+    name: contactDisplayName(c),
+    _realName: c.name || '',
+    username: c.username,
+    phone: '',
+    walletPublic: c.walletPublic || '',
+    isContact: true
+  };
+}
+
+function contactMatches(q) {
+  var needle = String(q || '').trim().toLowerCase();
+  var list = sortContacts(getContacts());
+  if (!needle) return list.slice(0, 6).map(contactToResult);
+  return list.filter(function (c) {
+    return [c.nickname, c.name, c.username].some(function (v) {
+      return String(v || '').toLowerCase().indexOf(needle) !== -1;
+    });
+  }).map(contactToResult);
+}
+
+function mergeContactResults(saved, results) {
+  var seen = {};
+  saved.forEach(function (r) { seen[String(r.username).toLowerCase()] = true; });
+  var extra = [];
+  results.forEach(function (r) {
+    var key = String(r.username || '').toLowerCase();
+    if (key && seen[key]) return;
+    var c = findContact(r.username);
+    if (c) {
+      var d = contactToResult(c);
+      d.phone = r.phone || '';
+      d.walletPublic = r.walletPublic || d.walletPublic;
+      extra.push(d);
+    } else {
+      extra.push(r);
+    }
+  });
+  return saved.concat(extra);
+}
+
+function commitContacts(list) {
+  setContactBucket({ list: list, updatedAt: Date.now(), syncedAt: getContactBucket().syncedAt || 0, dirty: true });
+  renderContactsList();
+  refreshSaveButtons();
+  syncContacts(true);
+}
+
+function saveContact(r) {
+  if (!r || !r.username) return false;
+  if (findContact(r.username)) return false;
+  var list = getContacts();
+  if (list.length >= CONTACTS_MAX) {
+    showAlert('yellow', '⚠️ Your contact list is full (' + CONTACTS_MAX + ' max).');
+    return false;
+  }
+  list.push({
+    username: r.username,
+    name: r._realName || r.name || '',
+    nickname: '',
+    walletPublic: r.walletPublic || '',
+    addedAt: Date.now()
+  });
+  commitContacts(list);
+  return true;
+}
+
+function refreshSaveButtons() {
+  var sendBtn = document.getElementById('sendRecipientSave');
+  var picked = STATE._sendPicked;
+  if (sendBtn) {
+    if (picked && picked.username) {
+      var savedSend = !!findContact(picked.username);
+      sendBtn.style.display = 'flex';
+      sendBtn.textContent = savedSend ? '★' : '☆';
+      sendBtn.classList.toggle('saved', savedSend);
+      sendBtn.title = savedSend ? 'Saved to contacts' : 'Save to contacts';
+      sendBtn.setAttribute('aria-label', sendBtn.title);
+    } else {
+      sendBtn.style.display = 'none';
+    }
+  }
+  var smsBtn = document.getElementById('smsSaveContact');
+  var smsPicked = STATE._smsPicked;
+  if (smsBtn) {
+    if (smsPicked && smsPicked.username && !findContact(smsPicked.username)) {
+      smsBtn.style.display = 'inline-block';
+      smsBtn.textContent = '☆ Save @' + smsPicked.username + ' to contacts';
+    } else {
+      smsBtn.style.display = 'none';
+    }
+  }
+}
+
+function saveSendRecipientContact() {
+  var r = STATE._sendPicked;
+  if (!r || !r.username) return;
+  if (findContact(r.username)) { showAlert('yellow', '⭐ Already in your contacts'); return; }
+  if (saveContact(r)) showAlert('success', '⭐ Saved to contacts');
+}
+
+function saveSmsRecipientContact() {
+  var r = STATE._smsPicked;
+  if (!r || !r.username) return;
+  if (saveContact(r)) showAlert('success', '⭐ Saved to contacts');
+}
+
+async function contactsRequest(method, body) {
+  if (!navigator.onLine) throw new Error('offline');
+  if (!auth || !auth.currentUser) throw new Error('signed-out');
+  var token = await auth.currentUser.getIdToken();
+  var opts = { method: method, headers: { 'Authorization': 'Bearer ' + token } };
+  if (body) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  var resp = await fetch(API_BASE + '/api/contacts', opts);
+  if (!resp.ok) throw new Error('http-' + resp.status);
+  return resp.json();
+}
+
+async function syncContacts(force) {
+  if (CONTACTS.syncing || !STATE.isLoggedIn || !STATE.uid) return;
+  if (!navigator.onLine || !auth || !auth.currentUser) return;
+  if (!force && Date.now() - CONTACTS.lastSync < 60000) return;
+  CONTACTS.syncing = true;
+  var uid = STATE.uid;
+  var again = false;
+  try {
+    var bucket = getContactBucket();
+    if (bucket.dirty) {
+      var saved = await contactsRequest('PUT', { contacts: bucket.list });
+      if (STATE.uid !== uid) return;
+      var cur = getContactBucket();
+      if (cur.updatedAt === bucket.updatedAt) {
+        setContactBucket({ list: cur.list, updatedAt: cur.updatedAt, syncedAt: Number(saved.updatedAt) || Date.now(), dirty: false });
+      } else {
+        again = true;
+      }
+    } else {
+      var remote = await contactsRequest('GET');
+      if (STATE.uid !== uid) return;
+      var latest = getContactBucket();
+      var remoteAt = Number(remote.updatedAt) || 0;
+      if (!latest.dirty && latest.updatedAt === bucket.updatedAt && remoteAt > (latest.syncedAt || 0)) {
+        setContactBucket({ list: Array.isArray(remote.contacts) ? remote.contacts : [], updatedAt: Date.now(), syncedAt: remoteAt, dirty: false });
+        renderContactsList();
+        refreshSaveButtons();
+      }
+    }
+  } catch (err) {
+  } finally {
+    CONTACTS.syncing = false;
+    CONTACTS.lastSync = Date.now();
+  }
+  if (again) syncContacts(true);
+}
+
+window.addEventListener('online', function () { syncContacts(true); });
+
+document.addEventListener('click', function (e) {
+  [['sendRecipientResults', 'sendRecipientSearch'], ['smsRecipientResults', 'smsRecipient']].forEach(function (p) {
+    var box = document.getElementById(p[0]);
+    var input = document.getElementById(p[1]);
+    if (!box || box.style.display === 'none') return;
+    if (box.contains(e.target) || e.target === input) return;
+    if (input && String(input.value || '').trim().length >= 2) return;
+    hideRecipientResults(p[0]);
+  });
+});
+
+function renderContactsList() {
+  var box = document.getElementById('contactsList');
+  if (!box) return;
+  var all = sortContacts(getContacts());
+  var q = String(CONTACTS.filter || '').trim().toLowerCase();
+  var list = !q ? all : all.filter(function (c) {
+    return [c.nickname, c.name, c.username].some(function (v) {
+      return String(v || '').toLowerCase().indexOf(q) !== -1;
+    });
+  });
+  var countEl = document.getElementById('contactsCount');
+  if (countEl) countEl.textContent = all.length ? all.length + (all.length === 1 ? ' saved contact' : ' saved contacts') : '';
+  box.innerHTML = '';
+  if (!list.length) {
+    var empty = document.createElement('div');
+    empty.className = 'contact-empty';
+    empty.textContent = all.length
+      ? 'No contacts match your search.'
+      : 'No saved contacts yet. Tap “Add contact” while online, or tap the star when you pick a recipient.';
+    box.appendChild(empty);
+    return;
+  }
+  list.forEach(function (c) {
+    var name = contactDisplayName(c);
+    var row = document.createElement('div');
+    row.className = 'contact-row';
+
+    var main = document.createElement('button');
+    main.type = 'button';
+    main.className = 'contact-main';
+    var avatar = document.createElement('div');
+    avatar.className = 'recipient-avatar';
+    avatar.textContent = recipientInitials(name);
+    var info = document.createElement('div');
+    info.className = 'recipient-info';
+    var nameEl = document.createElement('div');
+    nameEl.className = 'recipient-name';
+    nameEl.textContent = name;
+    var subEl = document.createElement('div');
+    subEl.className = 'recipient-sub';
+    var parts = ['@' + c.username];
+    if (c.nickname && c.name) parts.push(c.name);
+    subEl.textContent = parts.join(' · ');
+    info.appendChild(nameEl);
+    info.appendChild(subEl);
+    main.appendChild(avatar);
+    main.appendChild(info);
+    main.setAttribute('aria-label', 'Pay ' + name);
+    main.addEventListener('click', function () { useContact(c.username); });
+
+    var edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'contact-edit';
+    edit.textContent = '✏️';
+    edit.setAttribute('aria-label', 'Edit ' + name);
+    edit.addEventListener('click', function () { openContactEdit(c.username); });
+
+    row.appendChild(main);
+    row.appendChild(edit);
+    box.appendChild(row);
+  });
+}
+
+function onContactsFilter(input) {
+  CONTACTS.filter = input ? input.value : '';
+  renderContactsList();
+}
+
+function toggleContactAdd() {
+  var box = document.getElementById('contactAddBox');
+  if (!box) return;
+  var open = box.style.display === 'none';
+  box.style.display = open ? 'block' : 'none';
+  if (open) {
+    var input = document.getElementById('contactAddSearch');
+    if (input) { input.value = ''; input.focus(); }
+    hideRecipientResults('contactAddResults');
+    if (!navigator.onLine) showAlert('yellow', '📴 Connect to the internet to add a new contact.');
+  }
+}
+
+function onContactAddSearch(input) {
+  scheduleRecipientSearch('contactAdd', 'contactAddResults', input ? input.value : '', pickContactAdd, 'Connect to the internet to add a new contact.');
+}
+
+function pickContactAdd(r) {
+  if (!r || !r.username) return;
+  if (findContact(r.username)) {
+    showAlert('yellow', '⭐ Already in your contacts');
+  } else if (saveContact(r)) {
+    showAlert('success', '⭐ Contact saved');
+  } else {
+    return;
+  }
+  var input = document.getElementById('contactAddSearch');
+  if (input) input.value = '';
+  hideRecipientResults('contactAddResults');
+  var box = document.getElementById('contactAddBox');
+  if (box) box.style.display = 'none';
+}
+
+function openContactEdit(username) {
+  var c = findContact(username);
+  if (!c) return;
+  CONTACTS.editing = c.username;
+  var sub = document.getElementById('contactEditSub');
+  if (sub) sub.textContent = '@' + c.username + (c.name ? ' · ' + c.name : '');
+  var input = document.getElementById('contactNicknameInput');
+  if (input) input.value = c.nickname || '';
+  showModal('contactEditModal');
+}
+
+function saveContactEdit() {
+  var input = document.getElementById('contactNicknameInput');
+  var nickname = String(input ? input.value : '').trim().slice(0, 40);
+  var target = String(CONTACTS.editing || '').toLowerCase();
+  if (!target) return;
+  var list = getContacts().map(function (c) {
+    if (String(c.username).toLowerCase() !== target) return c;
+    return { username: c.username, name: c.name, nickname: nickname, walletPublic: c.walletPublic, addedAt: c.addedAt };
+  });
+  commitContacts(list);
+  closeModal('contactEditModal');
+  showAlert('success', '✅ Contact updated');
+}
+
+function removeContactFromEdit() {
+  var target = String(CONTACTS.editing || '').toLowerCase();
+  if (!target) return;
+  var list = getContacts().filter(function (c) { return String(c.username).toLowerCase() !== target; });
+  commitContacts(list);
+  closeModal('contactEditModal');
+  showAlert('success', '🗑️ Contact removed');
+}
+
+function useContact(username) {
+  var c = findContact(username);
+  if (!c) return;
+  var useSms = !navigator.onLine || STATE.offlineMode;
+  if (!useSms && !c.walletPublic) useSms = true;
+  navTo('pay');
+  var want = useSms ? 'SMS Pay' : 'Send';
+  var tabs = document.querySelectorAll('.pay-tab');
+  for (var i = 0; i < tabs.length; i++) {
+    if (tabs[i].textContent.indexOf(want) !== -1) { switchPayTab(useSms ? 'sms' : 'send', tabs[i]); break; }
+  }
+  if (useSms) {
+    var input = document.getElementById('smsRecipient');
+    if (input) input.value = c.username;
+    STATE._smsPicked = contactToResult(c);
+    hideRecipientResults('smsRecipientResults');
+    refreshSaveButtons();
+  } else {
+    pickSendRecipient(contactToResult(c));
+  }
 }

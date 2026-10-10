@@ -13,13 +13,14 @@ if (missingEnvVars.length > 0) {
 }
 
 const express = require('express');
-const rateLimit = require('express-rate-limit');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const helmet = require('helmet');
 const cors = require('cors');
 const axios = require('axios');
 const crypto = require('crypto');
 const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
+const { getAuth } = require('firebase-admin/auth');
 const StellarSdk = require('stellar-sdk');
 
 const COLOR_ENABLED = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
@@ -65,6 +66,8 @@ const SOROBAN_CONTRACT_ID = (process.env.SOROBAN_CONTRACT_ID || '').trim();
 const SOROBAN_SETTLE_FUNCTION = (process.env.SOROBAN_SETTLE_FUNCTION || 'settle').trim();
 const SOROBAN_POLL_ATTEMPTS = parseInt(process.env.SOROBAN_POLL_ATTEMPTS, 10) || 30;
 const SOROBAN_POLL_INTERVAL_MS = parseInt(process.env.SOROBAN_POLL_INTERVAL_MS, 10) || 1000;
+const SOROBAN_SEND_ATTEMPTS = parseInt(process.env.SOROBAN_SEND_ATTEMPTS, 10) || 3;
+const SOROBAN_SEND_RETRY_DELAY_MS = parseInt(process.env.SOROBAN_SEND_RETRY_DELAY_MS, 10) || 1500;
 const SOROBAN_ENABLED = Boolean(SOROBAN_CONTRACT_ID);
 const SETTLEMENT_SIGNER_SECRET = (process.env.SETTLEMENT_SIGNER_SECRET || '').trim();
 let settlementKeypair = null;
@@ -253,13 +256,39 @@ async function invokeSorobanSettlement(senderPublicKey, recipientPublicKey, amou
   const prepared = await sorobanServer.prepareTransaction(tx);
   prepared.sign(requireSettlementSigner());
 
-  const submission = await sorobanServer.sendTransaction(prepared);
+  let submission = await sorobanServer.sendTransaction(prepared);
+  for (let attempt = 1; submission.status === 'TRY_AGAIN_LATER' && attempt < SOROBAN_SEND_ATTEMPTS; attempt += 1) {
+    await delay(SOROBAN_SEND_RETRY_DELAY_MS * attempt);
+    submission = await sorobanServer.sendTransaction(prepared);
+  }
   if (submission.status === 'ERROR' || submission.status === 'TRY_AGAIN_LATER') {
     throw new Error(`soroban-submit-${String(submission.status).toLowerCase()}`);
   }
 
   await waitForSorobanTransaction(submission.hash);
   return submission.hash;
+}
+
+const SOROBAN_NON_RETRYABLE = ['soroban-confirmation-timeout', 'soroban-transaction-failed'];
+
+const SOROBAN_ALREADY_RECORDED = /Error\(Contract, #2\)|AlreadyRecorded/;
+
+async function recordSettlementWithRetry(senderPublicKey, destinationPublicKey, amount, requestId) {
+  let lastErr = null;
+  for (let attempt = 1; attempt <= SOROBAN_SEND_ATTEMPTS; attempt += 1) {
+    try {
+      return await invokeSorobanSettlement(senderPublicKey, destinationPublicKey, amount, requestId);
+    } catch (err) {
+      if (SOROBAN_ALREADY_RECORDED.test(String(err.message))) {
+        log('info', 'soroban', `Request ${requestId} is already recorded on the contract.`);
+        return null;
+      }
+      lastErr = err;
+      if (SOROBAN_NON_RETRYABLE.includes(err.message) || attempt === SOROBAN_SEND_ATTEMPTS) break;
+      await delay(SOROBAN_SEND_RETRY_DELAY_MS * attempt);
+    }
+  }
+  throw lastErr;
 }
 
 const OmniPayBackend = {
@@ -689,8 +718,10 @@ function parseCommand(text) {
     if (sigIdx !== -1) {
       sendParts = parts.slice(0, sigIdx);
       const sigParts = parts.slice(sigIdx + 1);
-      if (sigParts.length !== 4) return { type: 'UNKNOWN' };
-      sig = { timestamp: sigParts[0], nonce: sigParts[1], requestId: sigParts[2], signature: sigParts[3] };
+      if (sigParts.length < 4) return { type: 'UNKNOWN' };
+      const signatureValue = sigParts.slice(3).join('+');
+      if (!/^[A-Za-z0-9+/]+={0,2}$/.test(signatureValue)) return { type: 'UNKNOWN' };
+      sig = { timestamp: sigParts[0], nonce: sigParts[1], requestId: sigParts[2], signature: signatureValue };
     }
 
     const amountResult = parseStrictAmount(sendParts[1]);
@@ -744,10 +775,13 @@ async function executeSend({ sender, recipient, amount, mode, relayId, requestId
   try {
     await updateRelayStatus(relayId, RELAY_STATUS.SUBMITTED);
 
+    const txHash = await OmniPayBackend.settlePayment(sender.walletPublic, recipient.walletPublic, amount);
+    await updateRelayStatus(relayId, RELAY_STATUS.CONFIRMED, { txHash });
+
     let sorobanTxHash = null;
     if (SOROBAN_ENABLED) {
       try {
-        sorobanTxHash = await OmniPayBackend.recordSettlement(
+        sorobanTxHash = await recordSettlementWithRetry(
           sender.walletPublic,
           recipient.walletPublic,
           amount,
@@ -756,19 +790,19 @@ async function executeSend({ sender, recipient, amount, mode, relayId, requestId
         await updateRelayFields(relayId, {
           sorobanTxHash,
           sorobanContractId: SOROBAN_CONTRACT_ID,
+          sorobanRecordStatus: 'recorded',
         });
-       /* log('ok', 'soroban', `Settlement recorded on contract ${SOROBAN_CONTRACT_ID.slice(0, 8)}... | tx ${sorobanTxHash.slice(0, 12)}...`);*/
       } catch (sorobanErr) {
-        const sorobanDetail = `soroban:${sorobanErr.message}`;
-        log('error', 'soroban', `Contract invocation failed: ${sorobanErr.message}`);
-        await logEvent(sender.id, '❌', `${channelNote} payment blocked: contract settlement failed`, 'error');
-        await updateRelayStatus(relayId, RELAY_STATUS.FAILED, { detail: sorobanDetail });
-        return { ok: false, code: 'soroban-failed', detail: sorobanDetail, relayId };
+        log('error', 'soroban', `Contract record failed after payment ${txHash.slice(0, 12)}... settled: ${sorobanErr.message}`);
+        await updateRelayFields(relayId, {
+          sorobanContractId: SOROBAN_CONTRACT_ID,
+          sorobanRecordStatus: 'failed',
+          sorobanRecordError: `soroban:${sorobanErr.message}`,
+        });
+        await logEvent(sender.id, '⚠️', `${channelNote} payment settled; contract record pending`, 'warn');
       }
     }
 
-    const txHash = await OmniPayBackend.settlePayment(sender.walletPublic, recipient.walletPublic, amount);
-    await updateRelayStatus(relayId, RELAY_STATUS.CONFIRMED, { txHash });
     const senderPublicKey = sender.walletPublic;
     const [chainSenderBal, chainRecipientBal] = await Promise.all([
       getStellarNativeBalance(senderPublicKey),
@@ -947,7 +981,7 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
           await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: claim.reason || 'duplicate-request' });
           if (claim.reason === 'claim-error') {
             await sendSms(senderPhone, 'OmniPay: Could not process your request right now. Nothing was deducted. Please try again.');
-          } else if (claim.reason === 'invalid-requestid') {
+          } else if (['invalid-requestid', 'invalid-nonce'].includes(claim.reason)) {
             await sendSms(senderPhone, 'OmniPay: Invalid request. Payment not sent.');
           } else if (['duplicate-request', 'nonce-reused'].includes(claim.reason)) {
             await sendSms(senderPhone, 'OmniPay: Duplicate request ignored. No additional payment was made.');
@@ -1054,6 +1088,7 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
   }
 }
 const app = express();
+app.set('trust proxy', 1);
 
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
@@ -1085,7 +1120,14 @@ app.use(
           'https://firestore.googleapis.com',
           'https://identitytoolkit.googleapis.com',
           'https://securetoken.googleapis.com',
+          'https://www.gstatic.com',
+          'https://cdnjs.cloudflare.com',
+          'https://cdn.jsdelivr.net',
+          'https://fonts.googleapis.com',
+          'https://fonts.gstatic.com',
         ],
+        workerSrc: ["'self'"],
+        manifestSrc: ["'self'"],
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
         frameAncestors: ["'none'"],
@@ -1116,6 +1158,21 @@ app.use(
   })
 );
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const PWA_FILES = {
+  'sw.js': 'application/javascript; charset=utf-8',
+  'manifest.webmanifest': 'application/manifest+json; charset=utf-8',
+};
+Object.keys(PWA_FILES).forEach((name) => {
+  app.get('/' + name, (_req, res) => {
+    const inPublic = path.join(PUBLIC_DIR, name);
+    const filePath = fs.existsSync(inPublic) ? inPublic : path.join(__dirname, name);
+    if (!fs.existsSync(filePath)) return res.status(404).end();
+    res.set('Content-Type', PWA_FILES[name]);
+    res.set('Cache-Control', 'no-cache');
+    if (name === 'sw.js') res.set('Service-Worker-Allowed', '/');
+    return res.sendFile(filePath);
+  });
+});
 if (fs.existsSync(PUBLIC_DIR)) {
   app.use(express.static(PUBLIC_DIR, { index: 'index.html', dotfiles: 'ignore' }));
 } else {
@@ -1218,6 +1275,692 @@ function requireAdminKey(req, res, next) {
   }
   next();
 }
+app.get('/admin', (_req, res) => {
+  const file = path.join(PUBLIC_DIR, 'admin.html');
+  if (!fs.existsSync(file)) return res.status(404).end();
+  res.set('Cache-Control', 'no-store');
+  res.set('X-Robots-Tag', 'noindex, nofollow');
+  return res.sendFile(file);
+});
+const RECIPIENT_DIRECTORY_TTL_MS = 30 * 1000;
+let recipientDirectory = { loadedAt: 0, rows: [] };
+
+const recipientSearchLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too many requests, please try again later' },
+});
+
+const recipientSearchUserLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `uid:${req.authUid || 'anonymous'}`,
+  message: { error: 'too many requests, please try again later' },
+});
+
+const privacyWriteLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too many requests, please try again later' },
+});
+
+const DEFAULT_PRIVACY = {
+  showFullName: false,
+  findByName: true,
+  findByPhone: true,
+  hideFromSearch: false,
+};
+
+function normalizePrivacy(raw) {
+  const p = raw && typeof raw === 'object' ? raw : {};
+  return {
+    showFullName: p.showFullName === true,
+    findByName: p.findByName !== false,
+    findByPhone: p.findByPhone !== false,
+    hideFromSearch: p.hideFromSearch === true,
+  };
+}
+
+function maskName(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '';
+  if (parts.length === 1) return Array.from(parts[0])[0] + '•••';
+  const last = Array.from(parts[parts.length - 1])[0].toUpperCase();
+  return parts.slice(0, -1).join(' ') + ' ' + last + '.';
+}
+
+function maskNameDisplay(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '';
+  if (parts.length === 1) return Array.from(parts[0])[0] + '•••';
+  const last = Array.from(parts[parts.length - 1])[0].toUpperCase();
+  const first = parts.slice(0, -1).map((p) => Array.from(p)[0].toUpperCase() + '•••').join(' ');
+  return first + ' ' + last + '.';
+}
+
+async function requireUserToken(req, res, next) {
+  const match = String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
+  if (!match) return res.status(401).json({ error: 'authentication required' });
+  try {
+    const decoded = await getAuth().verifyIdToken(match[1]);
+    req.authUid = decoded.uid;
+    req.authTime = Number(decoded.auth_time) || 0;
+    return next();
+  } catch (err) {
+    return res.status(401).json({ error: 'invalid or expired session' });
+  }
+}
+
+async function loadRecipientDirectory(force = false) {
+  if (!force && Date.now() - recipientDirectory.loadedAt < RECIPIENT_DIRECTORY_TTL_MS) return recipientDirectory.rows;
+  const snap = await usersCol().select('name', 'username', 'phone', 'walletPublic', 'privacy').get();
+  const rows = snap.docs
+    .map((doc) => {
+      const u = doc.data() || {};
+      const name = String(u.name || '').trim();
+      const username = String(u.username || '').trim();
+      const phone = String(u.phone || '').trim();
+      const searchMasked = maskName(name);
+      const maskedName = maskNameDisplay(name);
+      return {
+        uid: doc.id,
+        name,
+        nameLower: name.toLowerCase(),
+        maskedName,
+        maskedSearch: searchMasked.toLowerCase().replace(/[.•]/g, '').replace(/\s+/g, ' ').trim(),
+        privacy: normalizePrivacy(u.privacy),
+        username,
+        usernameLower: username.toLowerCase(),
+        phone,
+        phoneDigits: phone.replace(/\D/g, ''),
+        phoneNational: phone.replace(/\D/g, '').replace(/^(63|0)/, ''),
+        walletPublic: String(u.walletPublic || '').trim(),
+      };
+    })
+    .filter((row) => StellarSdk.StrKey.isValidEd25519PublicKey(row.walletPublic));
+  recipientDirectory = { loadedAt: Date.now(), rows };
+  return rows;
+}
+
+function maskPhone(phone) {
+  const s = String(phone || '').replace(/\s/g, '');
+  if (s.length <= 6) return s;
+  return s.slice(0, 4) + '•'.repeat(s.length - 7) + s.slice(-3);
+}
+
+function searchRecipientRows(rows, q) {
+  const needle = q.replace(/^@/, '').toLowerCase();
+  const tokens = needle.split(/\s+/).filter(Boolean);
+  const phoneLike = /^[+\d\s().-]+$/.test(q);
+  const qDigits = phoneLike ? q.replace(/\D/g, '') : '';
+  const qNational = qDigits.replace(/^(63|0)/, '');
+  const walletQuery = StellarSdk.StrKey.isValidEd25519PublicKey(q.toUpperCase()) ? q.toUpperCase() : '';
+  const nameSearchable = !phoneLike && needle.replace(/[^\p{L}\p{N}]/gu, '').length >= 3;
+
+  const scored = [];
+  const exact = new Set();
+  for (const row of rows) {
+    if (row.privacy.hideFromSearch) continue;
+    let score = null;
+    const consider = (value) => { if (score === null || value < score) score = value; };
+
+    if (walletQuery && row.walletPublic === walletQuery) {
+      consider(0);
+      exact.add(row.uid);
+    }
+    if (row.usernameLower) {
+      if (row.usernameLower === needle) { consider(1); exact.add(row.uid); }
+      else if (row.usernameLower.startsWith(needle)) consider(2);
+      else if (row.usernameLower.includes(needle)) consider(4);
+    }
+    if (nameSearchable && row.privacy.findByName) {
+      const hay = row.privacy.showFullName ? row.nameLower : row.maskedSearch;
+      if (hay) {
+        if (hay === needle) consider(1);
+        else if (hay.startsWith(needle)) consider(2);
+        else if (tokens.length && tokens.every((t) => hay.includes(t))) consider(3);
+      }
+    }
+    if (row.privacy.findByPhone && qDigits.length >= 3 && row.phoneDigits) {
+      if (row.phoneDigits.includes(qDigits) || (qNational.length >= 3 && row.phoneNational.includes(qNational))) {
+        const sameNumber = row.phoneNational === qNational || row.phoneDigits === qDigits;
+        consider(sameNumber ? 1 : 3);
+        if (sameNumber && qNational.length >= 9) exact.add(row.uid);
+      }
+    }
+    if (score !== null) scored.push({ score, row });
+  }
+  scored.sort((a, b) => a.score - b.score || a.row.nameLower.localeCompare(b.row.nameLower));
+  return { matches: scored.map((s) => s.row), exact, revealPhone: qDigits.length >= 7 };
+}
+
+app.get('/api/search-recipients', recipientSearchLimiter, requireUserToken, recipientSearchUserLimiter, async (req, res) => {
+  const q = String(req.query.q || '').trim().slice(0, 64);
+  if (q.length < 2) return res.json({ results: [] });
+
+  try {
+    let rows = await loadRecipientDirectory();
+    let found = searchRecipientRows(rows, q);
+    if (!found.matches.length) {
+      rows = await loadRecipientDirectory(true);
+      found = searchRecipientRows(rows, q);
+    }
+    const others = found.matches.filter((row) => row.uid !== req.authUid);
+    const selfMatch = others.length === 0 && found.matches.length > 0;
+    const results = others.slice(0, 8).map((row) => ({
+      uid: row.uid,
+      name: !row.name
+        ? row.username
+        : (row.privacy.showFullName || found.exact.has(row.uid)) ? row.name : row.maskedName,
+      username: row.username,
+      phone: found.revealPhone ? row.phone : maskPhone(row.phone),
+      walletPublic: row.walletPublic,
+    }));
+    return res.json({ results, selfMatch });
+  } catch (err) {
+    log('error', 'search', `Recipient search failed: ${err.message}`);
+    return res.status(500).json({ error: 'search unavailable' });
+  }
+});
+
+const contactsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too many requests, please try again later' },
+});
+
+const MAX_CONTACTS = 200;
+
+function sanitizeContacts(input) {
+  if (!Array.isArray(input) || input.length > MAX_CONTACTS) return null;
+  const seen = new Set();
+  const out = [];
+  for (const item of input) {
+    if (!item || typeof item !== 'object') return null;
+    const username = String(item.username || '').trim();
+    if (!/^[^\s|]{1,40}$/.test(username)) return null;
+    const key = username.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const wallet = String(item.walletPublic || '').trim();
+    const addedAt = Number(item.addedAt);
+    out.push({
+      username,
+      name: String(item.name || '').trim().slice(0, 80),
+      nickname: String(item.nickname || '').trim().slice(0, 40),
+      walletPublic: StellarSdk.StrKey.isValidEd25519PublicKey(wallet) ? wallet : '',
+      addedAt: Number.isFinite(addedAt) && addedAt > 0 ? addedAt : Date.now(),
+    });
+  }
+  return out;
+}
+
+app.get('/api/contacts', contactsLimiter, requireUserToken, async (req, res) => {
+  try {
+    const snap = await usersCol().doc(req.authUid).get();
+    if (!snap.exists) return res.status(404).json({ error: 'account not found' });
+    const data = snap.data() || {};
+    return res.json({
+      contacts: Array.isArray(data.contacts) ? data.contacts : [],
+      updatedAt: Number(data.contactsUpdatedAt) || 0,
+    });
+  } catch (err) {
+    log('error', 'contacts', `Load failed: ${err.message}`);
+    return res.status(500).json({ error: 'contacts unavailable' });
+  }
+});
+
+app.put('/api/contacts', contactsLimiter, requireUserToken, async (req, res) => {
+  const contacts = sanitizeContacts(req.body && req.body.contacts);
+  if (!contacts) return res.status(400).json({ error: 'invalid contacts' });
+  try {
+    const updatedAt = Date.now();
+    await usersCol().doc(req.authUid).update({
+      contacts,
+      contactsUpdatedAt: updatedAt,
+    });
+    return res.json({ contacts, updatedAt });
+  } catch (err) {
+    log('error', 'contacts', `Save failed: ${err.message}`);
+    return res.status(500).json({ error: 'could not save contacts' });
+  }
+});
+
+app.get('/api/privacy-settings', requireUserToken, async (req, res) => {
+  try {
+    const snap = await usersCol().doc(req.authUid).get();
+    if (!snap.exists) return res.status(404).json({ error: 'account not found' });
+    return res.json({ privacy: normalizePrivacy((snap.data() || {}).privacy) });
+  } catch (err) {
+    log('error', 'privacy', `Load failed: ${err.message}`);
+    return res.status(500).json({ error: 'privacy settings unavailable' });
+  }
+});
+
+app.post('/api/privacy-settings', privacyWriteLimiter, requireUserToken, async (req, res) => {
+  const incoming = req.body && req.body.privacy;
+  if (!incoming || typeof incoming !== 'object') {
+    return res.status(400).json({ error: 'privacy settings required' });
+  }
+  const next = {};
+  for (const key of Object.keys(DEFAULT_PRIVACY)) {
+    if (typeof incoming[key] !== 'boolean') {
+      return res.status(400).json({ error: `invalid value for ${key}` });
+    }
+    next[key] = incoming[key];
+  }
+  try {
+    await usersCol().doc(req.authUid).update({
+      privacy: next,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    recipientDirectory.loadedAt = 0;
+    recordActivity(req.authUid, 'privacy-changed', req, deviceKeyFor(req, null), 'Privacy settings were updated').catch(() => {});
+    return res.json({ privacy: next });
+  } catch (err) {
+    log('error', 'privacy', `Save failed: ${err.message}`);
+    return res.status(500).json({ error: 'could not save privacy settings' });
+  }
+});
+
+const phoneChangeLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `uid:${req.authUid || ipKeyGenerator(req.ip)}`,
+  message: { error: 'too many requests, please try again later' },
+});
+
+const PHONE_CHANGE_MAX_AUTH_AGE_S = 10 * 60;
+
+function cleanNewPhone(raw) {
+  const value = String(raw || '').trim().replace(/\s+/g, ' ');
+  if (/^\+63 9\d{2} \d{3} \d{4}$/.test(value)) return value;
+  const digits = value.replace(/\D/g, '');
+  if (/^\+[\d\s().-]+$/.test(value) && !value.startsWith('+63') && digits.length >= 7 && digits.length <= 15) return value;
+  return null;
+}
+
+const phoneTail = (phone) => String(phone || '').replace(/\D/g, '').slice(-9);
+
+app.post('/api/change-phone', requireUserToken, phoneChangeLimiter, async (req, res) => {
+  const phone = cleanNewPhone(req.body && req.body.phone);
+  if (!phone) return res.status(400).json({ error: 'invalid-phone' });
+
+  const authAge = Math.floor(Date.now() / 1000) - (req.authTime || 0);
+  if (!req.authTime || authAge > PHONE_CHANGE_MAX_AUTH_AGE_S) {
+    return res.status(403).json({ error: 'recent-verification-required' });
+  }
+
+  try {
+    const userRef = usersCol().doc(req.authUid);
+    const snap = await userRef.get();
+    if (!snap.exists) return res.status(404).json({ error: 'account not found' });
+    const current = snap.data() || {};
+
+    const newTail = phoneTail(phone);
+    if (phoneTail(current.phone) === newTail) return res.status(400).json({ error: 'same-phone' });
+
+    const all = await usersCol().select('phone').get();
+    const taken = all.docs.some((d) => d.id !== req.authUid && phoneTail(d.data().phone) === newTail);
+    if (taken) return res.status(409).json({ error: 'phone-in-use' });
+
+    await userRef.update({
+      phone,
+      previousPhone: current.phone || null,
+      phoneChangedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    recipientDirectory.loadedAt = 0;
+    if (current.phone) clearPinFailures(current.phone);
+    clearPinFailures(phone);
+
+    recordActivity(req.authUid, 'phone-changed', req, deviceKeyFor(req, req.body && req.body.deviceId), 'Mobile number was changed').catch(() => {});
+    if (current.phone) {
+      sendSms(current.phone, 'OmniPay: The mobile number on your account was changed. If this was not you, contact support right away.').catch(() => {});
+    }
+    sendSms(phone, 'OmniPay: This number is now linked to your OmniPay account.').catch(() => {});
+
+    return res.json({ ok: true, phone });
+  } catch (err) {
+    log('error', 'phone', `Change failed: ${err.message}`);
+    return res.status(500).json({ error: 'could not change number' });
+  }
+});
+
+const ACTIVITY_MAX_DEVICES = 10;
+const ACTIVITY_LIST_LIMIT = 50;
+const ACTIVITY_MERGED_LIMIT = 60;
+const ACTIVITY_CLIENT_TYPES = new Set(['password-changed', 'profile-updated', 'logout']);
+const PAYMENT_DONE_STATUSES = new Set(['settled', 'confirmed']);
+const PAYMENT_REJECTED_STATUSES = new Set(['validation_failed', 'failed']);
+const DEVICE_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+
+let geoLookup = null;
+try {
+  geoLookup = require('geoip-lite').lookup;
+} catch (_) {
+  geoLookup = null;
+}
+
+const activityLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `uid:${req.authUid || ipKeyGenerator(req.ip)}`,
+  message: { error: 'too many requests, please try again later' },
+});
+
+function describeDevice(userAgent) {
+  const ua = String(userAgent || '');
+  let os = 'Unknown device';
+  if (/Android/i.test(ua)) os = 'Android';
+  else if (/iPhone|iPad|iPod/i.test(ua)) os = 'iOS';
+  else if (/Windows/i.test(ua)) os = 'Windows';
+  else if (/Mac OS X|Macintosh/i.test(ua)) os = 'macOS';
+  else if (/CrOS/i.test(ua)) os = 'ChromeOS';
+  else if (/Linux/i.test(ua)) os = 'Linux';
+  let browser = 'Browser';
+  if (/Edg\//i.test(ua)) browser = 'Edge';
+  else if (/OPR\/|Opera/i.test(ua)) browser = 'Opera';
+  else if (/SamsungBrowser/i.test(ua)) browser = 'Samsung Internet';
+  else if (/Firefox|FxiOS/i.test(ua)) browser = 'Firefox';
+  else if (/Chrome|CriOS/i.test(ua)) browser = 'Chrome';
+  else if (/Safari/i.test(ua)) browser = 'Safari';
+  return `${browser} on ${os}`;
+}
+
+function deviceKeyFor(req, rawId) {
+  const seed = DEVICE_ID_PATTERN.test(String(rawId || ''))
+    ? `id:${rawId}`
+    : `ua:${describeDevice(req.headers['user-agent'])}`;
+  return crypto.createHash('sha256').update(seed).digest('hex').slice(0, 32);
+}
+
+function maskIp(ip) {
+  const value = String(ip || '').replace(/^::ffff:/, '');
+  if (!value) return null;
+  if (value.includes(':')) return `${value.split(':').slice(0, 2).join(':')}::`;
+  const parts = value.split('.');
+  return parts.length === 4 ? `${parts[0]}.${parts[1]}.•••.•••` : null;
+}
+
+function safeHeader(req, name) {
+  const raw = req.headers[name];
+  if (!raw) return '';
+  try {
+    return decodeURIComponent(String(raw)).slice(0, 60);
+  } catch (_) {
+    return String(raw).slice(0, 60);
+  }
+}
+
+function approximateLocation(req) {
+  let city = safeHeader(req, 'x-vercel-ip-city') || safeHeader(req, 'x-appengine-city');
+  let country = safeHeader(req, 'cf-ipcountry') || safeHeader(req, 'x-vercel-ip-country') || safeHeader(req, 'x-appengine-country');
+  if (!city && !country && geoLookup) {
+    const found = geoLookup(String(req.ip || '').replace(/^::ffff:/, ''));
+    if (found) {
+      city = found.city || '';
+      country = found.country || '';
+    }
+  }
+  return [city, country].filter(Boolean).join(', ') || 'Location unavailable';
+}
+
+async function recordActivity(uid, type, req, deviceKey, detail) {
+  await usersCol().doc(uid).collection('activity').add({
+    type,
+    device: describeDevice(req.headers['user-agent']),
+    deviceKey: deviceKey || null,
+    location: approximateLocation(req),
+    ip: maskIp(req.ip),
+    detail: detail || null,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+}
+
+function mapActivity(doc, currentKey) {
+  const d = doc.data();
+  const created = d.createdAt && typeof d.createdAt.toMillis === 'function' ? d.createdAt.toMillis() : 0;
+  return {
+    id: doc.id,
+    type: d.type || 'login',
+    device: d.device || 'Unknown device',
+    location: d.location || 'Location unavailable',
+    ip: d.ip || null,
+    detail: d.detail || null,
+    thisDevice: !!currentKey && d.deviceKey === currentKey,
+    createdAt: created,
+  };
+}
+
+app.post('/api/activity/login', requireUserToken, activityLimiter, async (req, res) => {
+  const uid = req.authUid;
+  try {
+    const userRef = usersCol().doc(uid);
+    const snap = await userRef.get();
+    if (!snap.exists) return res.status(404).json({ error: 'account not found' });
+    const user = snap.data() || {};
+
+    const deviceKey = deviceKeyFor(req, req.body && req.body.deviceId);
+    const label = describeDevice(req.headers['user-agent']);
+    const now = Date.now();
+    const known = Array.isArray(user.knownDevices) ? user.knownDevices.filter((d) => d && d.id) : [];
+    const existing = known.find((d) => d.id === deviceKey);
+    const isNewDevice = !existing && known.length > 0;
+
+    const currentWallet = String(user.walletPublic || '').trim();
+    const previousWallet = String(user.lastKnownWalletPublic || '').trim();
+    const keyChanged = !!previousWallet && !!currentWallet && previousWallet !== currentWallet;
+
+    const nextKnown = existing
+      ? known.map((d) => (d.id === deviceKey ? { ...d, label, lastSeen: now } : d))
+      : [...known, { id: deviceKey, label, firstSeen: now, lastSeen: now }];
+    nextKnown.sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
+
+    const fields = {
+      knownDevices: nextKnown.slice(0, ACTIVITY_MAX_DEVICES),
+      lastLoginAt: FieldValue.serverTimestamp(),
+    };
+    if (currentWallet) fields.lastKnownWalletPublic = currentWallet;
+    await userRef.update(fields);
+
+    await recordActivity(uid, isNewDevice ? 'new-device' : 'login', req, deviceKey);
+    if (keyChanged) await recordActivity(uid, 'key-changed', req, deviceKey, 'Wallet signing key was updated');
+
+    const location = approximateLocation(req);
+    const alerts = [];
+    if (isNewDevice) alerts.push({ type: 'new-device', device: label, location });
+    if (keyChanged) alerts.push({ type: 'key-changed', device: label, location });
+    return res.json({ alerts });
+  } catch (err) {
+    log('error', 'activity', `Login record failed: ${err.message}`);
+    return res.status(500).json({ error: 'could not record activity' });
+  }
+});
+
+app.post('/api/activity/event', requireUserToken, activityLimiter, async (req, res) => {
+  const type = String((req.body && req.body.type) || '');
+  if (!ACTIVITY_CLIENT_TYPES.has(type)) return res.status(400).json({ error: 'invalid event type' });
+  try {
+    await recordActivity(req.authUid, type, req, deviceKeyFor(req, req.body && req.body.deviceId));
+    return res.json({ ok: true });
+  } catch (err) {
+    log('error', 'activity', `Event record failed: ${err.message}`);
+    return res.status(500).json({ error: 'could not record activity' });
+  }
+});
+
+function mapPaymentActivity(doc) {
+  const t = mapMyTransaction(doc);
+  let type = 'payment-pending';
+  if (PAYMENT_DONE_STATUSES.has(t.status)) type = 'payment-sent';
+  else if (PAYMENT_REJECTED_STATUSES.has(t.status)) type = 'payment-rejected';
+  const failure = t.statusHistory.filter((h) => h.detail).pop();
+  return {
+    id: `tx-${t.id}`,
+    type,
+    amount: t.amount,
+    recipient: t.recipient,
+    channel: t.channel,
+    txHash: t.txHash,
+    detail: type === 'payment-rejected' && failure ? failure.detail : null,
+    createdAt: t.createdAt,
+  };
+}
+
+app.get('/api/activity', requireUserToken, activityLimiter, async (req, res) => {
+  try {
+    const currentKey = deviceKeyFor(req, req.query && req.query.deviceId);
+    const [eventsSnap, userSnap, paymentsSnap] = await Promise.all([
+      usersCol().doc(req.authUid).collection('activity').orderBy('createdAt', 'desc').limit(ACTIVITY_LIST_LIMIT).get(),
+      usersCol().doc(req.authUid).get(),
+      relayTransactionsCol().where('senderId', '==', req.authUid).limit(100).get(),
+    ]);
+    const user = userSnap.exists ? userSnap.data() || {} : {};
+    const devices = (Array.isArray(user.knownDevices) ? user.knownDevices : [])
+      .filter((d) => d && d.id)
+      .map((d) => ({
+        label: d.label || 'Unknown device',
+        firstSeen: d.firstSeen || 0,
+        lastSeen: d.lastSeen || 0,
+        thisDevice: d.id === currentKey,
+      }))
+      .sort((a, b) => b.lastSeen - a.lastSeen);
+    const events = eventsSnap.docs
+      .map((doc) => mapActivity(doc, currentKey))
+      .concat(paymentsSnap.docs.map(mapPaymentActivity))
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, ACTIVITY_MERGED_LIMIT);
+    return res.json({ events, devices });
+  } catch (err) {
+    log('error', 'activity', `Load failed: ${err.message}`);
+    return res.status(500).json({ error: 'activity unavailable' });
+  }
+});
+
+const monitoringLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `uid:${req.authUid || ipKeyGenerator(req.ip)}`,
+  message: { error: 'too many requests, please try again later' },
+});
+
+function mapMyTransaction(doc) {
+  const d = doc.data();
+  const created = d.createdAt && typeof d.createdAt.toMillis === 'function' ? d.createdAt.toMillis() : 0;
+  const sv = d.signatureValidation;
+  return {
+    id: doc.id,
+    channel: d.channel || null,
+    recipient: d.recipient || null,
+    amount: d.amount != null ? Number(d.amount) : null,
+    status: d.status || null,
+    statusHistory: Array.isArray(d.statusHistory)
+      ? d.statusHistory.map((h) => ({ status: h.status, at: h.at, detail: h.detail || null }))
+      : [],
+    signatureValidation: sv ? { result: sv.result || null, reason: sv.reason || null } : null,
+    txHash: d.txHash || null,
+    sorobanTxHash: d.sorobanTxHash || null,
+    createdAt: created,
+  };
+}
+
+function mapMyTransactionSnapshot(snap) {
+  const transactions = snap.docs.map(mapMyTransaction);
+  transactions.sort((a, b) => b.createdAt - a.createdAt);
+  return transactions;
+}
+
+app.get('/api/my-transactions', requireUserToken, monitoringLimiter, async (req, res) => {
+  try {
+    const snap = await relayTransactionsCol().where('senderId', '==', req.authUid).limit(200).get();
+    return res.json({ transactions: mapMyTransactionSnapshot(snap) });
+  } catch (err) {
+    log('error', 'monitoring', `Load failed: ${err.message}`);
+    return res.status(500).json({ error: 'could not load transactions' });
+  }
+});
+
+const MY_STREAM_MAX_PER_USER = 3;
+const MY_STREAM_MAX_AGE_MS = 50 * 60 * 1000;
+const MY_STREAM_HEARTBEAT_MS = 25 * 1000;
+const myStreamCounts = new Map();
+
+app.get('/api/my-transactions/stream', requireUserToken, (req, res) => {
+  const uid = req.authUid;
+  const open = myStreamCounts.get(uid) || 0;
+  if (open >= MY_STREAM_MAX_PER_USER) {
+    return res.status(429).json({ error: 'too many open streams' });
+  }
+  myStreamCounts.set(uid, open + 1);
+
+  res.set({
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+  res.write('retry: 5000\n\n');
+
+  let closed = false;
+  let unsubscribe = null;
+  let heartbeat = null;
+  let maxAge = null;
+
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(heartbeat);
+    clearTimeout(maxAge);
+    if (typeof unsubscribe === 'function') unsubscribe();
+    const left = (myStreamCounts.get(uid) || 1) - 1;
+    if (left > 0) myStreamCounts.set(uid, left);
+    else myStreamCounts.delete(uid);
+    res.end();
+  };
+
+  try {
+    unsubscribe = relayTransactionsCol()
+      .where('senderId', '==', uid)
+      .limit(200)
+      .onSnapshot(
+        (snap) => {
+          if (closed) return;
+          res.write(`data: ${JSON.stringify({ transactions: mapMyTransactionSnapshot(snap) })}\n\n`);
+        },
+        (err) => {
+          log('error', 'monitoring', `Stream failed: ${err.message}`);
+          cleanup();
+        }
+      );
+  } catch (err) {
+    log('error', 'monitoring', `Stream setup failed: ${err.message}`);
+    cleanup();
+    return;
+  }
+
+  heartbeat = setInterval(() => {
+    if (!closed) res.write(': ping\n\n');
+  }, MY_STREAM_HEARTBEAT_MS);
+  maxAge = setTimeout(cleanup, MY_STREAM_MAX_AGE_MS);
+  req.on('close', cleanup);
+});
+
 app.post('/webhook/sms-received', async (req, res) => {
   log('info', 'webhook', `Request received from ${req.ip}`);
 
@@ -1352,6 +2095,29 @@ app.post('/api/submit-payment', paymentEndpointLimiter, async (req, res) => {
   }
 });
 
+async function notifyAppPayment({ sender, recipient, amount, result }) {
+  if (String(process.env.APP_PAYMENT_SMS || 'true').toLowerCase() === 'false') return;
+  const senderName = sender.username || sender.id;
+  const recipientName = recipient.username || recipient.id;
+  const fmt = (n) => (Number.isFinite(Number(n)) ? Number(n).toFixed(4) : 'n/a');
+  try {
+    if (sender.phone) {
+      await sendSms(
+        sender.phone,
+        `OmniPay: Sent ${amount} ${ASSET_LABEL} to ${recipientName}. TX: ${String(result.txHash).slice(0, 12)}... New balance: ${fmt(result.newSenderBal)} ${ASSET_LABEL}.`
+      );
+    }
+    if (recipient.phone) {
+      await sendSms(
+        recipient.phone,
+        `OmniPay: You received ${amount} ${ASSET_LABEL} from ${senderName}. New balance: ${fmt(result.newRecipientBal)} ${ASSET_LABEL}.`
+      );
+    }
+  } catch (err) {
+    log('error', 'sms', `Payment confirmation SMS failed: ${err.message}`);
+  }
+}
+
 app.post('/api/send', paymentEndpointLimiter, async (req, res) => {
   const { senderId, recipientId, amount, timestamp, nonce, requestId, signature, pin } = req.body || {};
 
@@ -1409,7 +2175,7 @@ app.post('/api/send', paymentEndpointLimiter, async (req, res) => {
     await updateRelayStatus(relayId, RELAY_STATUS.VALIDATION_FAILED, { detail: claim.reason || 'claim-error' });
     let status = 500;
     if (['duplicate-request', 'nonce-reused'].includes(claim.reason)) status = 409;
-    else if (claim.reason === 'invalid-requestid') status = 400;
+    else if (['invalid-requestid', 'invalid-nonce'].includes(claim.reason)) status = 400;
     const replayed = ['duplicate-request', 'nonce-reused'].includes(claim.reason);
     return res.status(status).json({
       error: claim.reason || 'could not process request',
@@ -1455,6 +2221,7 @@ app.post('/api/send', paymentEndpointLimiter, async (req, res) => {
     }
 
     await finishSignedRequest(requestId, 'processed', { txHash: result.txHash, sorobanTxHash: result.sorobanTxHash });
+    notifyAppPayment({ sender, recipient, amount: amt, result });
     return res.json({
       ok: true,
       txHash: result.txHash,
@@ -1484,11 +2251,111 @@ app.post('/dev/simulate-sms', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+let adminStreamCount = 0;
+const ADMIN_STREAM_MAX = 5;
+const relayNameCache = { at: 0, byUid: new Map(), byWallet: new Map(), byTail: new Map(), names: new Set() };
+
+async function enrichRelayTransactions(list) {
+  try {
+    if (Date.now() - relayNameCache.at > 60 * 1000) {
+      const snap = await usersCol().select('username', 'walletPublic', 'phone').get();
+      const byUid = new Map();
+      const byWallet = new Map();
+      const byTail = new Map();
+      const names = new Set();
+      snap.docs.forEach((d) => {
+        const u = d.data() || {};
+        const name = String(u.username || '').trim();
+        if (!name) return;
+        byUid.set(d.id, name);
+        if (u.walletPublic) byWallet.set(String(u.walletPublic), name);
+        const tail = phoneTail(u.phone);
+        if (tail.length === 9) byTail.set(tail, name);
+        names.add(name.toLowerCase());
+      });
+      relayNameCache.byUid = byUid;
+      relayNameCache.byWallet = byWallet;
+      relayNameCache.byTail = byTail;
+      relayNameCache.names = names;
+      relayNameCache.at = Date.now();
+    }
+    return list.map((tx) => {
+      const recipient = String(tx.recipient || '');
+      const senderTail = phoneTail(tx.senderPhone);
+      return Object.assign({}, tx, {
+        senderUsername: relayNameCache.byUid.get(tx.senderId) || (senderTail.length === 9 ? relayNameCache.byTail.get(senderTail) : '') || '',
+        recipientUsername: relayNameCache.byWallet.get(recipient) || (relayNameCache.names.has(recipient.toLowerCase()) ? recipient : '')
+      });
+    });
+  } catch (err) {
+    return list;
+  }
+}
+
+app.get('/api/relay-transactions/stream', requireAdminKey, (req, res) => {
+  if (adminStreamCount >= ADMIN_STREAM_MAX) {
+    return res.status(429).json({ error: 'too many open streams' });
+  }
+  adminStreamCount += 1;
+
+  res.set({
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+  res.write('retry: 5000\n\n');
+
+  let closed = false;
+  let unsubscribe = null;
+  let heartbeat = null;
+  let maxAge = null;
+
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(heartbeat);
+    clearTimeout(maxAge);
+    if (typeof unsubscribe === 'function') unsubscribe();
+    adminStreamCount = Math.max(0, adminStreamCount - 1);
+    res.end();
+  };
+
+  try {
+    unsubscribe = relayTransactionsCol()
+      .orderBy('createdAt', 'desc')
+      .limit(200)
+      .onSnapshot(
+        async (snap) => {
+          if (closed) return;
+          const list = await enrichRelayTransactions(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+          if (closed) return;
+          res.write(`data: ${JSON.stringify({ transactions: list })}\n\n`);
+        },
+        (err) => {
+          log('error', 'monitoring', `Admin stream failed: ${err.message}`);
+          cleanup();
+        }
+      );
+  } catch (err) {
+    log('error', 'monitoring', `Admin stream setup failed: ${err.message}`);
+    cleanup();
+    return;
+  }
+
+  heartbeat = setInterval(() => {
+    if (!closed) res.write(': ping\n\n');
+  }, 25 * 1000);
+  maxAge = setTimeout(cleanup, 50 * 60 * 1000);
+  req.on('close', cleanup);
+});
 app.get('/api/relay-transactions/:id', requireAdminKey, async (req, res) => {
   try {
     const doc = await relayTransactionsCol().doc(req.params.id).get();
     if (!doc.exists) return res.status(404).json({ error: 'not found' });
-    res.json({ id: doc.id, ...doc.data() });
+    const [item] = await enrichRelayTransactions([{ id: doc.id, ...doc.data() }]);
+    res.json(item);
   } catch (err) {
     console.error('[api/relay-transactions/:id] failed:', err.message);
     res.status(500).json({ error: 'internal error' });
@@ -1500,7 +2367,7 @@ app.get('/api/relay-transactions', requireAdminKey, async (req, res) => {
     let query = relayTransactionsCol().orderBy('createdAt', 'desc');
     if (req.query.status) query = query.where('status', '==', String(req.query.status));
     const snap = await query.limit(limit).get();
-    res.json({ transactions: snap.docs.map((d) => ({ id: d.id, ...d.data() })) });
+    res.json({ transactions: await enrichRelayTransactions(snap.docs.map((d) => ({ id: d.id, ...d.data() }))) });
   } catch (err) {
     console.error('[api/relay-transactions] failed:', err.message);
     res.status(500).json({ error: 'internal error' });

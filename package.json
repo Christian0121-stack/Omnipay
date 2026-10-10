@@ -5,20 +5,39 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test": "jest --verbose",
+    "test:live": "cross-env RUN_LIVE_SMS_TESTS=true jest --verbose Signature.test.js",
+    "health": "node -e \"fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health').then(async r=>{console.log(r.status,await r.text());process.exit(r.ok?0:1)}).catch(e=>{console.error(e.message);process.exit(1)})\""
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.18.0"
   },
   "dependencies": {
     "axios": "^1.20.0",
     "cors": "^2.8.6",
-    "dotenv": "^18.0.2",
-    "express": "^5.2.1",
+    "dotenv": "^18.0.7",
+    "express": "^5.3.0",
     "express-rate-limit": "^8.7.0",
-    "firebase-admin": "^14.4.0",
+    "firebase-admin": "^14.5.0",
     "helmet": "^8.3.0",
     "stellar-sdk": "npm:@stellar/stellar-sdk@^17.2.1"
+  },
+  "devDependencies": {
+    "@babel/core": "^8.0.7",
+    "@babel/preset-env": "^8.0.7",
+    "babel-jest": "^30.5.2",
+    "cross-env": "^10.1.0",
+    "jest": "^30.5.2"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "**/?(*.)+(test).js"
+    ],
+    "testPathIgnorePatterns": [
+      "/node_modules/"
+    ]
   },
   "license": "UNLICENSED",
   "private": true

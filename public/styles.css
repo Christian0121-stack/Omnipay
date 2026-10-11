@@ -1090,6 +1090,13 @@
   .info-row:last-child { border-bottom: none; }
   .info-label { font-size: 13px; color: var(--text-muted); font-weight: 500; }
   .info-val   { font-size: 13px; font-weight: 600; color: var(--text); }
+  .info-val-mask { display: inline-flex; align-items: center; justify-content: flex-end; min-width: 0; }
+  .info-val-mask .mask-text { min-width: 0; overflow-wrap: anywhere; text-align: right; }
+  .info-row:has(.info-val-mask) .info-label { white-space: nowrap; flex-shrink: 0; }
+  .mask-toggle { flex-shrink: 0; background: none; border: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 4px 5px; margin-left: 4px; border-radius: 8px; color: var(--text-muted); vertical-align: middle; transition: color .2s, background .2s; }
+  .mask-toggle:hover { color: var(--primary); background: var(--primary-light); }
+  .mask-toggle-hero { color: rgba(255,255,255,0.85); }
+  .mask-toggle-hero:hover { color: #fff; background: rgba(255,255,255,0.18); }
 
   .progress-steps { display: flex; align-items: center; gap: 4px; margin: 16px 0; }
   .step { flex: 1; height: 4px; border-radius: 99px; background: var(--border); }

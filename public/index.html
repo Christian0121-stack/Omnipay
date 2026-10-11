@@ -747,8 +747,8 @@
   <div class="screen" id="profile">
     <div class="profile-hero">
       <div class="avatar">👤</div>
-      <div class="profile-name" id="profileName">User</div>
-      <div class="profile-phone" id="profilePhone">—</div>
+      <div class="profile-name"><span id="profileName" data-mask-text="name" data-mask-empty="User">User</span><button type="button" class="mask-toggle mask-toggle-hero" data-mask-btn="name" onclick="toggleSummaryField('name')" aria-label="Show full name" aria-pressed="false">👁</button></div>
+      <div class="profile-phone"><span id="profilePhone" data-mask-text="phone">—</span><button type="button" class="mask-toggle mask-toggle-hero" data-mask-btn="phone" onclick="toggleSummaryField('phone')" aria-label="Show phone number" aria-pressed="false">👁</button></div>
       <div class="profile-verified">
         <span>✅</span> KYC Verified · Stellar Testnet
       </div>

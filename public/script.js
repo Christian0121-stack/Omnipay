@@ -540,6 +540,7 @@ function goTo(screenId) {
 function navTo(screenId) {
   if (screenId !== 'pay') { try { stopCamera(); } catch(e) {} }
   goTo(screenId);
+  if (screenId !== 'profile') resetSummaryReveal();
   document.querySelectorAll('.nav-item').forEach(function(n){ n.classList.remove('active'); });
   var nav = document.getElementById('nav-' + screenId);
   if (nav) nav.classList.add('active');
@@ -926,6 +927,8 @@ function _getCountryConfig(country) {
   return { coin: 'USDC', sym: '$', cur: 'usd' };
 }
 
+var XLM_RATE_CACHE = { cur: '', rate: null, at: 0 };
+
 async function _updateXLMConversion(xlmAmt) {
   var convEl = document.getElementById('heroConvText');
   if (!convEl) return;
@@ -956,6 +959,8 @@ async function _updateXLMConversion(xlmAmt) {
     } catch(_e2) {}
   }
   if (rate !== null) {
+    XLM_RATE_CACHE = { cur: cfg.cur, rate: rate, at: Date.now() };
+    updateSummaryTotalBalance();
     var total    = xlmAmt * rate;
     var decimals = (cfg.cur === 'jpy' || cfg.cur === 'krw' || cfg.cur === 'vnd' || cfg.cur === 'idr') ? 0 : 2;
     var totalStr = cfg.sym + total.toLocaleString('en',{minimumFractionDigits:decimals,maximumFractionDigits:decimals});
@@ -1568,7 +1573,7 @@ async function doRegister() {
   var country  = (document.getElementById('regCountry') || {}).value || '\U0001f1f5\U0001f1ed Philippines';
   var now = new Date();
   var monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  var memberSince = monthNames[now.getMonth()] + ' ' + now.getFullYear();
+  var memberSince = monthNames[now.getMonth()] + ' ' + now.getDate() + ', ' + now.getFullYear();
 
   PENDING_USER = {
     uid:             user.toLowerCase(),
@@ -1969,6 +1974,7 @@ function doLogout() {
   goTo('login');
   clearLoginForm();
   resetRegisterForm();
+  resetSummaryReveal();
   setFbStatus('', 'Connecting to Firebase…');
   showAlert('yellow','👋 Signed out successfully');
 }
@@ -2602,12 +2608,86 @@ function filterTx(filter, el) {
   renderHistory(filter);
 }
 
+var SUMMARY_REVEAL = { name: false, email: false, phone: false };
+
+function maskDetail(value) {
+  return String(value).replace(/[^\s@.+\-()]/g, '*');
+}
+
+function summaryMaskRow(label, field, style) {
+  return '<div class="info-row"><span class="info-label">' + label + '</span><span class="info-val info-val-mask"' + (style ? ' style="' + style + '"' : '') + '><span class="mask-text" data-mask-text="' + field + '"></span><button type="button" class="mask-toggle" data-mask-btn="' + field + '" onclick="toggleSummaryField(\'' + field + '\')"></button></span></div>';
+}
+
+function setMaskText(el, field, text) {
+  var at = text.indexOf('@') + 1;
+  if (field !== 'email' || at < 2) { el.textContent = text; return; }
+  el.textContent = '';
+  [text.slice(0, at), text.slice(at)].forEach(function(part){
+    var piece = document.createElement('span');
+    piece.style.display = 'inline-block';
+    piece.textContent = part;
+    el.appendChild(piece);
+  });
+}
+
+function applySummaryMask() {
+  var labels = { name: 'full name', email: 'email address', phone: 'phone number' };
+  Object.keys(labels).forEach(function(field){
+    var value = String((STATE.user && STATE.user[field]) || '');
+    var shown = SUMMARY_REVEAL[field];
+    document.querySelectorAll('[data-mask-text="' + field + '"]').forEach(function(el){
+      setMaskText(el, field, value ? (shown ? value : maskDetail(value)) : (el.getAttribute('data-mask-empty') || '—'));
+    });
+    document.querySelectorAll('[data-mask-btn="' + field + '"]').forEach(function(btn){
+      btn.style.display = value ? '' : 'none';
+      btn.textContent = shown ? '🙈' : '👁';
+      btn.setAttribute('aria-label', (shown ? 'Hide ' : 'Show ') + labels[field]);
+      btn.setAttribute('aria-pressed', shown ? 'true' : 'false');
+    });
+  });
+}
+
+function toggleSummaryField(field) {
+  SUMMARY_REVEAL[field] = !SUMMARY_REVEAL[field];
+  applySummaryMask();
+}
+
+function resetSummaryReveal() {
+  if (!SUMMARY_REVEAL.name && !SUMMARY_REVEAL.email && !SUMMARY_REVEAL.phone) return;
+  SUMMARY_REVEAL.name = false;
+  SUMMARY_REVEAL.email = false;
+  SUMMARY_REVEAL.phone = false;
+  applySummaryMask();
+}
+
+function formatMemberSince() {
+  var raw = String(STATE.memberSince || '');
+  if (/^[A-Za-z]{3,9}\.? \d{1,2}, \d{4}$/.test(raw)) return raw;
+  var created = auth && auth.currentUser && auth.currentUser.metadata && auth.currentUser.metadata.creationTime;
+  var date = created ? new Date(created) : null;
+  if (date && !isNaN(date.getTime())) {
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+  return raw || '—';
+}
+
+function updateSummaryTotalBalance() {
+  var el = document.getElementById('summaryTotalBalance');
+  if (!el || !STATE.wallet) return;
+  var xlmTotal = STATE.wallet.xlmBalance || 0;
+  var cfg = _getCountryConfig(STATE.user && STATE.user.country);
+  if (XLM_RATE_CACHE.rate !== null && XLM_RATE_CACHE.cur === cfg.cur) {
+    var decimals = (cfg.cur === 'jpy' || cfg.cur === 'krw' || cfg.cur === 'vnd' || cfg.cur === 'idr') ? 0 : 2;
+    el.textContent = '\u2248 ' + cfg.sym + (xlmTotal * XLM_RATE_CACHE.rate).toLocaleString('en', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  } else {
+    el.textContent = xlmTotal.toLocaleString('en', { minimumFractionDigits: 4, maximumFractionDigits: 4 }) + ' XLM';
+  }
+}
+
 function renderProfile() {
   normalizeTransactionState();
   syncSpendableBalance();
   var t = getTrustTier(STATE.trustScore);
-  document.getElementById('profileName').textContent        = STATE.user.name || 'User';
-  document.getElementById('profilePhone').textContent       = STATE.user.phone || '—';
   document.getElementById('profileTrustScore').textContent  = STATE.trustScore;
   document.getElementById('profileTrustFill').style.width   = STATE.trustScore+'%';
   document.getElementById('profileTrustFill').style.background = 'linear-gradient(90deg,'+t.color+',rgba(255,255,255,0.5))';
@@ -2645,18 +2725,23 @@ function renderProfile() {
   var synced  = STATE.transactions.filter(function(tx){ return tx.status==='synced'; }).length;
   var pending = STATE.transactions.filter(function(tx){ return tx.status==='pending'; }).length;
   document.getElementById('accountSummary').innerHTML =
-    '<div class="info-row"><span class="info-label">Full Name</span><span class="info-val">'+safeText(STATE.user.name||'—')+'</span></div>'+
+    summaryMaskRow('Full Name','name','')+
     '<div class="info-row"><span class="info-label">Username</span><span class="info-val">@'+safeText(STATE.user.username||'—')+'</span></div>'+
-    '<div class="info-row"><span class="info-label">Email</span><span class="info-val" style="font-size:12px;">'+safeText(STATE.user.email||'—')+'</span></div>'+
-    '<div class="info-row"><span class="info-label">Phone</span><span class="info-val">'+safeText(STATE.user.phone||'—')+'</span></div>'+
+    summaryMaskRow('Email','email','font-size:11.5px;')+
+    summaryMaskRow('Phone','phone','')+
     '<div class="info-row"><span class="info-label">Total Transactions</span><span class="info-val">'+totalTx+'</span></div>'+
     '<div class="info-row"><span class="info-label">Synced</span><span class="info-val" style="color:var(--success);">'+synced+'</span></div>'+
     '<div class="info-row"><span class="info-label">Pending Sync</span><span class="info-val" style="color:var(--warning);">'+pending+'</span></div>'+
-    '<div class="info-row"><span class="info-label">Total Balance</span><span class="info-val">'+fmtAmt(STATE.balance)+'</span></div>'+
+    '<div class="info-row"><span class="info-label">Total Balance</span><span class="info-val" id="summaryTotalBalance"></span></div>'+
     '<div class="info-row"><span class="info-label">Offline Vault</span><span class="info-val">'+fmtAmt(STATE.vaultLocked)+'</span></div>'+
     '<div class="info-row"><span class="info-label">XLM Balance</span><span class="info-val">'+STATE.wallet.xlmBalance.toLocaleString('en')+'</span></div>'+
     '<div class="info-row"><span class="info-label">Account Type</span><span class="info-val" style="text-transform:capitalize;">'+safeText(STATE.user.type||'personal')+'</span></div>'+
-    '<div class="info-row"><span class="info-label">Member Since</span><span class="info-val">'+safeText(STATE.memberSince||'—')+'</span></div>';
+    '<div class="info-row"><span class="info-label">Member Since</span><span class="info-val">'+safeText(formatMemberSince())+'</span></div>';
+  applySummaryMask();
+  updateSummaryTotalBalance();
+  if (navigator.onLine !== false && (XLM_RATE_CACHE.rate === null || Date.now() - XLM_RATE_CACHE.at > 60000)) {
+    _updateXLMConversion(STATE.wallet.xlmBalance || 0);
+  }
 }
 
 function simulateScan() {

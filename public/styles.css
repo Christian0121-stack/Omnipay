@@ -2803,10 +2803,35 @@
   background: var(--bg-2); color: var(--text-muted); cursor: not-allowed; opacity: 1;
 }
 .btn:disabled.btn-primary { cursor: not-allowed; }
-.profile-security { margin-top: 8px; padding-top: 14px; border-top: 1px solid var(--border); }
-.profile-security .section-title { margin-bottom: 4px; }
-.profile-security .settings-item { padding: 12px 0; border-bottom: none; }
 @media (max-width: 380px) {
   .edit-lock { flex-wrap: wrap; }
   .edit-lock-btn { width: 100%; }
+}
+
+/* Hide scrollbar on horizontal tab rows */
+.settings-tabs,
+.filter-row {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.settings-tabs::-webkit-scrollbar,
+.filter-row::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
+/* Scrollable tab rows: edge fade shows there is more to see */
+.settings-tabs,
+.filter-row { cursor: grab; overscroll-behavior-x: contain; }
+.settings-tabs.fade-right,
+.filter-row.fade-right {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 44px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 44px), transparent);
+}
+.settings-tabs.fade-left,
+.filter-row.fade-left {
+  -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 44px), transparent);
+  mask-image: linear-gradient(to left, #000 calc(100% - 44px), transparent);
+}
+.settings-tabs.fade-left.fade-right,
+.filter-row.fade-left.fade-right {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 44px, #000 calc(100% - 44px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 44px, #000 calc(100% - 44px), transparent);
 }

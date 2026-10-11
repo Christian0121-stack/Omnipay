@@ -540,7 +540,7 @@ function goTo(screenId) {
 function navTo(screenId) {
   if (screenId !== 'pay') { try { stopCamera(); } catch(e) {} }
   goTo(screenId);
-  if (screenId !== 'profile') { resetSummaryReveal(); lockProfileEdit(); }
+  if (screenId !== 'profile') { resetSummaryReveal(); lockProfileEdit(); resetSettingsTab(); }
   document.querySelectorAll('.nav-item').forEach(function(n){ n.classList.remove('active'); });
   var nav = document.getElementById('nav-' + screenId);
   if (nav) nav.classList.add('active');
@@ -555,10 +555,23 @@ function navTo(screenId) {
   syncContacts(false);
 }
 
+function resetSettingsTab() {
+  var btns = document.querySelectorAll('.settings-tab-btn');
+  if (!btns.length) return;
+  btns.forEach(function(b){ b.classList.remove('active'); });
+  document.querySelectorAll('.settings-panel').forEach(function(p){ p.classList.remove('active'); });
+  btns[0].classList.add('active');
+  var summary = document.getElementById('spanel-summary');
+  if (summary) summary.classList.add('active');
+  var row = document.querySelector('.settings-tabs');
+  if (row) row.scrollLeft = 0;
+}
+
 function switchSettingsTab(tab, btn) {
   document.querySelectorAll('.settings-tab-btn').forEach(function(b){ b.classList.remove('active'); });
   document.querySelectorAll('.settings-panel').forEach(function(p){ p.classList.remove('active'); });
   btn.classList.add('active');
+  try { btn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' }); } catch (e) {}
   var panel = document.getElementById('spanel-' + tab);
   if (panel) panel.classList.add('active');
   if (tab !== 'profile-edit') lockProfileEdit();
@@ -2081,6 +2094,7 @@ function doLogout() {
   if (activityTab) activityTab.classList.remove('has-alert');
   if (auth) auth.signOut().catch(function(){});
   lockProfileEdit();
+  resetSettingsTab();
   STATE.isLoggedIn = false;
   STATE.uid        = null;
   STATE._sendPicked = null;
@@ -2732,6 +2746,12 @@ function maskDetail(value) {
   return String(value).replace(/[^\s@.+\-()]/g, '*');
 }
 
+function maskName(value) {
+  return String(value).replace(/\S+/g, function(word) {
+    return word.charAt(0) + word.slice(1).replace(/./g, '*');
+  });
+}
+
 function summaryMaskRow(label, field, style) {
   return '<div class="info-row"><span class="info-label">' + label + '</span><span class="info-val info-val-mask"' + (style ? ' style="' + style + '"' : '') + '><span class="mask-text" data-mask-text="' + field + '"></span><button type="button" class="mask-toggle" data-mask-btn="' + field + '" onclick="toggleSummaryField(\'' + field + '\')"></button></span></div>';
 }
@@ -2754,7 +2774,7 @@ function applySummaryMask() {
     var value = String((STATE.user && STATE.user[field]) || '');
     var shown = SUMMARY_REVEAL[field];
     document.querySelectorAll('[data-mask-text="' + field + '"]').forEach(function(el){
-      setMaskText(el, field, value ? (shown ? value : maskDetail(value)) : (el.getAttribute('data-mask-empty') || '—'));
+      setMaskText(el, field, value ? (shown ? value : (field === 'name' ? maskName(value) : maskDetail(value))) : (el.getAttribute('data-mask-empty') || '—'));
     });
     document.querySelectorAll('[data-mask-btn="' + field + '"]').forEach(function(btn){
       btn.style.display = value ? '' : 'none';
@@ -2877,6 +2897,8 @@ function processManualPay() {
   var amt = parseFloat(document.getElementById('manualAmount').value);
   if (!isFinite(amt) || amt <= 0) { showAlert('red','⚠️ Enter a valid amount'); return; }
   closeModal('manualPayModal');
+  document.getElementById('manualCode').value   = '';
+  document.getElementById('manualAmount').value = '';
   doPaymentSuccess(amt, 'Aling Nena Store', STATE.isOnline ? 'online' : 'offline');
 }
 
@@ -3278,9 +3300,7 @@ async function executeSendMoney(signedAuth) {
 
     var sendBal = document.getElementById('sendBal');
     if (sendBal) sendBal.textContent = (STATE.balance || 0).toFixed(6) + ' XLM';
-    resetSendRecipient();
-    document.getElementById('sendAmount').value    = '';
-    if (document.getElementById('sendNote')) document.getElementById('sendNote').value = '';
+    clearSendForm();
 
     saveSession();
     renderHistory(); // refresh history tab immediately so the log appears
@@ -3398,6 +3418,7 @@ async function doSignAndPrepareSms() {
     var display = document.getElementById('smsComposedMessage');
     if (display) display.textContent = message;
     if (box) box.style.display = 'block';
+    clearSmsForm();
 
     showAlert('green','✅ Payment signed. Review and send the SMS below.');
   } catch (err) {
@@ -3405,6 +3426,30 @@ async function doSignAndPrepareSms() {
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '🔏 Sign & Prepare SMS'; }
   }
+}
+
+function clearSmsForm() {
+  var recipient = document.getElementById('smsRecipient');
+  var amount    = document.getElementById('smsAmount');
+  var pin       = document.getElementById('smsPin');
+  if (recipient) { recipient.value = ''; recipient.classList.remove('error'); }
+  if (amount)    { amount.value = ''; amount.style.borderColor = ''; }
+  if (pin)       { pin.value = ''; pin.classList.remove('error'); }
+  RECIPIENT_SEARCH.seq.sms = (RECIPIENT_SEARCH.seq.sms || 0) + 1;
+  hideRecipientResults('smsRecipientResults');
+  STATE._smsPicked = null;
+  refreshSaveButtons();
+}
+
+function clearSendForm() {
+  resetSendRecipient();
+  var amount = document.getElementById('sendAmount');
+  var note   = document.getElementById('sendNote');
+  var pin    = document.getElementById('signPin');
+  if (amount) { amount.value = ''; amount.style.borderColor = ''; }
+  if (note)   note.value = '';
+  if (pin)    { pin.value = ''; pin.classList.remove('error'); }
+  updateXlmConversion();
 }
 
 function openSmsApp() {
@@ -5812,3 +5857,54 @@ function useContact(username) {
     pickSendRecipient(contactToResult(c));
   }
 }
+
+(function initScrollRows() {
+  function setup(el) {
+    if (!el || el._scrollRowReady) return;
+    el._scrollRowReady = true;
+    var down = false, moved = false, startX = 0, startLeft = 0;
+
+    function update() {
+      var max = el.scrollWidth - el.clientWidth;
+      el.classList.toggle('fade-left', el.scrollLeft > 4);
+      el.classList.toggle('fade-right', max > 4 && el.scrollLeft < max - 4);
+    }
+
+    el.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update);
+
+    el.addEventListener('wheel', function (e) {
+      var max = el.scrollWidth - el.clientWidth;
+      if (max <= 0 || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+      var next = el.scrollLeft + e.deltaY;
+      if (next < 0 || next > max) return;
+      el.scrollLeft = next;
+      e.preventDefault();
+    }, { passive: false });
+
+    el.addEventListener('pointerdown', function (e) {
+      if (e.pointerType === 'touch') return;
+      down = true; moved = false; startX = e.clientX; startLeft = el.scrollLeft;
+    });
+    window.addEventListener('pointermove', function (e) {
+      if (!down) return;
+      var dx = e.clientX - startX;
+      if (Math.abs(dx) > 4) moved = true;
+      if (moved) el.scrollLeft = startLeft - dx;
+    });
+    window.addEventListener('pointerup', function () { down = false; });
+    el.addEventListener('click', function (e) {
+      if (moved) { e.stopPropagation(); e.preventDefault(); moved = false; }
+    }, true);
+
+    update();
+    setTimeout(update, 300);
+  }
+
+  function run() {
+    document.querySelectorAll('.settings-tabs, .filter-row').forEach(setup);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run);
+  else run();
+  window.addEventListener('load', run);
+})();

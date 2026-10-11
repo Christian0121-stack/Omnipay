@@ -443,6 +443,10 @@
     box-shadow: 0 0 0 4px rgba(37,99,235,0.18);
   }
   .input-group input.error { border-color: var(--danger); box-shadow: 0 0 0 4px rgba(255,71,87,0.1); }
+  .match-hint { display: none; margin: 6px 0 4px; font-size: 12px; font-weight: 600; line-height: 1.4; }
+  .match-hint.show { display: block; }
+  .match-hint.match { color: var(--success); }
+  .match-hint.mismatch { color: var(--danger); }
   .input-wrapper { position: relative; }
   .input-wrapper input { padding-right: 52px; }
   .input-toggle {

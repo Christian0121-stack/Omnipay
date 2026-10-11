@@ -528,6 +528,10 @@ function showLoading(show, msg) {
 }
 
 function goTo(screenId) {
+  var activeScreen = document.querySelector('.screen.active');
+  var fromId = activeScreen ? activeScreen.id : '';
+  if (fromId === 'login' && screenId === 'register') clearLoginForm();
+  if (fromId === 'register' && screenId === 'login') resetRegisterForm();
   document.querySelectorAll('.screen').forEach(function(s){ s.classList.remove('active'); });
   var el = document.getElementById(screenId);
   if (el) el.classList.add('active');
@@ -1803,13 +1807,7 @@ async function finishWalletSetup() {
   delete pendingCopy._password;
   PENDING_USER = null;
 
-  ['regFirst','regLast','regUser','regPhone','regEmail','regPass','regPassConfirm','regPin'].forEach(function(id){
-    var el = document.getElementById(id);
-    if (el) el.value = '';
-  });
-  syncRegPhoneToCountry();
-  var terms = document.getElementById('regTerms');
-  if (terms) terms.checked = false;
+  resetRegisterForm();
 
   document.getElementById('bottomNav').style.display = 'flex';
   navTo('home');
@@ -1969,8 +1967,8 @@ function doLogout() {
   try { sessionStorage.removeItem('omnipay_session'); } catch(e) {}
   document.getElementById('bottomNav').style.display = 'none';
   goTo('login');
-  document.getElementById('loginUser').value = '';
-  document.getElementById('loginPass').value = '';
+  clearLoginForm();
+  resetRegisterForm();
   setFbStatus('', 'Connecting to Firebase…');
   showAlert('yellow','👋 Signed out successfully');
 }
@@ -1979,6 +1977,59 @@ function togglePass(id, btn) {
   var inp = document.getElementById(id);
   if (inp.type === 'password') { inp.type = 'text';     btn.textContent = '🙈'; }
   else                         { inp.type = 'password'; btn.textContent = '👁'; }
+}
+
+function hidePassField(id) {
+  var input = document.getElementById(id);
+  if (!input) return;
+  input.type = 'password';
+  var toggle = input.parentNode && input.parentNode.querySelector('.input-toggle');
+  if (toggle) toggle.textContent = '👁';
+}
+
+function updateRegPassMatch() {
+  var pass = document.getElementById('regPass');
+  var confirm = document.getElementById('regPassConfirm');
+  var hint = document.getElementById('regPassMatch');
+  if (!pass || !confirm || !hint) return;
+  if (!confirm.value) {
+    hint.className = 'match-hint';
+    hint.textContent = '';
+    return;
+  }
+  var matches = pass.value === confirm.value;
+  hint.className = 'match-hint show ' + (matches ? 'match' : 'mismatch');
+  hint.textContent = matches ? '✅ Passwords match' : '❌ Passwords do not match';
+}
+
+function clearLoginForm() {
+  ['loginUser', 'loginPass'].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) { el.value = ''; el.classList.remove('error'); }
+  });
+  hidePassField('loginPass');
+}
+
+function resetRegisterForm() {
+  ['regFirst','regLast','regUser','regPhone','regEmail','regPass','regPassConfirm','regPin'].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) { el.value = ''; el.classList.remove('error'); }
+  });
+  ['regPass','regPassConfirm','regPin'].forEach(function(id){ hidePassField(id); });
+  ['regCountry','regType'].forEach(function(id){
+    var sel = document.getElementById(id);
+    if (!sel) return;
+    var idx = 0;
+    for (var i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].defaultSelected) { idx = i; break; }
+    }
+    sel.selectedIndex = idx;
+  });
+  syncRegPhoneToCountry();
+  var terms = document.getElementById('regTerms');
+  if (terms) terms.checked = false;
+  updateRegPassMatch();
+  prevRegStep();
 }
 
 function fmtAmt(n) {

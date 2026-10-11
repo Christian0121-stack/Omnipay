@@ -364,8 +364,8 @@
       Continue to OmniPay →
     </button>
 
-    <div id="wsErrorBox" style="display:none; margin-top:16px; background:rgba(255,71,87,0.18); border:1px solid rgba(255,71,87,0.45); border-radius:14px; padding:14px 16px; width:100%;">
-       <div style="font-size:12px; font-weight:700; color:#FF6B7A; margin-bottom:4px;">⚠️ Setup Error</div>
+    <div id="wsErrorBox" style="display:none; margin-top:16px; background:rgba(239,68,68,0.18); border:1px solid rgba(239,68,68,0.45); border-radius:14px; padding:14px 16px; width:100%;">
+       <div style="font-size:12px; font-weight:700; color:#EF4444; margin-bottom:4px;">⚠️ Setup Error</div>
       <div id="wsErrorMsg" style="font-size:12px; color:rgba(255,255,255,0.8); line-height:1.6; font-weight:500;"></div>
       <div id="wsErrorCode" style="font-size:10px; color:rgba(255,255,255,0.4); margin-top:6px; font-family:'Courier New',monospace;"></div>
     </div>
@@ -440,10 +440,10 @@
             <div class="trust-score" id="trustScoreVal">45</div>
           </div>
           <div>
-            <div class="trust-tier badge-yellow" id="trustTierBadge" style="background:rgba(255,165,2,0.2);color:#FFA502;padding:6px 14px;border-radius:99px;font-size:12px;font-weight:700;">🟡 Yellow</div>
+            <div class="trust-tier badge-yellow" id="trustTierBadge" style="background:rgba(245,158,11,0.2);color:#F59E0B;padding:6px 14px;border-radius:99px;font-size:12px;font-weight:700;">🟡 Yellow</div>
           </div>
         </div>
-        <div class="trust-bar"><div class="trust-fill" id="trustFill" style="width:45%;background:linear-gradient(90deg,#FFA502,#FFD166);"></div></div>
+        <div class="trust-bar"><div class="trust-fill" id="trustFill" style="width:45%;background:linear-gradient(90deg,#F59E0B,#FBBF24);"></div></div>
         <div class="trust-stats">
           <div class="trust-stat-item">
             <div class="val" id="tsGoodTx">12</div>
@@ -769,7 +769,7 @@
             <span>OmniPay Wallet</span>
           </div>
           <div style="display:flex;align-items:center;gap:8px;">
-            <span id="omniWalletConnBadge" style="font-size:11px;font-weight:700;color:#2DE878;">● Connected</span>
+            <span id="omniWalletConnBadge" style="font-size:11px;font-weight:700;color:#10B981;">● Connected</span>
             <div class="freighter-badge">TESTNET</div>
           </div>
         </div>
@@ -800,10 +800,10 @@
             <div class="trust-score" id="profileTrustScore">45</div>
           </div>
           <div>
-            <div id="profileTrustTier" style="background:rgba(255,165,2,0.2);color:#FFA502;padding:6px 14px;border-radius:99px;font-size:12px;font-weight:700;">🟡 Level 2</div>
+            <div id="profileTrustTier" style="background:rgba(245,158,11,0.2);color:#F59E0B;padding:6px 14px;border-radius:99px;font-size:12px;font-weight:700;">🟡 Level 2</div>
           </div>
         </div>
-        <div class="trust-bar"><div class="trust-fill" id="profileTrustFill" style="width:45%;background:linear-gradient(90deg,#FFA502,#FFD166);"></div></div>
+        <div class="trust-bar"><div class="trust-fill" id="profileTrustFill" style="width:45%;background:linear-gradient(90deg,#F59E0B,#FBBF24);"></div></div>
         <div class="trust-stats mt-12">
           <div class="trust-stat-item"><div class="val">+10</div><div class="lbl">Sync Bonus</div></div>
           <div class="trust-stat-item"><div class="val">+5</div><div class="lbl">KYC Bonus</div></div>
@@ -825,13 +825,21 @@
     <div class="settings-panel active" id="spanel-summary">
       <div class="section">
         <div class="card" id="accountSummary"></div>
-        <button class="btn btn-danger btn-block mt-16" onclick="doLogout()">🚪 Sign Out</button>
+        <button class="btn btn-outline btn-block mt-16" type="button" onclick="showChangePasswordModal()">🔑 Change Password</button>
+        <button class="btn btn-danger btn-block mt-12" onclick="doLogout()">🚪 Sign Out</button>
       </div>
     </div>
 
     <div class="settings-panel" id="spanel-profile-edit">
       <div class="profile-edit-form">
-        <div style="font-size:13px; color:var(--text-muted); font-weight:500; padding:4px 0;">Update your personal information below.</div>
+        <div class="edit-lock" id="profileLockCard" data-state="locked">
+          <div class="edit-lock-icon" id="profileLockIcon">🔒</div>
+          <div class="edit-lock-info">
+            <h4 id="profileLockTitle">Profile is locked</h4>
+            <p id="profileLockText">Enter your password to edit your personal information.</p>
+          </div>
+          <button class="btn btn-primary btn-sm edit-lock-btn" id="profileLockBtn" type="button" onclick="onProfileLockBtn()">Unlock</button>
+        </div>
         <div class="grid-2">
           <div class="input-group">
             <label>First Name</label>
@@ -845,7 +853,7 @@
         <div class="input-group">
           <label>Mobile Number</label>
           <input type="tel" id="editPhone" placeholder="+63 9XX XXX XXXX" readonly>
-          <a href="#" style="display:inline-block;margin-top:8px;font-size:13px;color:var(--primary);font-weight:600;" onclick="event.preventDefault(); showChangePhoneModal()">Lost your SIM? Change number</a>
+          <a href="#" id="changeNumberLink" style="display:inline-block;margin-top:8px;font-size:13px;color:var(--primary);font-weight:600;" onclick="event.preventDefault(); if(!requireProfileUnlock()) return; showChangePhoneModal()">Lost your SIM? Change number</a>
         </div>
         <div class="input-group">
           <label>Email Address</label>
@@ -860,6 +868,17 @@
           </select>
         </div>
         <button class="btn btn-primary btn-block" id="saveProfileBtn" onclick="doSaveProfile()">💾 Save Profile</button>
+        <div class="profile-security">
+          <div class="section-title">Security</div>
+          <div class="settings-item" onclick="showChangePasswordModal()">
+            <div class="settings-icon">🔑</div>
+            <div class="settings-info">
+              <h4>Change Password</h4>
+              <p>Update your account password</p>
+            </div>
+            <span class="settings-arrow">›</span>
+          </div>
+        </div>
         <div style="height:8px;"></div>
       </div>
     </div>
@@ -894,7 +913,7 @@
     <div class="settings-panel" id="spanel-privacy">
       <div class="settings-list">
         <div class="settings-item privacy-row">
-          <div class="settings-icon" style="background:linear-gradient(135deg,#EAF1FF,#D6E4FF);">🪪</div>
+          <div class="settings-icon">🪪</div>
           <div class="settings-info">
             <h4>Show my full name in search</h4>
             <p>Off by default. Others see a masked name</p>
@@ -903,7 +922,7 @@
         </div>
 
         <div class="settings-item privacy-row" data-hide-dim>
-          <div class="settings-icon" style="background:linear-gradient(135deg,#E8FFF6,#C6F9E8);">🔤</div>
+          <div class="settings-icon">🔤</div>
           <div class="settings-info">
             <h4>Let others find me by name</h4>
             <p>Turn off to be found by username or number only</p>
@@ -912,7 +931,7 @@
         </div>
 
         <div class="settings-item privacy-row" data-hide-dim>
-          <div class="settings-icon" style="background:linear-gradient(135deg,#FFF3E0,#FFE0B2);">📱</div>
+          <div class="settings-icon">📱</div>
           <div class="settings-info">
             <h4>Let others find me by phone number</h4>
             <p>Turn off to be found by name or username only</p>
@@ -921,7 +940,7 @@
         </div>
 
         <div class="settings-item privacy-row">
-          <div class="settings-icon" style="background:linear-gradient(135deg,#F0E8FF,#DDD5FF);">🙈</div>
+          <div class="settings-icon">🙈</div>
           <div class="settings-info">
             <h4>Hide me from search</h4>
             <p>You won't appear anywhere, but can still receive via QR</p>
@@ -947,7 +966,7 @@
       <div class="settings-list">
         <div style="height:8px;"></div>
         <div class="settings-item" onclick="showAlert('yellow','⚙️ Notification settings opened!')">
-          <div class="settings-icon" style="background:linear-gradient(135deg,#EAF1FF,#D6E4FF);">🔔</div>
+          <div class="settings-icon">🔔</div>
           <div class="settings-info">
             <h4>Notifications</h4>
             <p>Sync alerts, fraud warnings, payments</p>
@@ -956,7 +975,7 @@
         </div>
 
         <div class="settings-item">
-          <div class="settings-icon" style="background:linear-gradient(135deg,#E8FFF6,#C6F9E8);">📴</div>
+          <div class="settings-icon">📴</div>
           <div class="settings-info">
             <h4>Offline Mode</h4>
             <p>Enable payments without internet</p>
@@ -965,7 +984,7 @@
         </div>
 
         <div class="settings-item">
-          <div class="settings-icon" style="background:linear-gradient(135deg,#FFF3E0,#FFE0B2);">🔁</div>
+          <div class="settings-icon">🔁</div>
           <div class="settings-info">
             <h4>Auto Sync</h4>
             <p>Sync on Wi-Fi reconnect</p>
@@ -974,7 +993,7 @@
         </div>
 
         <div class="settings-item" onclick="showChangePasswordModal()">
-          <div class="settings-icon" style="background:linear-gradient(135deg,#FFE8F0,#FFD0E0);">🔑</div>
+          <div class="settings-icon">🔑</div>
           <div class="settings-info">
             <h4>Password</h4>
             <p>Change your account password</p>
@@ -983,7 +1002,7 @@
         </div>
 
         <div class="settings-item" onclick="showBiometricModal()">
-          <div class="settings-icon" style="background:linear-gradient(135deg,#F0E8FF,#DDD5FF);">🔐</div>
+          <div class="settings-icon">🔐</div>
           <div class="settings-info">
             <h4>Biometric Auth</h4>
             <p>Face ID / Fingerprint unlock</p>
@@ -992,7 +1011,7 @@
         </div>
 
         <div class="settings-item" onclick="showStellarInfoModal()">
-          <div class="settings-icon" style="background:linear-gradient(135deg,#E0FAFF,#B8F5EC);">⭐</div>
+          <div class="settings-icon">⭐</div>
           <div class="settings-info">
             <h4>Stellar Account</h4>
             <p>View keys, Soroban contract</p>
@@ -1001,7 +1020,7 @@
         </div>
 
         <div class="settings-item" onclick="showWalletManagerModal()">
-          <div class="settings-icon" style="background:linear-gradient(135deg,#EDE9FF,#D5CCFF);">💼</div>
+          <div class="settings-icon">💼</div>
           <div class="settings-info">
             <h4>Stellar Wallets</h4>
             <p>Add, switch &amp; check wallet balances</p>
@@ -1010,7 +1029,7 @@
         </div>
 
         <div class="settings-item" onclick="showAlert('yellow','📊 KYC verification already complete!')">
-          <div class="settings-icon" style="background:linear-gradient(135deg,#E8F4FF,#C8E8FF);">🪪</div>
+          <div class="settings-icon">🪪</div>
           <div class="settings-info">
             <h4>KYC Verification</h4>
             <p>Identity verified · +5 trust pts</p>
@@ -1019,7 +1038,7 @@
         </div>
 
         <div class="settings-item" onclick="showAlert('yellow','📋 Transaction report generated!')">
-          <div class="settings-icon" style="background:linear-gradient(135deg,#FFF0F3,#FFD8E0);">📊</div>
+          <div class="settings-icon">📊</div>
           <div class="settings-info">
             <h4>Export Report</h4>
             <p>Download transaction CSV</p>
@@ -1028,7 +1047,7 @@
         </div>
 
         <div class="settings-item" onclick="showModal('helpModal')">
-          <div class="settings-icon" style="background:linear-gradient(135deg,#E8FFF6,#C6F9E8);">💬</div>
+          <div class="settings-icon">💬</div>
           <div class="settings-info">
             <h4>Help &amp; Support</h4>
             <p>Contact us, FAQs &amp; assistance</p>
@@ -1037,7 +1056,7 @@
         </div>
 
         <div class="settings-item" onclick="showModal('aboutModal')">
-          <div class="settings-icon" style="background:linear-gradient(135deg,#EAF1FF,#D6E4FF);">ℹ️</div>
+          <div class="settings-icon">ℹ️</div>
           <div class="settings-info">
             <h4>About OmniPay</h4>
             <p>Version, Terms &amp; Privacy Policy</p>
@@ -1046,7 +1065,7 @@
         </div>
 
         <div class="settings-item" onclick="doLogout()">
-          <div class="settings-icon" style="background:linear-gradient(135deg,#FFE8E8,#FFD0D0);">🚪</div>
+          <div class="settings-icon">🚪</div>
           <div class="settings-info">
             <h4>Sign Out</h4>
             <p>Logout from this device</p>
@@ -1062,13 +1081,13 @@
   <nav class="bottom-nav" id="bottomNav" style="display:none;">
     <div class="nav-item active" id="nav-home" onclick="navTo('home')">
       <div class="nav-icon">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="color:#8A8FA8"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--text-muted)"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
       </div>
       <span class="nav-label">Home</span>
     </div>
     <div class="nav-item" id="nav-history" onclick="navTo('history')">
       <div class="nav-icon">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="color:#8A8FA8"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--text-muted)"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
       </div>
       <span class="nav-label">History</span>
     </div>
@@ -1080,13 +1099,13 @@
     </div>
     <div class="nav-item" id="nav-vault" onclick="navTo('vault')">
       <div class="nav-icon">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="color:#8A8FA8"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 9h8M8 13h5M8 17h3"/><circle cx="17" cy="16" r="2" fill="currentColor" stroke="none"/></svg>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--text-muted)"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 9h8M8 13h5M8 17h3"/><circle cx="17" cy="16" r="2" fill="currentColor" stroke="none"/></svg>
       </div>
       <span class="nav-label">OmniCard</span>
     </div>
     <div class="nav-item" id="nav-profile" onclick="navTo('profile')">
       <div class="nav-icon">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="color:#8A8FA8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--text-muted)"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
       </div>
       <span class="nav-label">Settings</span>
     </div>
@@ -1387,7 +1406,7 @@
           <div style="font-size:13px;color:var(--text-muted);font-weight:600;margin-top:2px;" id="receiveEquivBig">≈ loading…</div>
         </div>
 
-        <div style="background:linear-gradient(135deg,var(--primary),var(--primary-dark));border-radius:var(--radius);padding:20px;text-align:center;margin-bottom:16px;box-shadow:0 8px 28px rgba(47,111,237,0.3);">
+        <div style="background:linear-gradient(135deg,var(--primary),var(--primary-dark));border-radius:var(--radius);padding:20px;text-align:center;margin-bottom:16px;box-shadow:0 8px 28px rgba(37,99,235,0.3);">
           <div style="background:#fff;border-radius:16px;padding:16px;display:inline-block;box-shadow:0 4px 16px rgba(0,0,0,0.18);">
             <div id="receiveQRContainer" style="position:relative;width:180px;height:180px;display:flex;align-items:center;justify-content:center;">
               <div style="color:#999;font-size:12px;">Generating QR…</div>
@@ -1470,7 +1489,7 @@
       <div style="font-size:64px; margin:16px 0;">🔐</div>
       <h3>Biometric Auth</h3>
       <p class="sub" style="text-align:center;">Touch the sensor or use Face ID to authenticate</p>
-      <div style="width:84px; height:84px; border-radius:50%; background:var(--primary-light); display:flex; align-items:center; justify-content:center; margin:22px auto; font-size:36px; animation:pulse 2s infinite; border:3px solid var(--primary); box-shadow:0 0 0 8px rgba(47,111,237,0.1);">👆</div>
+      <div style="width:84px; height:84px; border-radius:50%; background:var(--primary-light); display:flex; align-items:center; justify-content:center; margin:22px auto; font-size:36px; animation:pulse 2s infinite; border:3px solid var(--primary); box-shadow:0 0 0 8px rgba(37,99,235,0.1);">👆</div>
       <div style="font-size:13px; color:var(--text-muted); font-weight:500;">Waiting for fingerprint…</div>
       <button class="btn btn-ghost btn-block mt-20" onclick="closeModal('biometricModal'); showAlert('success','✅ Biometric verified!')">Simulate Verification</button>
       <button class="btn btn-outline btn-block mt-12" onclick="closeModal('biometricModal')">Cancel</button>
@@ -1499,6 +1518,23 @@
       <button class="btn btn-primary btn-block mt-16" onclick="saveContactEdit()">💾 Save</button>
       <button class="btn btn-danger btn-block mt-12" onclick="removeContactFromEdit()">🗑️ Remove contact</button>
       <button class="btn btn-ghost btn-block mt-12" onclick="closeModal('contactEditModal')">Cancel</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="profileUnlockModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <h3>🔒 Confirm your password</h3>
+      <p class="sub">For your security, enter your password to edit your profile.</p>
+      <div class="input-group">
+        <label>Password</label>
+        <div class="input-wrapper">
+          <input type="password" id="unlockPass" placeholder="Enter your password" autocomplete="current-password" onkeydown="if(event.key==='Enter'){event.preventDefault();doUnlockProfile();}" oninput="this.classList.remove('error')">
+          <button class="input-toggle" type="button" onclick="togglePass('unlockPass',this)">👁</button>
+        </div>
+      </div>
+      <button class="btn btn-primary btn-block mt-16" id="unlockSaveBtn" type="button" onclick="doUnlockProfile()">Unlock</button>
+      <button class="btn btn-ghost btn-block mt-12" type="button" onclick="closeModal('profileUnlockModal')">Cancel</button>
     </div>
   </div>
 

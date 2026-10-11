@@ -514,10 +514,10 @@ function initConnectivity() {
 }
 
 function getTrustTier(score) {
-  if (score <= 25) return { tier:'New',      pct:30, uses:1,  icon:'⚪', color:'#8A8FA8', bg:'rgba(138,143,168,0.2)' };
-  if (score <= 50) return { tier:'Building', pct:50, uses:2,  icon:'🟡', color:'#FFA502', bg:'rgba(255,165,2,0.2)' };
-  if (score <= 75) return { tier:'Trusted',  pct:65, uses:4,  icon:'🟠', color:'#FF7F00', bg:'rgba(255,127,0,0.2)' };
-  return               { tier:'VIP',      pct:80, uses:99, icon:'🟢', color:'#2ED573', bg:'rgba(46,213,115,0.2)' };
+  if (score <= 25) return { tier:'New',      pct:30, uses:1,  icon:'⚪', color:'#64748B', bg:'rgba(100,116,139,0.2)' };
+  if (score <= 50) return { tier:'Building', pct:50, uses:2,  icon:'🟡', color:'#F59E0B', bg:'rgba(245,158,11,0.2)' };
+  if (score <= 75) return { tier:'Trusted',  pct:65, uses:4,  icon:'🟠', color:'#D97706', bg:'rgba(217,119,6,0.2)' };
+  return               { tier:'VIP',      pct:80, uses:99, icon:'🟢', color:'#10B981', bg:'rgba(16,185,129,0.2)' };
 }
 
 function showLoading(show, msg) {
@@ -540,7 +540,7 @@ function goTo(screenId) {
 function navTo(screenId) {
   if (screenId !== 'pay') { try { stopCamera(); } catch(e) {} }
   goTo(screenId);
-  if (screenId !== 'profile') resetSummaryReveal();
+  if (screenId !== 'profile') { resetSummaryReveal(); lockProfileEdit(); }
   document.querySelectorAll('.nav-item').forEach(function(n){ n.classList.remove('active'); });
   var nav = document.getElementById('nav-' + screenId);
   if (nav) nav.classList.add('active');
@@ -561,6 +561,7 @@ function switchSettingsTab(tab, btn) {
   btn.classList.add('active');
   var panel = document.getElementById('spanel-' + tab);
   if (panel) panel.classList.add('active');
+  if (tab !== 'profile-edit') lockProfileEdit();
   if (tab === 'profile-edit') populateProfileEditForm();
   if (tab === 'privacy') loadPrivacySettings();
   if (tab === 'activity') loadActivity();
@@ -570,17 +571,17 @@ function switchSettingsTab(tab, btn) {
 var ACTIVITY = { alerts: [], busy: false };
 
 var ACTIVITY_META = {
-  'login':            { icon: '🔐', bg: 'linear-gradient(135deg,#E8FFF6,#C6F9E8)', title: 'Signed in' },
-  'new-device':       { icon: '📲', bg: 'linear-gradient(135deg,#FFF3E0,#FFE0B2)', title: 'New device signed in' },
-  'key-changed':      { icon: '🔑', bg: 'linear-gradient(135deg,#FFE9E9,#FFD0D0)', title: 'Wallet key changed' },
-  'password-changed': { icon: '🛡️', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)', title: 'Password changed' },
-  'profile-updated':  { icon: '✏️', bg: 'linear-gradient(135deg,#F0E8FF,#DDD5FF)', title: 'Profile updated' },
-  'phone-changed':    { icon: '📱', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)', title: 'Mobile number changed' },
-  'privacy-changed':  { icon: '🙈', bg: 'linear-gradient(135deg,#F0E8FF,#DDD5FF)', title: 'Privacy settings changed' },
-  'logout':           { icon: '🚪', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)', title: 'Signed out' },
-  'payment-sent':     { icon: '💸', bg: 'linear-gradient(135deg,#E8FFF6,#C6F9E8)', title: 'Payment sent' },
-  'payment-rejected': { icon: '🚫', bg: 'linear-gradient(135deg,#FFE9E9,#FFD0D0)', title: 'Payment rejected' },
-  'payment-pending':  { icon: '⏳', bg: 'linear-gradient(135deg,#FFF3E0,#FFE0B2)', title: 'Payment in progress' }
+  'login':            { icon: '🔐', bg: 'var(--icon-bg)', title: 'Signed in' },
+  'new-device':       { icon: '📲', bg: 'var(--icon-bg)', title: 'New device signed in' },
+  'key-changed':      { icon: '🔑', bg: 'var(--icon-bg)', title: 'Wallet key changed' },
+  'password-changed': { icon: '🛡️', bg: 'var(--icon-bg)', title: 'Password changed' },
+  'profile-updated':  { icon: '✏️', bg: 'var(--icon-bg)', title: 'Profile updated' },
+  'phone-changed':    { icon: '📱', bg: 'var(--icon-bg)', title: 'Mobile number changed' },
+  'privacy-changed':  { icon: '🙈', bg: 'var(--icon-bg)', title: 'Privacy settings changed' },
+  'logout':           { icon: '🚪', bg: 'var(--icon-bg)', title: 'Signed out' },
+  'payment-sent':     { icon: '💸', bg: 'var(--icon-bg)', title: 'Payment sent' },
+  'payment-rejected': { icon: '🚫', bg: 'var(--icon-bg)', title: 'Payment rejected' },
+  'payment-pending':  { icon: '⏳', bg: 'var(--icon-bg)', title: 'Payment in progress' }
 };
 
 var ACTIVITY_REASONS = {
@@ -723,7 +724,7 @@ function renderActivity(data) {
   if (!devices.length) devBox.appendChild(activityEl('p', 'activity-empty', 'No devices recorded yet.'));
   devices.forEach(function (d) {
     devBox.appendChild(activityRow(
-      { icon: d.thisDevice ? '📱' : '💻', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)' },
+      { icon: d.thisDevice ? '📱' : '💻', bg: 'var(--icon-bg)' },
       d.label,
       ['Last active ' + formatActivityTime(d.lastSeen), 'First seen ' + formatActivityTime(d.firstSeen)],
       d.thisDevice ? 'This device' : '',
@@ -847,9 +848,124 @@ function populateProfileEditForm() {
   document.getElementById('editEmail').value = STATE.user.email || '';
   var typeEl = document.getElementById('editType');
   if (typeEl) typeEl.value = STATE.user.type || 'personal';
+  applyProfileLock();
+}
+
+var PROFILE_LOCK = { unlocked: false, timer: null, busy: false };
+var PROFILE_LOCK_MS = 5 * 60 * 1000;
+
+function applyProfileLock() {
+  var open = PROFILE_LOCK.unlocked;
+  ['editFirst', 'editLast', 'editType'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.disabled = !open;
+  });
+  var saveBtn = document.getElementById('saveProfileBtn');
+  if (saveBtn) saveBtn.disabled = !open;
+  var link = document.getElementById('changeNumberLink');
+  if (link) { link.style.opacity = open ? '1' : '0.5'; }
+  var card = document.getElementById('profileLockCard');
+  if (card) card.setAttribute('data-state', open ? 'unlocked' : 'locked');
+  var icon = document.getElementById('profileLockIcon');
+  if (icon) icon.textContent = open ? '🔓' : '🔒';
+  var title = document.getElementById('profileLockTitle');
+  if (title) title.textContent = open ? 'Editing unlocked' : 'Profile is locked';
+  var text = document.getElementById('profileLockText');
+  if (text) text.textContent = open
+    ? 'You can now update your details. It locks again after saving or after 5 minutes.'
+    : 'Enter your password to edit your personal information.';
+  var btn = document.getElementById('profileLockBtn');
+  if (btn) {
+    btn.textContent = open ? 'Lock' : 'Unlock';
+    btn.className = 'btn btn-sm edit-lock-btn ' + (open ? 'btn-ghost' : 'btn-primary');
+  }
+}
+
+function lockProfileEdit() {
+  if (PROFILE_LOCK.timer) { clearTimeout(PROFILE_LOCK.timer); PROFILE_LOCK.timer = null; }
+  PROFILE_LOCK.unlocked = false;
+  applyProfileLock();
+}
+
+function onProfileLockBtn() {
+  if (PROFILE_LOCK.unlocked) { lockProfileEdit(); showAlert('yellow', '🔒 Profile locked'); return; }
+  showProfileUnlockModal();
+}
+
+function requireProfileUnlock() {
+  if (PROFILE_LOCK.unlocked) return true;
+  showProfileUnlockModal();
+  return false;
+}
+
+function showProfileUnlockModal() {
+  var input = document.getElementById('unlockPass');
+  input.value = '';
+  input.type = 'password';
+  input.classList.remove('error');
+  showModal('profileUnlockModal');
+  setTimeout(function() { try { input.focus(); } catch (e) {} }, 120);
+}
+
+async function verifyAccountPassword(password) {
+  if (navigator.onLine && auth && auth.currentUser && auth.currentUser.email) {
+    try {
+      var credential = firebase.auth.EmailAuthProvider.credential(auth.currentUser.email, password);
+      await auth.currentUser.reauthenticateWithCredential(credential);
+      return 'ok';
+    } catch (e) {
+      if (/wrong-password|invalid-credential|invalid-login-credentials/i.test(e.code || '')) return 'wrong';
+      if (/too-many-requests/i.test(e.code || '')) return 'limited';
+      if (!isNetworkFailure(e)) return 'error';
+    }
+  }
+  var vault = readOfflineVaults()[STATE._vaultKey];
+  if (vault && vault.walletSecretEncrypted) {
+    try {
+      await decryptWalletSecret(vault.walletSecretEncrypted, vault.walletSecretSalt, vault.walletSecretIv, password);
+      return 'ok';
+    } catch (e) { return 'wrong'; }
+  }
+  return 'error';
+}
+
+async function doUnlockProfile() {
+  if (PROFILE_LOCK.busy) return;
+  var input = document.getElementById('unlockPass');
+  var password = input.value;
+  if (!password) { input.classList.add('error'); showAlert('red', '⚠️ Enter your password'); return; }
+
+  var btn = document.getElementById('unlockSaveBtn');
+  PROFILE_LOCK.busy = true;
+  if (btn) { btn.disabled = true; btn.textContent = 'Verifying…'; }
+  var result = await verifyAccountPassword(password);
+  PROFILE_LOCK.busy = false;
+  if (btn) { btn.disabled = false; btn.textContent = 'Unlock'; }
+  input.value = '';
+
+  if (result !== 'ok') {
+    input.classList.add('error');
+    showAlert('red', result === 'wrong' ? '❌ Incorrect password'
+      : result === 'limited' ? '⏳ Too many attempts. Try again later.'
+      : '❌ Could not verify your password. Try again.');
+    return;
+  }
+
+  closeModal('profileUnlockModal');
+  PROFILE_LOCK.unlocked = true;
+  if (PROFILE_LOCK.timer) clearTimeout(PROFILE_LOCK.timer);
+  PROFILE_LOCK.timer = setTimeout(function() {
+    lockProfileEdit();
+    showAlert('yellow', '🔒 Profile locked after inactivity');
+  }, PROFILE_LOCK_MS);
+  applyProfileLock();
+  showAlert('success', '🔓 Profile unlocked');
+  var first = document.getElementById('editFirst');
+  if (first) { try { first.focus(); } catch (e) {} }
 }
 
 async function doSaveProfile() {
+  if (!requireProfileUnlock()) return;
   var first = document.getElementById('editFirst').value.trim();
   var last  = document.getElementById('editLast').value.trim();
   var phone = document.getElementById('editPhone').value.trim();
@@ -888,6 +1004,7 @@ async function doSaveProfile() {
 
   showLoading(false);
   if (btn) { btn.disabled = false; btn.textContent = '💾 Save Profile'; }
+  lockProfileEdit();
   renderProfile();
   showAlert('success','✅ Profile updated successfully!');
   activityRequest('POST', '/api/activity/event', { type: 'profile-updated', deviceId: getActivityDeviceId() }).catch(function(){});
@@ -1963,6 +2080,7 @@ function doLogout() {
   var activityTab = document.getElementById('activityTabBtn');
   if (activityTab) activityTab.classList.remove('has-alert');
   if (auth) auth.signOut().catch(function(){});
+  lockProfileEdit();
   STATE.isLoggedIn = false;
   STATE.uid        = null;
   STATE._sendPicked = null;
@@ -2160,7 +2278,7 @@ function renderHome() {
 
 function renderTxItem(tx) {
   var isCredit  = tx.type === 'receive';
-  var iconBg    = isCredit ? 'rgba(46,213,115,0.1)' : tx.status==='failed' ? 'rgba(255,71,87,0.1)' : tx.mode==='offline' ? 'rgba(47,111,237,0.1)' : 'rgba(255,165,2,0.1)';
+  var iconBg    = 'var(--icon-bg)';
   var statusText= tx.status==='synced'?'✅ Synced':tx.status==='pending'?'⏳ Pending Sync':tx.status==='offline'?'📴 Offline':'❌ Failed';
   var hashLine = '';
   if (tx.txHash) {
@@ -3994,7 +4112,7 @@ function updateFreighterUI() {
   var heroXLMBal     = document.getElementById('heroXLMBal');
 
   if (FREIGHTER.isConnected) {
-    if (connBadge) { connBadge.textContent = '● Connected'; connBadge.style.color = '#2ED573'; }
+    if (connBadge) { connBadge.textContent = '● Connected'; connBadge.style.color = '#10B981'; }
 
     var balStr = FREIGHTER.xlmBalance !== null
       ? FREIGHTER.xlmBalance.toLocaleString('en', { minimumFractionDigits: 4, maximumFractionDigits: 7 }) + ' XLM'
@@ -4237,7 +4355,7 @@ function renderXLMTxResult(success, hash, amount, dest, errorMsg) {
   if (success) {
     var safeHash = /^[A-Fa-f0-9]{16,128}$/.test(String(hash || '')) ? String(hash) : '';
     resultEl.style.background   = 'linear-gradient(135deg,#D4F7EC,#C6F9E8)';
-    resultEl.style.borderColor  = 'rgba(46,213,115,0.4)';
+    resultEl.style.borderColor  = 'rgba(16,185,129,0.4)';
     if (iconEl)  iconEl.textContent  = '✅';
     if (titleEl) { titleEl.textContent = 'Transaction Successful!'; titleEl.style.color = 'var(--success)'; }
     if (hashEl) {
@@ -4252,7 +4370,7 @@ function renderXLMTxResult(success, hash, amount, dest, errorMsg) {
 
   } else {
     resultEl.style.background  = 'linear-gradient(135deg,#FFE0E3,#FFDDE0)';
-    resultEl.style.borderColor = 'rgba(255,71,87,0.4)';
+    resultEl.style.borderColor = 'rgba(239,68,68,0.4)';
     if (iconEl)  iconEl.textContent = '❌';
     if (titleEl) { titleEl.textContent = 'Transaction Failed'; titleEl.style.color = 'var(--danger)'; }
     if (hashEl)  hashEl.style.display = 'none';

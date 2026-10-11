@@ -491,9 +491,9 @@
     </div>
 
     <div class="pay-tabs">
-      <button class="pay-tab active" onclick="switchPayTab('scan',this)">📷 Scan QR</button>
-      <button class="pay-tab" onclick="switchPayTab('send',this)">💸 Send</button>
-      <button class="pay-tab" onclick="switchPayTab('sms',this)">📶 SMS Pay</button>
+      <button class="pay-tab active" data-pay-tab="scan" onclick="switchPayTab('scan',this)">📷 Scan QR</button>
+      <button class="pay-tab" data-pay-tab="send" onclick="switchPayTab('send',this)">💸 Send</button>
+      <button class="pay-tab" data-pay-tab="sms" onclick="switchPayTab('sms',this)">📶 SMS Pay</button>
     </div>
 
     <div class="pay-panel active" id="panel-scan">

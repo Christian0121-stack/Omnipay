@@ -439,6 +439,23 @@ function renderConnectivityUI() {
   }
   if (payLabel)    payLabel.textContent = online ? 'Online Mode · Instant Settlement' : 'Offline Mode · Pay by SMS';
   if (heroPending) heroPending.textContent = online ? 'Online' : 'Offline';
+  applyPayTabAvailability();
+}
+
+function applyPayTabAvailability() {
+  var online = isEffectivelyOnline();
+  var smsTab = null, blocked = false;
+  document.querySelectorAll('.pay-tab[data-pay-tab]').forEach(function(t) {
+    if (t.getAttribute('data-pay-tab') === 'sms') { smsTab = t; return; }
+    t.disabled = !online;
+    t.setAttribute('aria-disabled', online ? 'false' : 'true');
+    t.title = online ? '' : 'Unavailable offline. Use SMS Pay.';
+    if (!online && t.classList.contains('active')) blocked = true;
+  });
+  if (!online && smsTab && blocked) {
+    try { stopCamera(); } catch (e) {}
+    switchPayTab('sms', smsTab);
+  }
 }
 
 function applyConnectivity(announce) {
@@ -3656,6 +3673,10 @@ function toggleOfflineMode() {
 }
 
 function switchPayTab(tab, el) {
+  if ((tab === 'scan' || tab === 'send') && !isEffectivelyOnline()) {
+    showAlert('orange', '📴 You are offline. Only SMS Pay is available.');
+    return;
+  }
   document.querySelectorAll('.pay-tab').forEach(function(t){ t.classList.remove('active'); });
   document.querySelectorAll('.pay-panel').forEach(function(p){ p.classList.remove('active'); });
   el.classList.add('active');

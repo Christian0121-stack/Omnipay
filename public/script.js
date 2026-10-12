@@ -2824,10 +2824,30 @@ function filterTx(filter, el) {
   renderHistory(filter);
 }
 
-var SUMMARY_REVEAL = { name: false, email: false, phone: false };
+var SUMMARY_REVEAL = { name: false, email: false, phone: false, balance: false };
 
 function maskDetail(value) {
   return String(value).replace(/[^\s@.+\-()]/g, '*');
+}
+
+function maskPhone(value) {
+  var text  = String(value);
+  var total = (text.match(/\d/g) || []).length;
+  var seen  = 0;
+  return text.replace(/\d/g, function(d) {
+    seen += 1;
+    return seen > total - 2 ? d : '*';
+  });
+}
+
+function maskEmail(value) {
+  var text = String(value);
+  var at   = text.lastIndexOf('@');
+  if (at < 1) return maskDetail(text);
+  var local  = text.slice(0, at);
+  var domain = text.slice(at);
+  if (local.length <= 3) return local.charAt(0) + local.slice(1).replace(/./g, '*') + domain;
+  return local.charAt(0) + local.slice(1, -2).replace(/./g, '*') + local.slice(-2) + domain;
 }
 
 function maskName(value) {
@@ -2838,6 +2858,16 @@ function maskName(value) {
 
 function summaryMaskRow(label, field, style) {
   return '<div class="info-row"><span class="info-label">' + label + '</span><span class="info-val info-val-mask"' + (style ? ' style="' + style + '"' : '') + '><span class="mask-text" data-mask-text="' + field + '"></span><button type="button" class="mask-toggle" data-mask-btn="' + field + '" onclick="toggleSummaryField(\'' + field + '\')"></button></span></div>';
+}
+
+function summaryBalanceRow(label, id) {
+  return '<div class="info-row"><span class="info-label">' + label + '</span><span class="info-val info-val-mask"><span class="mask-text" id="' + id + '" data-bal-real=""></span><button type="button" class="mask-toggle" data-mask-btn="balance" onclick="toggleSummaryField(\'balance\')"></button></span></div>';
+}
+
+function setSummaryBalance(el, text) {
+  if (!el) return;
+  el.setAttribute('data-bal-real', text);
+  el.textContent = SUMMARY_REVEAL.balance ? text : maskBalanceText(text);
 }
 
 function setMaskText(el, field, text) {
@@ -2858,7 +2888,7 @@ function applySummaryMask() {
     var value = String((STATE.user && STATE.user[field]) || '');
     var shown = SUMMARY_REVEAL[field];
     document.querySelectorAll('[data-mask-text="' + field + '"]').forEach(function(el){
-      setMaskText(el, field, value ? (shown ? value : (field === 'name' ? maskName(value) : maskDetail(value))) : (el.getAttribute('data-mask-empty') || '—'));
+      setMaskText(el, field, value ? (shown ? value : (field === 'name' ? maskName(value) : field === 'email' ? maskEmail(value) : field === 'phone' ? maskPhone(value) : maskDetail(value))) : (el.getAttribute('data-mask-empty') || '—'));
     });
     document.querySelectorAll('[data-mask-btn="' + field + '"]').forEach(function(btn){
       btn.style.display = value ? '' : 'none';
@@ -2866,6 +2896,20 @@ function applySummaryMask() {
       btn.setAttribute('aria-label', (shown ? 'Hide ' : 'Show ') + labels[field]);
       btn.setAttribute('aria-pressed', shown ? 'true' : 'false');
     });
+  });
+  applyBalanceMask();
+}
+
+function applyBalanceMask() {
+  var shown = SUMMARY_REVEAL.balance;
+  document.querySelectorAll('[data-bal-real]').forEach(function(el) {
+    var real = el.getAttribute('data-bal-real') || '';
+    el.textContent = shown ? real : maskBalanceText(real);
+  });
+  document.querySelectorAll('[data-mask-btn="balance"]').forEach(function(btn) {
+    btn.textContent = shown ? '🙈' : '👁';
+    btn.setAttribute('aria-label', shown ? 'Hide balance' : 'Show balance');
+    btn.setAttribute('aria-pressed', shown ? 'true' : 'false');
   });
 }
 
@@ -2875,10 +2919,11 @@ function toggleSummaryField(field) {
 }
 
 function resetSummaryReveal() {
-  if (!SUMMARY_REVEAL.name && !SUMMARY_REVEAL.email && !SUMMARY_REVEAL.phone) return;
+  if (!SUMMARY_REVEAL.name && !SUMMARY_REVEAL.email && !SUMMARY_REVEAL.phone && !SUMMARY_REVEAL.balance) return;
   SUMMARY_REVEAL.name = false;
   SUMMARY_REVEAL.email = false;
   SUMMARY_REVEAL.phone = false;
+  SUMMARY_REVEAL.balance = false;
   applySummaryMask();
 }
 
@@ -2900,9 +2945,9 @@ function updateSummaryTotalBalance() {
   var cfg = _getCountryConfig(STATE.user && STATE.user.country);
   if (XLM_RATE_CACHE.rate !== null && XLM_RATE_CACHE.cur === cfg.cur) {
     var decimals = (cfg.cur === 'jpy' || cfg.cur === 'krw' || cfg.cur === 'vnd' || cfg.cur === 'idr') ? 0 : 2;
-    el.textContent = '\u2248 ' + cfg.sym + (xlmTotal * XLM_RATE_CACHE.rate).toLocaleString('en', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+    setSummaryBalance(el, '\u2248 ' + cfg.sym + (xlmTotal * XLM_RATE_CACHE.rate).toLocaleString('en', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }));
   } else {
-    el.textContent = xlmTotal.toLocaleString('en', { minimumFractionDigits: 4, maximumFractionDigits: 4 }) + ' XLM';
+    setSummaryBalance(el, xlmTotal.toLocaleString('en', { minimumFractionDigits: 4, maximumFractionDigits: 4 }) + ' XLM');
   }
 }
 
@@ -2955,11 +3000,12 @@ function renderProfile() {
     '<div class="info-row"><span class="info-label">Total Transactions</span><span class="info-val">'+totalTx+'</span></div>'+
     '<div class="info-row"><span class="info-label">Synced</span><span class="info-val" style="color:var(--success);">'+synced+'</span></div>'+
     '<div class="info-row"><span class="info-label">Pending Sync</span><span class="info-val" style="color:var(--warning);">'+pending+'</span></div>'+
-    '<div class="info-row"><span class="info-label">Total Balance</span><span class="info-val" id="summaryTotalBalance"></span></div>'+
+    summaryBalanceRow('Total Balance','summaryTotalBalance')+
     '<div class="info-row"><span class="info-label">Offline Vault</span><span class="info-val">'+fmtAmt(STATE.vaultLocked)+'</span></div>'+
-    '<div class="info-row"><span class="info-label">XLM Balance</span><span class="info-val">'+STATE.wallet.xlmBalance.toLocaleString('en')+'</span></div>'+
+    summaryBalanceRow('XLM Balance','summaryXlmBalance')+
     '<div class="info-row"><span class="info-label">Account Type</span><span class="info-val" style="text-transform:capitalize;">'+safeText(STATE.user.type||'personal')+'</span></div>'+
     '<div class="info-row"><span class="info-label">Member Since</span><span class="info-val">'+safeText(formatMemberSince())+'</span></div>';
+  setSummaryBalance(document.getElementById('summaryXlmBalance'), STATE.wallet.xlmBalance.toLocaleString('en'));
   applySummaryMask();
   updateSummaryTotalBalance();
   if (navigator.onLine !== false && (XLM_RATE_CACHE.rate === null || Date.now() - XLM_RATE_CACHE.at > 60000)) {
@@ -3477,6 +3523,14 @@ async function doSignAndPrepareSms() {
   }
   STATE._smsConfirmed = false;
 
+  var smsDraft = {
+    recipient: document.getElementById('smsRecipient').value,
+    amount:    document.getElementById('smsAmount').value,
+    pin:       document.getElementById('smsPin').value,
+    picked:    STATE._smsPicked
+  };
+  clearSmsForm();
+
   var btn = document.querySelector('[onclick="doSignAndPrepareSms()"]');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Signing…'; }
 
@@ -3503,10 +3557,10 @@ async function doSignAndPrepareSms() {
     var display = document.getElementById('smsComposedMessage');
     if (display) display.textContent = message;
     if (box) box.style.display = 'block';
-    clearSmsForm();
 
     showAlert('green','✅ Payment signed. Review and send the SMS below.');
   } catch (err) {
+    restoreSmsForm(smsDraft);
     showAlert('red','❌ Could not sign payment: ' + (err && err.message ? err.message : 'unknown error'));
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '🔏 Sign & Prepare SMS'; }
@@ -3523,6 +3577,18 @@ function clearSmsForm() {
   RECIPIENT_SEARCH.seq.sms = (RECIPIENT_SEARCH.seq.sms || 0) + 1;
   hideRecipientResults('smsRecipientResults');
   STATE._smsPicked = null;
+  refreshSaveButtons();
+}
+
+function restoreSmsForm(draft) {
+  if (!draft) return;
+  var recipient = document.getElementById('smsRecipient');
+  var amount    = document.getElementById('smsAmount');
+  var pin       = document.getElementById('smsPin');
+  if (recipient) recipient.value = draft.recipient || '';
+  if (amount)    amount.value    = draft.amount || '';
+  if (pin)       pin.value       = draft.pin || '';
+  STATE._smsPicked = draft.picked || null;
   refreshSaveButtons();
 }
 

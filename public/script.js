@@ -558,6 +558,7 @@ function navTo(screenId) {
   if (screenId !== 'pay') { try { stopCamera(); } catch(e) {} }
   goTo(screenId);
   if (screenId !== 'profile') { resetSummaryReveal(); lockProfileEdit(); resetSettingsTab(); }
+  if (screenId !== 'home') resetHomeBalance();
   document.querySelectorAll('.nav-item').forEach(function(n){ n.classList.remove('active'); });
   var nav = document.getElementById('nav-' + screenId);
   if (nav) nav.classList.add('active');
@@ -2177,6 +2178,7 @@ function doLogout() {
   if (auth) auth.signOut().catch(function(){});
   lockProfileEdit();
   resetSettingsTab();
+  resetHomeBalance();
   STATE.isLoggedIn = false;
   STATE.uid        = null;
   STATE._sendPicked = null;
@@ -5994,4 +5996,62 @@ function useContact(username) {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run);
   else run();
   window.addEventListener('load', run);
+})();
+
+var HOME_BALANCE = { visible: false, ready: false };
+
+function maskBalanceText(text) {
+  return String(text).replace(/\d[\d.,]*/g, '****');
+}
+
+function syncBalanceEl(el) {
+  var current = el.textContent;
+  if (current === el._shown) return;
+  el._real = current;
+  var shown = HOME_BALANCE.visible ? current : maskBalanceText(current);
+  el._shown = shown;
+  if (el.textContent !== shown) el.textContent = shown;
+}
+
+function renderHomeBalanceMask() {
+  document.querySelectorAll('[data-bal-mask]').forEach(function(el) {
+    if (typeof el._real !== 'string') el._real = el.textContent;
+    var shown = HOME_BALANCE.visible ? el._real : maskBalanceText(el._real);
+    el._shown = shown;
+    if (el.textContent !== shown) el.textContent = shown;
+  });
+  var btn = document.getElementById('balanceToggleBtn');
+  if (btn) {
+    btn.textContent = HOME_BALANCE.visible ? '🙈' : '👁';
+    btn.setAttribute('aria-label', HOME_BALANCE.visible ? 'Hide balance' : 'Show balance');
+    btn.setAttribute('aria-pressed', HOME_BALANCE.visible ? 'true' : 'false');
+  }
+}
+
+function toggleHomeBalance() {
+  HOME_BALANCE.visible = !HOME_BALANCE.visible;
+  renderHomeBalanceMask();
+}
+
+function resetHomeBalance() {
+  if (!HOME_BALANCE.visible) return;
+  HOME_BALANCE.visible = false;
+  renderHomeBalanceMask();
+}
+
+(function initHomeBalanceMask() {
+  function run() {
+    if (HOME_BALANCE.ready) return;
+    var els = document.querySelectorAll('[data-bal-mask]');
+    if (!els.length) return;
+    HOME_BALANCE.ready = true;
+    els.forEach(function(el) {
+      el._real = el.textContent;
+      new MutationObserver(function() { syncBalanceEl(el); })
+        .observe(el, { childList: true, characterData: true, subtree: true });
+    });
+    renderHomeBalanceMask();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run);
+  else run();
 })();

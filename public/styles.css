@@ -2842,3 +2842,4 @@
 #profileWalletKey:hover { background: rgba(255,255,255,0.08); }
 #profileWalletKey[data-short="true"] { display: flex; align-items: center; justify-content: space-between; gap: 8px; word-break: normal; letter-spacing: 0.4px; }
 #profileWalletKey[data-short="true"]::after { content: "Tap to show full"; font-family: inherit; font-size: 9px; letter-spacing: 0.3px; opacity: 0.55; white-space: nowrap; }
+.hero-balance-label .mask-toggle { vertical-align: middle; margin-left: 6px; }

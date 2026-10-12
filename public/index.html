@@ -378,10 +378,10 @@
       <div class="hero-greeting">Good day,</div>
       <div class="hero-name" id="heroName">Welcome 👋</div>
       <div id="connectStatus" class="status-badge online"><span class="status-dot online"></span>Online · Stellar Testnet</div>
-      <div class="hero-balance-label">XLM Balance</div>
-      <div class="hero-balance"><span id="heroBalance">10,000.0000</span><span style="font-size:22px;font-weight:600;opacity:0.7;margin-left:4px;"> XLM</span></div>
+      <div class="hero-balance-label">XLM Balance<button type="button" class="mask-toggle mask-toggle-hero" id="balanceToggleBtn" onclick="toggleHomeBalance()" aria-label="Show balance" aria-pressed="false">👁</button></div>
+      <div class="hero-balance"><span id="heroBalance" data-bal-mask>10,000.0000</span><span style="font-size:22px;font-weight:600;opacity:0.7;margin-left:4px;"> XLM</span></div>
       <div id="heroConvRow" class="hero-conv-row">
-        <span id="heroConvText">Loading rate...</span>
+        <span id="heroConvText" data-bal-mask>Loading rate...</span>
       </div>
       <div class="hero-demo-badge" role="note">
         <span class="hero-demo-dot" aria-hidden="true"></span>
@@ -402,7 +402,7 @@
         </div>
       </div>
       <div class="hero-xlm-chip" id="heroXLMChip" style="display:none;">
-        ⭐ <span id="heroXLMBal">0.0000 XLM</span> <span>· Freighter Live</span>
+        ⭐ <span id="heroXLMBal" data-bal-mask>0.0000 XLM</span> <span>· Freighter Live</span>
       </div>
     </div>
 

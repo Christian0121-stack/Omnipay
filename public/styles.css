@@ -2838,6 +2838,26 @@
 
 .pay-tab:disabled { opacity: 0.45; cursor: not-allowed; filter: none !important; transform: none; }
 
+.pay-offline-hint {
+  display: none;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 12px 24px 0;
+  padding: 11px 14px;
+  border-radius: 14px;
+  background: rgba(245,158,11,0.12);
+  border: 1px solid rgba(245,158,11,0.35);
+  color: #B45309;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.pay-offline-hint.show { display: flex; }
+#app.dark .pay-offline-hint { background: rgba(245,158,11,0.16); color: #FBBF24; }
+@media (max-width: 480px) {
+  .pay-offline-hint { margin-left: 20px; margin-right: 20px; }
+}
+
 #profileWalletKey { cursor: pointer; transition: background 0.2s ease; }
 #profileWalletKey:hover { background: rgba(255,255,255,0.08); }
 #profileWalletKey[data-short="true"] { display: flex; align-items: center; justify-content: space-between; gap: 8px; word-break: normal; letter-spacing: 0.4px; }

@@ -444,17 +444,22 @@ function renderConnectivityUI() {
 
 function applyPayTabAvailability() {
   var online = isEffectivelyOnline();
-  var smsTab = null, blocked = false;
+  var smsTab = null;
   document.querySelectorAll('.pay-tab[data-pay-tab]').forEach(function(t) {
     if (t.getAttribute('data-pay-tab') === 'sms') { smsTab = t; return; }
     t.disabled = !online;
     t.setAttribute('aria-disabled', online ? 'false' : 'true');
     t.title = online ? '' : 'Unavailable offline. Use SMS Pay.';
-    if (!online && t.classList.contains('active')) blocked = true;
   });
-  if (!online && smsTab && blocked) {
-    try { stopCamera(); } catch (e) {}
-    switchPayTab('sms', smsTab);
+  var hint = document.getElementById('payOfflineHint');
+  if (hint) hint.classList.toggle('show', !online);
+  if (!online && smsTab) {
+    var smsPanel = document.getElementById('panel-sms');
+    var smsReady = smsTab.classList.contains('active') && smsPanel && smsPanel.classList.contains('active');
+    if (!smsReady) {
+      try { stopCamera(); } catch (e) {}
+      switchPayTab('sms', smsTab);
+    }
   }
 }
 
@@ -5025,13 +5030,9 @@ function restoreSession() {
 function quickSend() {
   navTo('pay');
   setTimeout(function(){
-    var tabs = document.querySelectorAll('.pay-tab');
-    for (var i = 0; i < tabs.length; i++) {
-      if (tabs[i].textContent.trim().indexOf('Send') !== -1) {
-        switchPayTab('send', tabs[i]);
-        break;
-      }
-    }
+    var want = isEffectivelyOnline() ? 'send' : 'sms';
+    var tab = document.querySelector('.pay-tab[data-pay-tab="' + want + '"]');
+    if (tab) switchPayTab(want, tab);
   }, 60);
 }
 
@@ -6031,7 +6032,7 @@ function removeContactFromEdit() {
 function useContact(username) {
   var c = findContact(username);
   if (!c) return;
-  var useSms = !navigator.onLine || STATE.offlineMode;
+  var useSms = !navigator.onLine || !isEffectivelyOnline() || STATE.offlineMode;
   if (!useSms && !c.walletPublic) useSms = true;
   navTo('pay');
   var want = useSms ? 'SMS Pay' : 'Send';

@@ -496,6 +496,11 @@
       <button class="pay-tab" data-pay-tab="sms" onclick="switchPayTab('sms',this)">📶 SMS Pay</button>
     </div>
 
+    <div class="pay-offline-hint" id="payOfflineHint" role="status" aria-live="polite">
+      <span aria-hidden="true">📴</span>
+      <span>You're offline. Scan QR and Send are unavailable, so SMS Pay is selected for you.</span>
+    </div>
+
     <div class="pay-panel active" id="panel-scan">
       <div style="text-align:center;">
         <div id="scanPlaceholder" style="position:relative;display:flex;align-items:center;justify-content:center;border-radius:20px;overflow:hidden;background:linear-gradient(135deg,var(--primary-light),var(--accent-light));border:2px dashed var(--primary);min-height:220px;margin-bottom:12px;">

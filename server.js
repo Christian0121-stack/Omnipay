@@ -22,6 +22,12 @@ const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { getAuth } = require('firebase-admin/auth');
 const StellarSdk = require('stellar-sdk');
+let nodemailer = null;
+try {
+  nodemailer = require('nodemailer');
+} catch (_) {
+  nodemailer = null;
+}
 
 const COLOR_ENABLED = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
 const paint = (code, text) => (COLOR_ENABLED ? `\x1b[${code}m${text}\x1b[0m` : text);
@@ -80,6 +86,25 @@ if (SETTLEMENT_SIGNER_SECRET) {
 }
 const REQUIRE_SIGNED_SMS = String(process.env.REQUIRE_SIGNED_SMS || 'true').toLowerCase() === 'true';
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || '';
+const SMTP_HOST = (process.env.SMTP_HOST || '').trim();
+const SMTP_PORT = parseInt(process.env.SMTP_PORT, 10) || 587;
+const SMTP_SECURE = String(process.env.SMTP_SECURE || (SMTP_PORT === 465 ? 'true' : 'false')).toLowerCase() === 'true';
+const SMTP_USER = (process.env.SMTP_USER || '').trim();
+const SMTP_PASS = process.env.SMTP_PASS || '';
+const MAIL_FROM = (process.env.MAIL_FROM || (SMTP_USER ? `OmniPay <${SMTP_USER}>` : '')).trim();
+const APP_BASE_URL = (process.env.APP_BASE_URL || '').trim().replace(/\/+$/, '');
+const MAIL_ENABLED = Boolean(nodemailer && SMTP_HOST && SMTP_USER && SMTP_PASS && MAIL_FROM);
+const mailTransport = MAIL_ENABLED
+  ? nodemailer.createTransport({
+      host: SMTP_HOST,
+      port: SMTP_PORT,
+      secure: SMTP_SECURE,
+      auth: { user: SMTP_USER, pass: SMTP_PASS },
+      connectionTimeout: 15000,
+      greetingTimeout: 15000,
+      socketTimeout: 20000,
+    })
+  : null;
 const REPLAY_CHECK_ENABLED =
   process.argv.includes('--replay-check') || String(process.env.REPLAY_CHECK || '').toLowerCase() === 'true';
 const PROOF_CHECK_ENABLED =
@@ -1683,6 +1708,146 @@ app.post('/api/check-availability', availabilityLimiter, async (req, res) => {
   }
 });
 
+const forgotPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too many requests, please try again later' },
+});
+
+const RESET_EMAIL_COOLDOWN_MS = 60 * 1000;
+const resetEmailCooldowns = new Map();
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function resolveAppBaseUrl() {
+  if (APP_BASE_URL) return APP_BASE_URL;
+  if (ALLOWED_ORIGINS.length) return ALLOWED_ORIGINS[0].replace(/\/+$/, '');
+  return '';
+}
+
+function buildResetEmail(link) {
+  const safeLink = escapeHtml(link);
+  const year = new Date().getFullYear();
+  const text =
+    'Reset your OmniPay password\n\n' +
+    'We received a request to reset the password on your OmniPay account. ' +
+    'Open the link below to choose a new password:\n\n' +
+    `${link}\n\n` +
+    'This link expires in 1 hour and can only be used once.\n' +
+    'If you did not request this, you can safely ignore this email. Your password will not change.\n\n' +
+    `(c) ${year} OmniPay`;
+  const html =
+    '<!doctype html><html><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<style>@media only screen and (max-width:520px){.card{border-radius:18px !important}.pad{padding-left:20px !important;padding-right:20px !important}.hd{padding:28px 20px !important}}</style>' +
+    '</head><body style="margin:0;padding:0;background:#eef3ff;">' +
+    '<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#eef3ff;">Use this link to choose a new OmniPay password. It expires in 1 hour.</div>' +
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#eef3ff" style="background:#eef3ff;">' +
+    '<tr><td align="center" style="padding:32px 12px;font-family:Inter,\'Segoe UI\',Roboto,Arial,sans-serif;">' +
+    '<table role="presentation" class="card" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;background:#ffffff;border-radius:24px;overflow:hidden;border:1px solid #dbe5ff;">' +
+    '<tr><td class="hd" align="center" bgcolor="#2563eb" style="padding:36px 28px 32px;background:#2563eb;background-image:linear-gradient(135deg,#4a86ff 0%,#1d4ed8 100%);">' +
+    '<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" width="64" height="64" bgcolor="#ffffff" style="width:64px;height:64px;border-radius:32px;background:#ffffff;font-size:30px;line-height:64px;text-align:center;">&#128272;</td></tr></table>' +
+    '<div style="margin-top:18px;font-size:28px;font-weight:800;letter-spacing:-0.5px;color:#ffffff;">OmniPay</div>' +
+    '<div style="margin-top:6px;font-size:14px;color:#dbe7ff;">Password reset request</div>' +
+    '</td></tr>' +
+    '<tr><td class="pad" style="padding:34px 36px 8px;color:#1e293b;">' +
+    '<div style="font-size:21px;font-weight:800;line-height:1.3;color:#0f172a;">Forgot your password?</div>' +
+    '<p style="margin:12px 0 0;font-size:15px;line-height:1.7;color:#475569;">No worries. We received a request to reset the password on your OmniPay account. Tap the button below to choose a new one.</p>' +
+    '</td></tr>' +
+    '<tr><td class="pad" align="center" style="padding:26px 36px 8px;">' +
+    `<a href="${safeLink}" target="_blank" style="display:block;padding:16px 20px;border-radius:16px;background:#2563eb;background-image:linear-gradient(135deg,#4a86ff 0%,#1d4ed8 100%);color:#ffffff;font-size:16px;font-weight:700;text-align:center;text-decoration:none;">Reset My Password &rarr;</a>` +
+    '</td></tr>' +
+    '<tr><td class="pad" style="padding:22px 36px 4px;">' +
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>' +
+    '<td bgcolor="#eff6ff" style="padding:14px 16px;background:#eff6ff;border-left:4px solid #2563eb;border-radius:10px;font-size:13px;line-height:1.6;color:#1e40af;">' +
+    '<strong>&#9201; Expires in 1 hour.</strong> For your security, this link works only once.</td>' +
+    '</tr></table>' +
+    '</td></tr>' +
+    '<tr><td class="pad" style="padding:22px 36px 6px;">' +
+    '<div style="font-size:12px;line-height:1.6;color:#64748b;">Button not working? Copy and paste this link into your browser:</div>' +
+    `<div style="margin-top:6px;font-size:12px;line-height:1.6;word-break:break-all;"><a href="${safeLink}" target="_blank" style="color:#2563eb;text-decoration:underline;">${safeLink}</a></div>` +
+    '</td></tr>' +
+    '<tr><td class="pad" style="padding:22px 36px 30px;">' +
+    '<div style="border-top:1px solid #e2e8f0;padding-top:18px;font-size:13px;line-height:1.7;color:#64748b;">' +
+    '<strong style="color:#334155;">Didn\'t ask for this?</strong> You can safely ignore this email. Your password will stay the same and no changes will be made to your account.</div>' +
+    '</td></tr>' +
+    '<tr><td align="center" bgcolor="#f8fafc" style="padding:20px 24px;background:#f8fafc;border-top:1px solid #e2e8f0;font-size:12px;line-height:1.6;color:#94a3b8;">' +
+    `&copy; ${year} OmniPay. All rights reserved.<br>This is an automated message, please do not reply.` +
+    '</td></tr>' +
+    '</table></td></tr></table></body></html>';
+  return { subject: 'Reset your OmniPay password', text, html };
+}
+
+app.post('/api/forgot-password', forgotPasswordLimiter, async (req, res) => {
+  log('info', 'mail', 'Password reset request received.');
+  const email = String((req.body && req.body.email) || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+    return res.status(400).json({ error: 'invalid-email' });
+  }
+  if (!MAIL_ENABLED) {
+    log('warn', 'mail', 'Reset email requested but SMTP is not configured (SMTP_HOST, SMTP_USER, SMTP_PASS, MAIL_FROM).');
+    return res.status(503).json({ error: 'email-not-configured' });
+  }
+
+  const last = resetEmailCooldowns.get(email) || 0;
+  if (Date.now() - last < RESET_EMAIL_COOLDOWN_MS) {
+    return res.json({ ok: true });
+  }
+  resetEmailCooldowns.set(email, Date.now());
+  for (const [key, at] of resetEmailCooldowns) {
+    if (Date.now() - at > RESET_EMAIL_COOLDOWN_MS) resetEmailCooldowns.delete(key);
+  }
+
+  try {
+    let firebaseLink = null;
+    try {
+      firebaseLink = await getAuth().generatePasswordResetLink(email);
+    } catch (err) {
+      const noLink = err && /Unable to create the email action link/i.test(String(err.message));
+      if (!err || (err.code !== 'auth/user-not-found' && err.code !== 'auth/invalid-email' && !noLink)) throw err;
+      try {
+        await getAuth().getUserByEmail(email);
+        log('error', 'mail', 'This email EXISTS in Firebase Authentication, but Firebase still could not create a reset link. Check the service account role (Firebase Authentication Admin) and that the Identity Toolkit API is enabled.');
+      } catch (lookupErr) {
+        if (lookupErr && lookupErr.code === 'auth/user-not-found') {
+          log('warn', 'mail', 'Confirmed: no Firebase Authentication account uses this email. Use the exact email listed in Firebase Console -> Authentication -> Users.');
+        } else {
+          log('error', 'mail', `Could not check the account (${(lookupErr && lookupErr.code) || 'unknown'}): ${lookupErr && lookupErr.message}. This usually means the service account lacks permission or the project does not match.`);
+        }
+      }
+    }
+
+    if (firebaseLink) {
+      let link = firebaseLink;
+      const base = resolveAppBaseUrl();
+      if (base) {
+        const oobCode = new URL(firebaseLink).searchParams.get('oobCode');
+        if (oobCode) link = `${base}/?mode=resetPassword&oobCode=${encodeURIComponent(oobCode)}`;
+      }
+      const message = buildResetEmail(link);
+      await mailTransport.sendMail({
+        from: MAIL_FROM,
+        to: email,
+        subject: message.subject,
+        text: message.text,
+        html: message.html,
+      });
+      log('ok', 'mail', 'Password reset email sent.');
+    } else {
+      log('info', 'mail', 'Password reset requested for an unregistered email; nothing sent.');
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    resetEmailCooldowns.delete(email);
+    log('error', 'mail', `Password reset email failed: ${err.message}`);
+    return res.status(502).json({ error: 'email-send-failed' });
+  }
+});
+
 const ACTIVITY_MAX_DEVICES = 10;
 const ACTIVITY_LIST_LIMIT = 50;
 const ACTIVITY_MERGED_LIMIT = 60;
@@ -2838,6 +3003,11 @@ app.listen(PORT, () => {
   if (!settlementKeypair) {
     log('warn', 'settlement', 'SETTLEMENT_SIGNER_SECRET is not set — SMS and signed API payments cannot be settled until it is configured.');
   }
+  if (!MAIL_ENABLED) {
+    log('warn', 'mail', nodemailer
+      ? 'SMTP_HOST / SMTP_USER / SMTP_PASS / MAIL_FROM are not all set — password reset emails will fall back to Firebase.'
+      : 'nodemailer is not installed (run: npm install nodemailer) — password reset emails will fall back to Firebase.');
+  }
   if (!ADMIN_API_KEY) {
     log('warn', 'auth', 'ADMIN_API_KEY is not set — /api/relay-transactions* and /api/reconcile-balance are disabled until it is configured.');
   }
@@ -2850,6 +3020,12 @@ app.listen(PORT, () => {
     log('warn', 'auth', 'REQUIRE_SIGNED_SMS=false -> plain unsigned "SEND <amount> <recipient> <pin>" SMS is still ACCEPTED (PIN-only auth). Set REQUIRE_SIGNED_SMS=true in .env once the signing app has rolled out.');
   }
   log('info', 'ready', 'Waiting for incoming SMS. Every webhook hit and SMS reply will be logged here.');
+  if (MAIL_ENABLED) {
+    mailTransport
+      .verify()
+      .then(() => log('ok', 'mail', `SMTP ready: ${SMTP_HOST}:${SMTP_PORT} as ${SMTP_USER}`))
+      .catch((err) => log('error', 'mail', `SMTP connection/login FAILED: ${err.message}`));
+  }
   purgeLegacyPinSecrets();
   if (REPLAY_CHECK_ENABLED) runReplayCheck();
   if (PROOF_CHECK_ENABLED) runSettlementProof();

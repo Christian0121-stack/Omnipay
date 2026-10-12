@@ -1348,7 +1348,28 @@ async function doForgotPassword() {
 
   showLoading(true, 'Sending reset link…');
   try {
-    await auth.sendPasswordResetEmail(email);
+    var serverSent = false;
+    try {
+      var resp = await fetch(API_BASE + '/api/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email })
+      });
+      if (resp.status === 429) {
+        showLoading(false);
+        showAlert('orange','⏳ Too many requests. Please wait a few minutes and try again.');
+        return;
+      }
+      if (resp.status === 400) {
+        showLoading(false);
+        showAlert('orange','📧 Enter a valid email address');
+        return;
+      }
+      serverSent = resp.ok;
+    } catch (_) {
+      serverSent = false;
+    }
+    if (!serverSent) await auth.sendPasswordResetEmail(email);
     showLoading(false);
     closeModal('forgotModal');
     document.getElementById('forgotEmail').value = '';
@@ -3557,6 +3578,7 @@ async function doSignAndPrepareSms() {
     var display = document.getElementById('smsComposedMessage');
     if (display) display.textContent = message;
     if (box) box.style.display = 'block';
+    scrollToSmsResult();
 
     showAlert('green','✅ Payment signed. Review and send the SMS below.');
   } catch (err) {
@@ -3578,6 +3600,21 @@ function clearSmsForm() {
   hideRecipientResults('smsRecipientResults');
   STATE._smsPicked = null;
   refreshSaveButtons();
+}
+
+function scrollToSmsResult() {
+  var box = document.getElementById('smsResultBox');
+  if (!box) return;
+  var smooth = !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  var behavior = smooth ? 'smooth' : 'auto';
+  setTimeout(function() {
+    var screen = box.closest('.screen');
+    if (screen && screen.scrollHeight > screen.clientHeight + 4) {
+      screen.scrollTo({ top: screen.scrollHeight, behavior: behavior });
+    } else {
+      box.scrollIntoView({ behavior: behavior, block: 'end' });
+    }
+  }, 150);
 }
 
 function restoreSmsForm(draft) {

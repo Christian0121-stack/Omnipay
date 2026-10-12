@@ -1079,7 +1079,7 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
         const senderName = sender.username || sender.id;
         await sendSms(
           senderPhone,
-          `OmniPay: Sent ${amount} ${ASSET_LABEL} to ${recipientName}. TX: ${result.txHash.slice(0, 12)}... New balance: ${result.newSenderBal.toFixed(4)} ${ASSET_LABEL}.`
+          `OmniPay: Sent ${amount} ${ASSET_LABEL} to ${recipientName}. New balance: ${result.newSenderBal.toFixed(4)} ${ASSET_LABEL}.\nTX: ${result.txHash}`
         );
         if (recipient.phone) {
           await sendSms(
@@ -2315,7 +2315,7 @@ async function notifyAppPayment({ sender, recipient, amount, result }) {
     if (sender.phone) {
       await sendSms(
         sender.phone,
-        `OmniPay: Sent ${amount} ${ASSET_LABEL} to ${recipientName}. TX: ${String(result.txHash).slice(0, 12)}... New balance: ${fmt(result.newSenderBal)} ${ASSET_LABEL}.`
+        `OmniPay: Sent ${amount} ${ASSET_LABEL} to ${recipientName}. New balance: ${fmt(result.newSenderBal)} ${ASSET_LABEL}.\nTX: ${String(result.txHash)}`
       );
     }
     if (recipient.phone) {

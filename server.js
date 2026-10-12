@@ -1637,6 +1637,52 @@ app.post('/api/change-phone', requireUserToken, phoneChangeLimiter, async (req, 
   }
 });
 
+const availabilityLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too many requests, please try again later' },
+});
+
+const collapseName = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+app.post('/api/check-availability', availabilityLimiter, async (req, res) => {
+  const body = req.body || {};
+  const email = String(body.email || '').trim().toLowerCase();
+  const username = String(body.username || '').trim().toLowerCase();
+  const tail = phoneTail(body.phone);
+  const fullName = collapseName(`${body.firstName || ''} ${body.lastName || ''}`);
+  if (!email || !username || !tail || !fullName) return res.status(400).json({ error: 'missing-fields' });
+
+  try {
+    const conflicts = new Set();
+    const snap = await usersCol().select('phone', 'email', 'username', 'name', 'nameLower').get();
+    snap.docs.forEach((d) => {
+      const u = d.data() || {};
+      if (phoneTail(u.phone) === tail) conflicts.add('phone');
+      if (String(u.email || '').trim().toLowerCase() === email) conflicts.add('email');
+      if (String(u.username || '').trim().toLowerCase() === username) conflicts.add('username');
+      if (collapseName(u.nameLower || u.name) === fullName) conflicts.add('name');
+    });
+
+    try {
+      await getAuth().getUserByEmail(email);
+      conflicts.add('email');
+    } catch (e) {
+      if (!e || (e.code !== 'auth/user-not-found' && e.code !== 'auth/invalid-email')) throw e;
+    }
+
+    const lookup = await db.collection('usernames').doc(username).get();
+    if (lookup.exists) conflicts.add('username');
+
+    return res.json({ conflicts: ['phone', 'email', 'username', 'name'].filter((k) => conflicts.has(k)) });
+  } catch (err) {
+    log('error', 'register', `Availability check failed: ${err.message}`);
+    return res.status(500).json({ error: 'could not check availability' });
+  }
+});
+
 const ACTIVITY_MAX_DEVICES = 10;
 const ACTIVITY_LIST_LIMIT = 50;
 const ACTIVITY_MERGED_LIMIT = 60;

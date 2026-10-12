@@ -775,7 +775,7 @@
         </div>
         <div class="freighter-xlm" id="profileXLM" style="font-size:30px;">10,000.0000 XLM</div>
         <div class="freighter-xlm-lbl">Testnet Balance · Friendbot-funded ✅</div>
-        <div class="freighter-key" id="profileWalletKey" style="margin-top:10px;">Loading wallet…</div>
+        <div class="freighter-key" id="profileWalletKey" role="button" tabindex="0" title="Tap to show or hide the full address" onclick="toggleProfileWalletKey()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleProfileWalletKey();}" style="margin-top:10px;">Loading wallet…</div>
         <div id="activeWalletLabel" style="font-size:11px;color:rgba(255,255,255,0.55);margin-top:6px;font-weight:600;"></div>
         <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
           <button class="fq-btn fq-btn-refresh" onclick="copyInternalWalletAddress()" style="font-size:11px;padding:7px 14px;">📋 Copy Address</button>

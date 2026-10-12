@@ -2835,3 +2835,10 @@
   -webkit-mask-image: linear-gradient(to right, transparent, #000 44px, #000 calc(100% - 44px), transparent);
   mask-image: linear-gradient(to right, transparent, #000 44px, #000 calc(100% - 44px), transparent);
 }
+
+.pay-tab:disabled { opacity: 0.45; cursor: not-allowed; filter: none !important; transform: none; }
+
+#profileWalletKey { cursor: pointer; transition: background 0.2s ease; }
+#profileWalletKey:hover { background: rgba(255,255,255,0.08); }
+#profileWalletKey[data-short="true"] { display: flex; align-items: center; justify-content: space-between; gap: 8px; word-break: normal; letter-spacing: 0.4px; }
+#profileWalletKey[data-short="true"]::after { content: "Tap to show full"; font-family: inherit; font-size: 9px; letter-spacing: 0.3px; opacity: 0.55; white-space: nowrap; }

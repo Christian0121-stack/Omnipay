@@ -1634,6 +1634,21 @@ function finishPasswordReset() {
 
 window.addEventListener('load', handlePasswordResetLink);
 
+async function checkRegistrationAvailability(fields) {
+  try {
+    var resp = await fetch(API_BASE + '/api/check-availability', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(fields)
+    });
+    if (!resp.ok) return null;
+    var data = await resp.json();
+    return Array.isArray(data.conflicts) ? data.conflicts : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function doRegister() {
   var first = document.getElementById('regFirst').value.trim();
   var last  = document.getElementById('regLast').value.trim();
@@ -1691,8 +1706,37 @@ async function doRegister() {
 
   var fullName = first + ' ' + last;
 
+  var conflicts = await checkRegistrationAvailability({
+    firstName: first, lastName: last, username: user, phone: phone, email: email
+  });
+
   showLoading(false);
   if (btn) { btn.disabled = false; btn.textContent = 'Create Account & Generate Wallet →'; }
+
+  if (conflicts === null) {
+    showAlert('red', '❌ Could not check availability. Check your connection and try again.');
+    return;
+  }
+  if (conflicts.length) {
+    var conflictFields = { phone: ['regPhone'], email: ['regEmail'], username: ['regUser'], name: ['regFirst', 'regLast'] };
+    var conflictText = {
+      phone:    'Phone number already exists',
+      email:    'Email address already exists',
+      username: 'Username already exists',
+      name:     'User first name and last name already exist'
+    };
+    conflicts.forEach(function(key) {
+      (conflictFields[key] || []).forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.classList.add('error');
+      });
+    });
+    var firstConflict = conflicts[0];
+    var focusEl = document.getElementById((conflictFields[firstConflict] || [])[0]);
+    if (focusEl) { focusEl.focus(); focusEl.scrollIntoView({ behavior:'smooth', block:'center' }); }
+    showAlert('red', '❌ ' + conflictText[firstConflict]);
+    return;
+  }
 
   if (!auth || typeof StellarSdk === 'undefined' || !StellarSdk.Keypair) {
     showAlert('red', '❌ Required services are not loaded. Refresh the page and try again.');
@@ -1835,7 +1879,7 @@ async function finishWalletSetup() {
     var authCode = authError && authError.code ? authError.code : '';
     console.warn('OmniPay sign-up error:', authError);
     var authMessages = {
-      'auth/email-already-in-use': '❌ An account already exists for this email address.',
+      'auth/email-already-in-use': '❌ Email address already exists',
       'auth/invalid-email': '❌ That email address is not valid.',
       'auth/weak-password': '❌ Password is too weak. Use at least 6 characters with a number.',
       'auth/operation-not-allowed': '❌ Email/Password sign-in is turned off. Enable it in Firebase Console → Authentication → Sign-in method.',
@@ -2084,6 +2128,27 @@ async function doPayBill() {
     _updateXLMConversion(STATE.wallet.xlmBalance);
   }
   setTimeout(fetchLiveXLMBalance, 2500);
+}
+
+var PROFILE_WALLET_KEY = { full: false };
+
+function shortWalletAddress(addr) {
+  addr = String(addr || '');
+  return addr.length > 14 ? addr.slice(0, 6) + '…' + addr.slice(-4) : addr;
+}
+
+function renderProfileWalletKey() {
+  var el = document.getElementById('profileWalletKey');
+  if (!el) return;
+  var addr = (STATE.wallet && STATE.wallet.publicKey) || '';
+  if (!addr) { el.textContent = 'Generating…'; el.removeAttribute('data-short'); return; }
+  el.textContent = PROFILE_WALLET_KEY.full ? addr : shortWalletAddress(addr);
+  el.setAttribute('data-short', PROFILE_WALLET_KEY.full ? 'false' : 'true');
+}
+
+function toggleProfileWalletKey() {
+  PROFILE_WALLET_KEY.full = !PROFILE_WALLET_KEY.full;
+  renderProfileWalletKey();
 }
 
 function copyInternalWalletAddress() {
@@ -2858,7 +2923,8 @@ function renderProfile() {
   document.getElementById('profileType').textContent  = typeMap[STATE.user.type] || STATE.user.type;
 
   document.getElementById('profileXLM').textContent       = STATE.wallet.xlmBalance.toLocaleString('en',{minimumFractionDigits:4})+' XLM';
-  document.getElementById('profileWalletKey').textContent = STATE.wallet.publicKey || 'Generating…';
+  PROFILE_WALLET_KEY.full = false;
+  renderProfileWalletKey();
 
   var activeLabel = document.getElementById('activeWalletLabel');
   if (activeLabel) {

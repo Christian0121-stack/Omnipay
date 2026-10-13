@@ -38,6 +38,8 @@
     fresh: {},
     filter: 'all',
     channel: '',
+    range: 'all',
+    date: '',
     query: '',
     open: {},
     audits: {},
@@ -311,7 +313,34 @@
     if (state.pollId) { clearInterval(state.pollId); state.pollId = null; }
   }
 
+  function dayKey(ms) {
+    var d = new Date(ms);
+    return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+  }
+
+  function inRange(r) {
+    if (state.range === 'all') return true;
+    if (!r.createdAt) return false;
+    if (state.range === 'today') return dayKey(r.createdAt) === dayKey(Date.now());
+    if (!state.date) return true;
+    return dayKey(r.createdAt) === state.date;
+  }
+
+  function scoped() {
+    return state.rows.filter(inRange);
+  }
+
+  function rangeLabel() {
+    if (state.range === 'today') return 'Today';
+    if (state.range === 'date' && state.date) {
+      var p = state.date.split('-');
+      return new Date(+p[0], +p[1] - 1, +p[2]).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    }
+    return '';
+  }
+
   function matches(r) {
+    if (!inRange(r)) return false;
     if (state.filter !== 'all' && r.category !== state.filter) return false;
     if (state.channel && r.channel !== state.channel) return false;
     var q = state.query.trim().toLowerCase();
@@ -322,17 +351,18 @@
   }
 
   function counts() {
-    var c = { all: state.rows.length, settled: 0, progress: 0, rejected: 0, failed: 0 };
-    state.rows.forEach(function (r) { c[r.category]++; });
+    var base = scoped();
+    var c = { all: base.length, settled: 0, progress: 0, rejected: 0, failed: 0 };
+    base.forEach(function (r) { c[r.category]++; });
     return c;
   }
 
   function renderKpis(c) {
     var settledVolume = 0;
-    state.rows.forEach(function (r) { if (r.category === 'settled' && r.amount) settledVolume += r.amount; });
+    scoped().forEach(function (r) { if (r.category === 'settled' && r.amount) settledVolume += r.amount; });
     var rate = c.all ? Math.round((c.settled / c.all) * 100) : 0;
     var items = [
-      ['Total requests', c.all, '📨', '', 'Latest 200 records'],
+      ['Total requests', c.all, '📨', '', rangeLabel() || 'Latest 200 records'],
       ['Settled', c.settled, '✅', 'k-ok', rate + '% success · ' + fmtAmount(settledVolume) + ' XLM'],
       ['In progress', c.progress, '⏳', 'k-wait', 'Awaiting settlement'],
       ['Rejected', c.rejected, '🛡️', 'k-bad', 'Failed validation'],
@@ -363,7 +393,7 @@
     }).join('');
 
     var tally = {};
-    state.rows.forEach(function (r) {
+    scoped().forEach(function (r) {
       if (!r.reason) return;
       var label = reasonText(r.reason);
       tally[label] = (tally[label] || 0) + 1;
@@ -375,7 +405,7 @@
           return '<div class="reason-row"><span class="rn">' + esc(t[0]) + '</span><span class="rb"><i style="width:'
             + (t[1] / top[0][1] * 100).toFixed(0) + '%"></i></span><span class="rc">' + t[1] + '</span></div>';
         }).join('')
-      : '<div class="none-note">No rejected or failed requests yet.</div>';
+      : '<div class="none-note">No rejected or failed requests' + (rangeLabel() ? ' for this period.' : ' yet.') + '</div>';
   }
 
   function renderChips(c) {
@@ -474,7 +504,16 @@
     $('list').innerHTML = rows.map(renderRow).join('');
   }
 
+  function renderDateBar() {
+    Array.prototype.forEach.call($('dateSeg').children, function (b) {
+      b.classList.toggle('active', b.getAttribute('data-range') === state.range);
+    });
+    $('dateInput').classList.toggle('hidden', state.range !== 'date');
+    $('dateNote').textContent = state.range === 'all' ? '' : (rangeLabel() ? 'Showing ' + rangeLabel() : 'Pick a date');
+  }
+
   function render() {
+    renderDateBar();
     var c = counts();
     renderKpis(c);
     renderOverview(c);
@@ -867,6 +906,21 @@
   $('refreshBtn').addEventListener('click', load);
   $('auto').addEventListener('change', function () {
     if ($('auto').checked) { load(); startLive(); } else { stopLive(); setLive('off', 'Paused'); }
+  });
+  $('dateSeg').addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-range]');
+    if (!btn) return;
+    state.range = btn.getAttribute('data-range');
+    if (state.range === 'date') {
+      if (!state.date) state.date = dayKey(Date.now());
+      $('dateInput').value = state.date;
+      $('dateInput').max = dayKey(Date.now());
+    }
+    render();
+  });
+  $('dateInput').addEventListener('change', function (e) {
+    state.date = e.target.value;
+    render();
   });
   $('search').addEventListener('input', function (e) { state.query = e.target.value; renderList(); });
   $('channel').addEventListener('change', function (e) { state.channel = e.target.value; renderList(); });

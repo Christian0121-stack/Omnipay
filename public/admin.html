@@ -283,6 +283,80 @@ a:hover { text-decoration: underline; }
   .kv dd { margin-bottom: 7px; }
   .tx-head { flex-wrap: wrap; }
 }
+
+.tabs { display: flex; gap: 6px; padding: 5px; margin-bottom: 14px; background: var(--card); border: 1.5px solid var(--border); border-radius: 999px; box-shadow: var(--shadow); }
+.tab { flex: 1; cursor: pointer; border: none; background: transparent; color: var(--text-muted); font-weight: 800; font-size: 13px; padding: 10px 14px; border-radius: 999px; transition: all .15s; }
+.tab.active { background: linear-gradient(135deg, var(--primary), var(--accent)); color: #fff; box-shadow: 0 4px 12px rgba(37,99,235,0.3); }
+.btn.danger { background: linear-gradient(135deg, #EF4444, #DC2626); box-shadow: 0 6px 16px rgba(239,68,68,0.28); }
+.btn.plain { background: var(--card); color: var(--text-muted); border: 1.5px solid var(--border); box-shadow: none; }
+.users-tools { margin: 4px 0 12px; display: flex; gap: 8px; align-items: center; }
+.users-tools .field { flex: 1; padding: 10px 12px; }
+.user-card { width: 100%; text-align: left; cursor: pointer; display: flex; align-items: center; gap: 12px; padding: 14px 16px; transition: box-shadow .2s, border-color .2s; }
+.user-card:hover, .user-card:focus-visible { border-color: var(--primary); box-shadow: var(--shadow-lg); outline: none; }
+.avatar { width: 44px; height: 44px; border-radius: 14px; flex-shrink: 0; display: grid; place-items: center; font-size: 18px; font-weight: 900; color: #fff; background: linear-gradient(135deg, var(--primary), var(--accent)); }
+.avatar.big { width: 52px; height: 52px; border-radius: 16px; font-size: 21px; }
+.user-main { flex: 1; min-width: 0; }
+.user-name { font-size: 15px; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-sub { font-size: 12.5px; color: var(--text-muted); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-arrow { color: var(--text-muted); font-size: 20px; flex-shrink: 0; }
+.modal-bg { position: fixed; inset: 0; z-index: 50; display: none; align-items: flex-end; justify-content: center; background: rgba(8,15,32,0.58); backdrop-filter: blur(3px); }
+.modal-bg.show { display: flex; }
+.modal-box { width: 100%; max-width: 560px; max-height: 92vh; max-height: 92dvh; overflow-y: auto; -webkit-overflow-scrolling: touch; background: var(--card); border: 1.5px solid var(--border); border-radius: 24px 24px 0 0; box-shadow: var(--shadow-lg); padding: 0; animation: sheet .22s ease-out; }
+@keyframes sheet { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.modal-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px; padding: 16px 18px 14px; background: var(--card); border-bottom: 1.5px solid var(--border); border-radius: 24px 24px 0 0; }
+.modal-body { padding: 16px 18px calc(22px + env(safe-area-inset-bottom, 0)); }
+.modal-title { flex: 1; min-width: 0; }
+.modal-title h3 { font-size: 18px; font-weight: 900; letter-spacing: -0.3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.modal-title p { font-size: 12.5px; color: var(--text-muted); font-weight: 600; }
+.modal-x { flex-shrink: 0; width: 36px; height: 36px; border-radius: 12px; cursor: pointer; border: 1.5px solid var(--border); background: var(--bg-2); color: var(--text-muted); font-size: 15px; font-weight: 800; }
+.modal-body .kv { margin-bottom: 12px; }
+.modal-body .sub-title { margin-top: 14px; }
+.reset-box { margin-top: 16px; padding: 14px; border-radius: var(--radius-sm); background: var(--bg-2); border: 1.5px solid var(--border); }
+.reset-box .hint { font-size: 12.5px; color: var(--text-muted); font-weight: 500; margin: 4px 0 12px; }
+.reset-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.reset-actions .btn { flex: 1 1 140px; }
+.reset-msg { margin-top: 12px; padding: 10px 12px; border-radius: 10px; font-size: 12.5px; font-weight: 700; }
+.reset-msg.ok { background: var(--success-light); color: var(--success); }
+.reset-msg.err { background: var(--danger-light); color: var(--danger); }
+body.lock { overflow: hidden; }
+@media (min-width: 640px) {
+  .modal-bg { align-items: center; padding: 20px; }
+  .modal-box { border-radius: 24px; }
+}
+@media (min-width: 960px) {
+  #usersList { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+}
+.um-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.um-chip { display: inline-flex; align-items: center; gap: 4px; padding: 5px 11px; border-radius: 999px; font-size: 11.5px; font-weight: 800; background: var(--primary-light); color: var(--primary); text-transform: capitalize; }
+.um-chip.ok { background: var(--success-light); color: var(--success); }
+.um-chip.warn { background: var(--warning-light); color: var(--warning); }
+.um-chip.bad { background: var(--danger-light); color: var(--danger); }
+.um-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 16px; }
+.um-stat { min-width: 0; padding: 12px 14px; border-radius: var(--radius-sm); background: var(--bg-2); border: 1.5px solid var(--border); }
+.um-stat span { display: block; font-size: 10.5px; font-weight: 800; letter-spacing: .6px; text-transform: uppercase; color: var(--text-muted); }
+.um-stat b { display: block; margin-top: 3px; font-size: 16px; font-weight: 900; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.um-sec { margin-bottom: 14px; border: 1.5px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; background: var(--card); }
+.um-sec-h { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--bg-2); border-bottom: 1.5px solid var(--border); font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .6px; color: var(--text-muted); }
+.um-sec-i { font-size: 14px; }
+.um-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.um-row:last-child { border-bottom: none; }
+.um-k { flex: 0 0 112px; color: var(--text-muted); font-weight: 600; }
+.um-v { flex: 1; min-width: 0; font-weight: 700; word-break: break-word; }
+.um-v.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
+.um-copy { flex-shrink: 0; cursor: pointer; border: 1.5px solid var(--border); background: var(--bg-2); color: var(--primary); font-size: 11px; font-weight: 800; padding: 4px 10px; border-radius: 8px; }
+.um-copy:hover { border-color: var(--primary); }
+.um-copy.done { background: var(--success-light); color: var(--success); border-color: transparent; }
+.um-recover { padding: 14px; border-bottom: 1px solid var(--border); }
+.um-recover:last-child { border-bottom: none; }
+.um-recover-h { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+.um-recover-i { width: 36px; height: 36px; flex-shrink: 0; display: grid; place-items: center; border-radius: 12px; background: var(--danger-light); font-size: 16px; }
+.um-recover-h b { font-size: 14px; font-weight: 800; }
+.um-recover-h p { margin-top: 2px; font-size: 12.5px; color: var(--text-muted); font-weight: 500; }
+.um-confirm { margin-bottom: 10px; font-size: 12.5px; font-weight: 600; }
+@media (max-width: 380px) {
+  .um-row { flex-wrap: wrap; }
+  .um-k { flex-basis: 100%; }
+}
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
@@ -313,6 +387,12 @@ a:hover { text-decoration: underline; }
   </section>
 
   <section id="dash" class="hidden">
+    <div class="tabs" id="tabs">
+      <button class="tab active" type="button" data-view="relay">Relay requests</button>
+      <button class="tab" type="button" data-view="users">Users</button>
+    </div>
+
+    <div id="viewRelay">
     <div class="kpis" id="kpis"></div>
 
     <div class="overview">
@@ -365,8 +445,31 @@ a:hover { text-decoration: underline; }
       </div>
     </div>
     <div class="list" id="list"></div>
+    </div>
+
+    <div id="viewUsers" class="hidden">
+      <div class="users-tools">
+        <input class="field" id="userSearch" type="search" placeholder="Search name, username, email, phone">
+        <button class="btn ghost" id="usersRefreshBtn" type="button">Refresh</button>
+      </div>
+      <div class="list-head" style="margin-top:8px;">
+        <div class="list-title">Users <span id="userCount"></span></div>
+      </div>
+      <div class="list" id="usersList"></div>
+    </div>
   </section>
 </main>
+
+<div class="modal-bg" id="userModal" role="dialog" aria-modal="true" aria-labelledby="umName">
+  <div class="modal-box">
+    <div class="modal-head">
+      <div class="avatar big" id="umAvatar"></div>
+      <div class="modal-title"><h3 id="umName"></h3><p id="umUser"></p></div>
+      <button class="modal-x" id="umClose" type="button" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body" id="umBody"></div>
+  </div>
+</div>
 <script src="admin.js"></script>
 </body>
 </html>

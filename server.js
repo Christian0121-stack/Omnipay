@@ -1848,6 +1848,126 @@ app.post('/api/forgot-password', forgotPasswordLimiter, async (req, res) => {
   }
 });
 
+const forgotUsernameLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too many requests, please try again later' },
+});
+
+const USERNAME_EMAIL_COOLDOWN_MS = 60 * 1000;
+const usernameEmailCooldowns = new Map();
+
+function buildUsernameEmail(username, signInLink) {
+  const safeUser = escapeHtml(username);
+  const year = new Date().getFullYear();
+  const text =
+    'Your OmniPay username\n\n' +
+    'We received a request to recover the username on your OmniPay account.\n\n' +
+    `Your username is: ${username}\n\n` +
+    (signInLink ? `Sign in here: ${signInLink}\n\n` : '') +
+    'If you did not request this, you can safely ignore this email. Nothing on your account has changed.\n\n' +
+    `(c) ${year} OmniPay`;
+  const button = signInLink
+    ? '<tr><td class="pad" align="center" style="padding:6px 36px 8px;">' +
+      `<a href="${escapeHtml(signInLink)}" target="_blank" style="display:block;padding:16px 20px;border-radius:16px;background:#2563eb;background-image:linear-gradient(135deg,#4a86ff 0%,#1d4ed8 100%);color:#ffffff;font-size:16px;font-weight:700;text-align:center;text-decoration:none;">Go to Sign In &rarr;</a>` +
+      '</td></tr>'
+    : '';
+  const html =
+    '<!doctype html><html><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<style>@media only screen and (max-width:520px){.card{border-radius:18px !important}.pad{padding-left:20px !important;padding-right:20px !important}.hd{padding:28px 20px !important}}</style>' +
+    '</head><body style="margin:0;padding:0;background:#eef3ff;">' +
+    '<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#eef3ff;">Here is the username on your OmniPay account.</div>' +
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#eef3ff" style="background:#eef3ff;">' +
+    '<tr><td align="center" style="padding:32px 12px;font-family:Inter,\'Segoe UI\',Roboto,Arial,sans-serif;">' +
+    '<table role="presentation" class="card" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;background:#ffffff;border-radius:24px;overflow:hidden;border:1px solid #dbe5ff;">' +
+    '<tr><td class="hd" align="center" bgcolor="#2563eb" style="padding:36px 28px 32px;background:#2563eb;background-image:linear-gradient(135deg,#4a86ff 0%,#1d4ed8 100%);">' +
+    '<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" width="64" height="64" bgcolor="#ffffff" style="width:64px;height:64px;border-radius:32px;background:#ffffff;font-size:30px;line-height:64px;text-align:center;">&#128100;</td></tr></table>' +
+    '<div style="margin-top:18px;font-size:28px;font-weight:800;letter-spacing:-0.5px;color:#ffffff;">OmniPay</div>' +
+    '<div style="margin-top:6px;font-size:14px;color:#dbe7ff;">Username recovery</div>' +
+    '</td></tr>' +
+    '<tr><td class="pad" style="padding:34px 36px 8px;color:#1e293b;">' +
+    '<div style="font-size:21px;font-weight:800;line-height:1.3;color:#0f172a;">Forgot your username?</div>' +
+    '<p style="margin:12px 0 0;font-size:15px;line-height:1.7;color:#475569;">No worries. Here is the username linked to this email address.</p>' +
+    '</td></tr>' +
+    '<tr><td class="pad" style="padding:22px 36px 8px;">' +
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>' +
+    '<td align="center" bgcolor="#eff6ff" style="padding:20px 16px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:14px;">' +
+    '<div style="font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#64748b;">Your username</div>' +
+    `<div style="margin-top:8px;font-size:24px;font-weight:800;color:#1d4ed8;word-break:break-all;">${safeUser}</div>` +
+    '</td></tr></table>' +
+    '</td></tr>' +
+    button +
+    '<tr><td class="pad" style="padding:22px 36px 30px;">' +
+    '<div style="border-top:1px solid #e2e8f0;padding-top:18px;font-size:13px;line-height:1.7;color:#64748b;">' +
+    '<strong style="color:#334155;">Didn\'t ask for this?</strong> You can safely ignore this email. Nothing on your account has changed.</div>' +
+    '</td></tr>' +
+    '<tr><td align="center" bgcolor="#f8fafc" style="padding:20px 24px;background:#f8fafc;border-top:1px solid #e2e8f0;font-size:12px;line-height:1.6;color:#94a3b8;">' +
+    `&copy; ${year} OmniPay. All rights reserved.<br>This is an automated message, please do not reply.` +
+    '</td></tr>' +
+    '</table></td></tr></table></body></html>';
+  return { subject: 'Your OmniPay username', text, html };
+}
+
+app.post('/api/forgot-username', forgotUsernameLimiter, async (req, res) => {
+  log('info', 'mail', 'Username recovery request received.');
+  const email = String((req.body && req.body.email) || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+    return res.status(400).json({ error: 'invalid-email' });
+  }
+  if (!MAIL_ENABLED) {
+    log('warn', 'mail', 'Username recovery requested but SMTP is not configured (SMTP_HOST, SMTP_USER, SMTP_PASS, MAIL_FROM).');
+    return res.status(503).json({ error: 'email-not-configured' });
+  }
+
+  const last = usernameEmailCooldowns.get(email) || 0;
+  if (Date.now() - last < USERNAME_EMAIL_COOLDOWN_MS) {
+    return res.json({ ok: true });
+  }
+  usernameEmailCooldowns.set(email, Date.now());
+  for (const [key, at] of usernameEmailCooldowns) {
+    if (Date.now() - at > USERNAME_EMAIL_COOLDOWN_MS) usernameEmailCooldowns.delete(key);
+  }
+
+  try {
+    let uid = null;
+    try {
+      const record = await getAuth().getUserByEmail(email);
+      uid = record.uid;
+    } catch (err) {
+      if (!err || (err.code !== 'auth/user-not-found' && err.code !== 'auth/invalid-email')) throw err;
+    }
+
+    let username = '';
+    if (uid) {
+      const snap = await usersCol().doc(uid).get();
+      if (snap.exists) username = String((snap.data() || {}).username || '').trim();
+    }
+
+    if (username) {
+      const base = resolveAppBaseUrl();
+      const message = buildUsernameEmail(username, base || '');
+      await mailTransport.sendMail({
+        from: MAIL_FROM,
+        to: email,
+        subject: message.subject,
+        text: message.text,
+        html: message.html,
+      });
+      log('ok', 'mail', 'Username recovery email sent.');
+    } else {
+      log('info', 'mail', 'Username recovery requested for an unregistered email; nothing sent.');
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    usernameEmailCooldowns.delete(email);
+    log('error', 'mail', `Username recovery email failed: ${err.message}`);
+    return res.status(502).json({ error: 'email-send-failed' });
+  }
+});
+
 const ACTIVITY_MAX_DEVICES = 10;
 const ACTIVITY_LIST_LIMIT = 50;
 const ACTIVITY_MERGED_LIMIT = 60;
@@ -2621,6 +2741,110 @@ app.post('/api/reconcile-balance/:userId', requireAdminKey, async (req, res) => 
     res.json({ ok: true, userId: req.params.userId, xlmBalance: chainBalance });
   } catch (err) {
     console.error('[api/reconcile-balance] failed:', err.message);
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
+const ADMIN_RESET_PASSWORD = String(process.env.ADMIN_RESET_PASSWORD || '123456');
+
+const adminUserActionLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too many requests, please try again later' },
+});
+
+function adminUserView(id, data) {
+  const d = data || {};
+  const num = (v) => (v != null && isFinite(Number(v)) ? Number(v) : null);
+  return {
+    id,
+    username: d.username || '',
+    name: d.name || '',
+    email: d.email || '',
+    phone: d.phone || '',
+    previousPhone: d.previousPhone || '',
+    phoneChangedAt: d.phoneChangedAt || null,
+    type: d.type || '',
+    country: d.country || '',
+    memberSince: d.memberSince || '',
+    walletPublic: d.walletPublic || '',
+    xlmBalance: num(d.xlmBalance),
+    balance: num(d.balance),
+    dailyLimit: num(d.dailyLimit),
+    trustScore: num(d.trustScore),
+    goodTxCount: num(d.goodTxCount),
+    cardFrozen: d.cardFrozen === true,
+    vaultLocked: d.vaultLocked === true,
+    hasPin: !!(d.smsPinHash && d.smsPinSalt),
+  };
+}
+
+app.get('/api/admin/users', requireAdminKey, adminUserActionLimiter, async (_req, res) => {
+  try {
+    const snap = await usersCol().limit(1000).get();
+    const users = snap.docs.map((d) => adminUserView(d.id, d.data()));
+    users.sort((a, b) => (a.name || a.username).toLowerCase().localeCompare((b.name || b.username).toLowerCase()));
+    res.json({ users, defaultPassword: ADMIN_RESET_PASSWORD });
+  } catch (err) {
+    console.error('[api/admin/users] failed:', err.message);
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
+app.get('/api/admin/users/:id', requireAdminKey, adminUserActionLimiter, async (req, res) => {
+  const uid = String(req.params.id || '');
+  if (!uid || uid.length > 128) return res.status(400).json({ error: 'invalid user id' });
+  try {
+    const snap = await usersCol().doc(uid).get();
+    if (!snap.exists) return res.status(404).json({ error: 'user not found' });
+    let auth = null;
+    try {
+      const record = await getAuth().getUser(uid);
+      auth = {
+        emailVerified: !!record.emailVerified,
+        disabled: !!record.disabled,
+        createdAt: record.metadata && record.metadata.creationTime ? record.metadata.creationTime : null,
+        lastSignInAt: record.metadata && record.metadata.lastSignInTime ? record.metadata.lastSignInTime : null,
+      };
+    } catch (_e) {
+      auth = null;
+    }
+    res.json({ user: adminUserView(snap.id, snap.data()), auth });
+  } catch (err) {
+    console.error('[api/admin/users/:id] failed:', err.message);
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
+app.post('/api/admin/users/:id/reset-password', requireAdminKey, adminUserActionLimiter, async (req, res) => {
+  const uid = String(req.params.id || '');
+  if (!uid || uid.length > 128) return res.status(400).json({ error: 'invalid user id' });
+  try {
+    const snap = await usersCol().doc(uid).get();
+    if (!snap.exists) return res.status(404).json({ error: 'user not found' });
+    await getAuth().updateUser(uid, { password: ADMIN_RESET_PASSWORD });
+    await getAuth().revokeRefreshTokens(uid);
+    try {
+      const authRecord = await getAuth().getUser(uid);
+      const profile = snap.data() || {};
+      const loginName = String(profile.username || '').trim().toLowerCase();
+      const loginEmail = String(authRecord.email || profile.email || '').trim();
+      if (loginName && loginEmail) {
+        await db.collection('usernames').doc(loginName).set({ uid, email: loginEmail }, { merge: true });
+      }
+    } catch (lookupErr) {
+      console.error('[api/admin/reset-password] username lookup sync failed:', lookupErr.message);
+    }
+    log('warn', 'admin', `Password reset by admin for user ${uid}`);
+    await logEvent(uid, '🔑', 'Password was reset by an administrator', 'info');
+    res.json({ ok: true, password: ADMIN_RESET_PASSWORD });
+  } catch (err) {
+    const code = err && err.code ? String(err.code) : '';
+    console.error('[api/admin/reset-password] failed:', err.message);
+    if (code === 'auth/user-not-found') return res.status(404).json({ error: 'login account not found' });
+    if (code === 'auth/invalid-password') return res.status(400).json({ error: 'reset password is too short (Firebase needs at least 6 characters)' });
     res.status(500).json({ error: 'internal error' });
   }
 });

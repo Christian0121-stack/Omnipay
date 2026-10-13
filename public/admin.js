@@ -45,7 +45,21 @@
     streamLive: false,
     retryId: null,
     pollId: null,
-    loading: false
+    loading: false,
+    users: [],
+    usersLoaded: false,
+    usersLoading: false,
+    userQuery: '',
+    activeUser: null,
+    activeAuth: null,
+    defaultPassword: '123456',
+    defaultPin: '123456',
+    resetConfirm: false,
+    resetBusy: false,
+    resetMsg: null,
+    pinConfirm: false,
+    pinBusy: false,
+    pinMsg: null
   };
 
   function $(id) { return document.getElementById(id); }
@@ -133,11 +147,11 @@
   }
 
   function senderLabel(r) {
-    return r.senderUsername ? '@' + r.senderUsername : (r.senderId || r.senderPhone || 'Unknown sender');
+    return r.senderUsername ? r.senderUsername : (r.senderId || r.senderPhone || 'Unknown sender');
   }
 
   function recipientLabel(r) {
-    if (r.recipientUsername) return '@' + r.recipientUsername;
+    if (r.recipientUsername) return r.recipientUsername;
     return r.recipient || 'Unknown';
   }
 
@@ -163,6 +177,10 @@
   }
 
   function showGate(message) {
+    closeUser();
+    state.users = [];
+    state.usersLoaded = false;
+    setView('relay');
     $('dash').classList.add('hidden');
     $('gate').classList.remove('hidden');
     $('gateMsg').textContent = message || '';
@@ -391,8 +409,8 @@
     }
     var rows = '<dl class="kv">'
       + '<dt>Relay ID</dt><dd>' + esc(r.id) + '</dd>'
-      + '<dt>Sender username</dt><dd>' + esc(r.senderUsername ? '@' + r.senderUsername : '—') + '</dd>'
-      + '<dt>Recipient username</dt><dd>' + esc(r.recipientUsername ? '@' + r.recipientUsername : '—') + '</dd>'
+      + '<dt>Sender username</dt><dd>' + esc(r.senderUsername ? r.senderUsername : '—') + '</dd>'
+      + '<dt>Recipient username</dt><dd>' + esc(r.recipientUsername ? r.recipientUsername : '—') + '</dd>'
       + '<dt>Sender ID</dt><dd>' + esc(r.senderId || '—') + '</dd>'
       + '<dt>Sender phone</dt><dd>' + esc(r.senderPhone || '—') + '</dd>'
       + '<dt>Recipient</dt><dd>' + esc(r.recipient || '—') + '</dd>'
@@ -505,6 +523,343 @@
     $('keyInput').value = '';
     showGate('');
   }
+
+
+  function initials(u) {
+    var s = String(u.name || u.username || '?').trim();
+    return s ? s.charAt(0).toUpperCase() : '?';
+  }
+
+  function setView(name) {
+    $('viewRelay').classList.toggle('hidden', name !== 'relay');
+    $('viewUsers').classList.toggle('hidden', name !== 'users');
+    Array.prototype.forEach.call($('tabs').children, function (t) {
+      t.classList.toggle('active', t.getAttribute('data-view') === name);
+    });
+    if (name === 'users' && !state.usersLoaded) loadUsers();
+  }
+
+  async function loadUsers() {
+    if (state.usersLoading || !state.key) return;
+    state.usersLoading = true;
+    if (!state.users.length) {
+      $('usersList').innerHTML = '<div class="card empty" style="grid-column:1/-1;"><div class="e-ico">⏳</div><b>Loading users…</b></div>';
+    }
+    try {
+      var resp = await api('/api/admin/users');
+      if (resp.status === 401 || resp.status === 503) { failAuth(resp.status); return; }
+      if (!resp.ok) { var failure = new Error('http-' + resp.status); failure.status = resp.status; throw failure; }
+      var data = await resp.json();
+      state.users = Array.isArray(data.users) ? data.users : [];
+      if (data.defaultPassword) state.defaultPassword = data.defaultPassword;
+      if (data.defaultPin) state.defaultPin = data.defaultPin;
+      state.usersLoaded = true;
+      renderUsers();
+    } catch (e) {
+      var why = 'Check the connection and tap Refresh.';
+      if (e && e.status === 404) why = 'The server does not have the users endpoint yet. Deploy the updated server.js and restart the server.';
+      else if (e && e.status === 429) why = 'Too many requests. Wait a moment, then tap Refresh.';
+      else if (e && e.status) why = 'Server error (' + e.status + '). Check the server logs for details.';
+      $('usersList').innerHTML = '<div class="card empty" style="grid-column:1/-1;"><div class="e-ico">⚠️</div><b>Could not load users</b>' + esc(why) + '</div>';
+    } finally {
+      state.usersLoading = false;
+    }
+  }
+
+  function renderUsers() {
+    var q = state.userQuery.trim().toLowerCase();
+    var rows = state.users.filter(function (u) {
+      if (!q) return true;
+      return [u.name, u.username, u.email, u.phone, u.id].join(' ').toLowerCase().indexOf(q) !== -1;
+    });
+    $('userCount').textContent = '(' + rows.length + ')';
+    if (!rows.length) {
+      $('usersList').innerHTML = '<div class="card empty" style="grid-column:1/-1;"><div class="e-ico">🔎</div><b>No users found</b>Try a different search.</div>';
+      return;
+    }
+    $('usersList').innerHTML = rows.map(function (u) {
+      return '<button class="card user-card" type="button" data-user="' + esc(u.id) + '">'
+        + '<span class="avatar">' + esc(initials(u)) + '</span>'
+        + '<span class="user-main"><div class="user-name">' + esc(u.name || u.username || 'Unnamed user') + '</div>'
+        + '<div class="user-sub">' + esc(u.username ? u.username : '—') + (u.email ? ' · ' + esc(u.email) : '') + '</div>'
+        + '<div class="user-sub">' + esc(u.phone || 'No phone') + '</div></span>'
+        + '<span class="user-arrow">›</span></button>';
+    }).join('');
+  }
+
+  function yesNo(v) { return v ? 'Yes' : 'No'; }
+
+  function chip(cls, text) { return '<span class="um-chip ' + cls + '">' + text + '</span>'; }
+
+  function rows(pairs) {
+    return '<div class="um-rows">' + pairs.map(function (p) {
+      var empty = p[1] == null || p[1] === '';
+      var copy = !empty && p[2]
+        ? '<button class="um-copy" type="button" data-copy="' + esc(p[1]) + '" aria-label="Copy ' + esc(p[0]) + '">Copy</button>'
+        : '';
+      return '<div class="um-row"><div class="um-k">' + esc(p[0]) + '</div>'
+        + '<div class="um-v' + (p[3] ? ' mono' : '') + '">' + esc(empty ? '—' : p[1]) + '</div>' + copy + '</div>';
+    }).join('') + '</div>';
+  }
+
+  function section(icon, title, inner) {
+    return '<section class="um-sec"><div class="um-sec-h"><span class="um-sec-i">' + icon + '</span>' + title + '</div>' + inner + '</section>';
+  }
+
+  function stat(label, value) {
+    return '<div class="um-stat"><span>' + label + '</span><b>' + esc(value) + '</b></div>';
+  }
+
+  function recovery(o) {
+    var body;
+    if (o.busy) {
+      body = '<div class="reset-actions"><button class="btn danger" type="button" disabled>' + o.busyText + '</button></div>';
+    } else if (o.confirm) {
+      body = '<p class="um-confirm">' + o.confirmText + '</p>'
+        + '<div class="reset-actions"><button class="btn danger" type="button" data-act="' + o.doAct + '">Yes, reset</button>'
+        + '<button class="btn plain" type="button" data-act="' + o.cancelAct + '">Cancel</button></div>';
+    } else {
+      body = '<div class="reset-actions"><button class="btn danger" type="button" data-act="' + o.askAct + '">' + o.label + '</button></div>';
+    }
+    var msg = o.msg ? '<div class="reset-msg ' + (o.msg.ok ? 'ok' : 'err') + '">' + esc(o.msg.text) + '</div>' : '';
+    return '<div class="um-recover"><div class="um-recover-h"><span class="um-recover-i">' + o.icon + '</span>'
+      + '<div><b>' + o.title + '</b><p>' + o.hint + '</p></div></div>' + body + msg + '</div>';
+  }
+
+  function copyText(text, btn) {
+    function done() {
+      var old = btn.textContent;
+      btn.textContent = 'Copied';
+      btn.classList.add('done');
+      setTimeout(function () { btn.textContent = old; btn.classList.remove('done'); }, 1200);
+    }
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) {}
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  function renderUserModal() {
+    var u = state.activeUser;
+    if (!u) return;
+    var a = state.activeAuth;
+    $('umAvatar').textContent = initials(u);
+    $('umName').textContent = u.name || u.username || 'Unnamed user';
+    $('umUser').textContent = u.username || '—';
+
+    var chips = [];
+    if (a) {
+      chips.push(a.emailVerified ? chip('ok', '✓ Email verified') : chip('warn', 'Email not verified'));
+      if (a.disabled) chips.push(chip('bad', 'Login disabled'));
+    }
+    chips.push(u.hasPin ? chip('ok', 'PIN set') : chip('warn', 'No PIN'));
+    if (u.cardFrozen) chips.push(chip('bad', 'Card frozen'));
+    if (u.vaultLocked) chips.push(chip('bad', 'Vault locked'));
+    if (u.type) chips.push(chip('', esc(u.type)));
+
+    var stats = '<div class="um-stats">'
+      + stat('Balance', u.balance == null ? '—' : fmtAmount(u.balance))
+      + stat('XLM balance', u.xlmBalance == null ? '—' : fmtAmount(u.xlmBalance))
+      + stat('Daily limit', u.dailyLimit == null ? '—' : fmtAmount(u.dailyLimit))
+      + stat('Trust score', u.trustScore == null ? '—' : u.trustScore)
+      + '</div>';
+
+    var account = rows([
+      ['Full name', u.name],
+      ['Username', u.username, true],
+      ['Email', u.email, true],
+      ['Phone', u.phone, true],
+      ['Previous phone', u.previousPhone],
+      ['Phone changed', u.phoneChangedAt ? fmtTime(toMs(u.phoneChangedAt)) : ''],
+      ['Account type', u.type],
+      ['Country', u.country],
+      ['Member since', u.memberSince],
+      ['User ID', u.id, true, true]
+    ]);
+
+    var wallet = rows([
+      ['Wallet address', u.walletPublic, true, true],
+      ['Good transactions', u.goodTxCount]
+    ]);
+
+    var security = rows([
+      ['SMS PIN set', yesNo(u.hasPin)],
+      ['Card frozen', yesNo(u.cardFrozen)],
+      ['Vault locked', yesNo(u.vaultLocked)],
+      ['Email verified', a ? yesNo(a.emailVerified) : ''],
+      ['Login disabled', a ? yesNo(a.disabled) : ''],
+      ['Account created', a && a.createdAt ? fmtTime(Date.parse(a.createdAt)) : ''],
+      ['Last sign-in', a && a.lastSignInAt ? fmtTime(Date.parse(a.lastSignInAt)) : '']
+    ]);
+
+    var pw = esc(state.defaultPassword);
+    var pin = esc(state.defaultPin);
+    var recover = recovery({
+      icon: '🔑',
+      title: 'Password',
+      hint: 'Use this when a user is locked out. They can sign in right away with the reset password.',
+      busy: state.resetBusy,
+      busyText: 'Resetting…',
+      confirm: state.resetConfirm,
+      confirmText: 'Set the password to <b>' + pw + '</b> and sign this user out of all devices?',
+      askAct: 'reset-ask',
+      doAct: 'reset-do',
+      cancelAct: 'reset-cancel',
+      label: 'Reset password to ' + pw,
+      msg: state.resetMsg
+    }) + recovery({
+      icon: '🔢',
+      title: 'SMS PIN',
+      hint: 'Use this when a user forgot their PIN. The old PIN stops working right away.',
+      busy: state.pinBusy,
+      busyText: 'Resetting…',
+      confirm: state.pinConfirm,
+      confirmText: 'Set the PIN to <b>' + pin + '</b>? The current PIN will stop working.',
+      askAct: 'pin-ask',
+      doAct: 'pin-do',
+      cancelAct: 'pin-cancel',
+      label: 'Reset PIN to ' + pin,
+      msg: state.pinMsg
+    });
+
+    $('umBody').innerHTML = '<div class="um-chips">' + chips.join('') + '</div>'
+      + stats
+      + section('👤', 'Account', account)
+      + section('💼', 'Wallet', wallet)
+      + section('🛡️', 'Security', security)
+      + section('🛟', 'Account recovery', recover);
+  }
+
+  async function openUser(id) {
+    var u = state.users.filter(function (x) { return x.id === id; })[0];
+    if (!u) return;
+    state.activeUser = u;
+    state.activeAuth = null;
+    state.resetConfirm = false;
+    state.resetBusy = false;
+    state.resetMsg = null;
+    state.pinConfirm = false;
+    state.pinBusy = false;
+    state.pinMsg = null;
+    renderUserModal();
+    $('userModal').classList.add('show');
+    document.body.classList.add('lock');
+    $('umBody').scrollTop = 0;
+    try {
+      var resp = await api('/api/admin/users/' + encodeURIComponent(id));
+      if (resp.status === 401 || resp.status === 503) { failAuth(resp.status); return; }
+      if (!resp.ok) return;
+      var data = await resp.json();
+      if (state.activeUser && state.activeUser.id === id) {
+        if (data.user) state.activeUser = data.user;
+        state.activeAuth = data.auth || null;
+        renderUserModal();
+      }
+    } catch (e) {}
+  }
+
+  function closeUser() {
+    state.activeUser = null;
+    state.activeAuth = null;
+    state.resetConfirm = false;
+    state.resetBusy = false;
+    state.resetMsg = null;
+    state.pinConfirm = false;
+    state.pinBusy = false;
+    state.pinMsg = null;
+    $('userModal').classList.remove('show');
+    document.body.classList.remove('lock');
+  }
+
+  async function resetPassword() {
+    var u = state.activeUser;
+    if (!u || state.resetBusy) return;
+    state.resetBusy = true;
+    state.resetConfirm = false;
+    state.resetMsg = null;
+    renderUserModal();
+    try {
+      var resp = await fetch('/api/admin/users/' + encodeURIComponent(u.id) + '/reset-password', {
+        method: 'POST',
+        headers: { 'x-admin-key': state.key }
+      });
+      if (resp.status === 401 || resp.status === 503) { failAuth(resp.status); return; }
+      var data = {};
+      try { data = await resp.json(); } catch (e) {}
+      if (!resp.ok) throw new Error(data.error || ('http-' + resp.status));
+      state.resetMsg = { ok: true, text: 'Password reset. The user can now sign in with ' + (data.password || state.defaultPassword) + '.' };
+    } catch (e) {
+      state.resetMsg = { ok: false, text: 'Could not reset the password: ' + (e.message || 'unknown error') };
+    } finally {
+      state.resetBusy = false;
+      renderUserModal();
+    }
+  }
+
+  async function resetPin() {
+    var u = state.activeUser;
+    if (!u || state.pinBusy) return;
+    state.pinBusy = true;
+    state.pinConfirm = false;
+    state.pinMsg = null;
+    renderUserModal();
+    try {
+      var resp = await fetch('/api/admin/users/' + encodeURIComponent(u.id) + '/reset-pin', {
+        method: 'POST',
+        headers: { 'x-admin-key': state.key }
+      });
+      if (resp.status === 401 || resp.status === 503) { failAuth(resp.status); return; }
+      var data = {};
+      try { data = await resp.json(); } catch (e) {}
+      if (!resp.ok) throw new Error(data.error || ('http-' + resp.status));
+      u.hasPin = true;
+      state.users.forEach(function (x) { if (x.id === u.id) x.hasPin = true; });
+      state.pinMsg = { ok: true, text: 'PIN reset. The user can now confirm payments with ' + (data.pin || state.defaultPin) + '.' };
+    } catch (e) {
+      state.pinMsg = { ok: false, text: 'Could not reset the PIN: ' + (e.message || 'unknown error') };
+    } finally {
+      state.pinBusy = false;
+      renderUserModal();
+    }
+  }
+
+  $('tabs').addEventListener('click', function (e) {
+    var btn = e.target.closest('.tab');
+    if (btn) setView(btn.getAttribute('data-view'));
+  });
+  $('userSearch').addEventListener('input', function (e) { state.userQuery = e.target.value; renderUsers(); });
+  $('usersRefreshBtn').addEventListener('click', loadUsers);
+  $('usersList').addEventListener('click', function (e) {
+    var card = e.target.closest('[data-user]');
+    if (card) openUser(card.getAttribute('data-user'));
+  });
+  $('umClose').addEventListener('click', closeUser);
+  $('userModal').addEventListener('click', function (e) { if (e.target === $('userModal')) closeUser(); });
+  $('umBody').addEventListener('click', function (e) {
+    var cp = e.target.closest('[data-copy]');
+    if (cp) { copyText(cp.getAttribute('data-copy'), cp); return; }
+    var btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    var act = btn.getAttribute('data-act');
+    if (act === 'reset-ask') { state.resetConfirm = true; state.resetMsg = null; state.pinConfirm = false; renderUserModal(); }
+    else if (act === 'reset-cancel') { state.resetConfirm = false; renderUserModal(); }
+    else if (act === 'reset-do') resetPassword();
+    else if (act === 'pin-ask') { state.pinConfirm = true; state.pinMsg = null; state.resetConfirm = false; renderUserModal(); }
+    else if (act === 'pin-cancel') { state.pinConfirm = false; renderUserModal(); }
+    else if (act === 'pin-do') resetPin();
+  });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && state.activeUser) closeUser(); });
 
   $('connectBtn').addEventListener('click', connect);
   $('keyInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') connect(); });

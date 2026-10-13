@@ -39,7 +39,8 @@
     filter: 'all',
     channel: '',
     range: 'all',
-    date: '',
+    from: '',
+    to: '',
     query: '',
     open: {},
     audits: {},
@@ -322,19 +323,26 @@
     if (state.range === 'all') return true;
     if (!r.createdAt) return false;
     if (state.range === 'today') return dayKey(r.createdAt) === dayKey(Date.now());
-    if (!state.date) return true;
-    return dayKey(r.createdAt) === state.date;
+    var k = dayKey(r.createdAt);
+    if (state.from && k < state.from) return false;
+    if (state.to && k > state.to) return false;
+    return true;
   }
 
   function scoped() {
     return state.rows.filter(inRange);
   }
 
+  function fmtDay(s) {
+    var p = s.split('-');
+    return new Date(+p[0], +p[1] - 1, +p[2]).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+
   function rangeLabel() {
     if (state.range === 'today') return 'Today';
-    if (state.range === 'date' && state.date) {
-      var p = state.date.split('-');
-      return new Date(+p[0], +p[1] - 1, +p[2]).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    if (state.range === 'date' && (state.from || state.to)) {
+      if (state.from && state.to) return state.from === state.to ? fmtDay(state.from) : fmtDay(state.from) + ' – ' + fmtDay(state.to);
+      return state.from ? 'From ' + fmtDay(state.from) : 'Until ' + fmtDay(state.to);
     }
     return '';
   }
@@ -508,8 +516,9 @@
     Array.prototype.forEach.call($('dateSeg').children, function (b) {
       b.classList.toggle('active', b.getAttribute('data-range') === state.range);
     });
-    $('dateInput').classList.toggle('hidden', state.range !== 'date');
-    $('dateNote').textContent = state.range === 'all' ? '' : (rangeLabel() ? 'Showing ' + rangeLabel() : 'Pick a date');
+    $('dateFrom').classList.toggle('hidden', state.range !== 'date');
+    $('dateTo').classList.toggle('hidden', state.range !== 'date');
+    $('dateNote').textContent = state.range === 'all' ? '' : (rangeLabel() ? 'Showing ' + rangeLabel() : 'Pick a date range');
   }
 
   function render() {
@@ -912,14 +921,30 @@
     if (!btn) return;
     state.range = btn.getAttribute('data-range');
     if (state.range === 'date') {
-      if (!state.date) state.date = dayKey(Date.now());
-      $('dateInput').value = state.date;
-      $('dateInput').max = dayKey(Date.now());
+      var t = dayKey(Date.now());
+      if (!state.from && !state.to) { state.from = t; state.to = t; }
+      syncDateInputs();
     }
     render();
   });
-  $('dateInput').addEventListener('change', function (e) {
-    state.date = e.target.value;
+  function syncDateInputs() {
+    var t = dayKey(Date.now());
+    $('dateFrom').value = state.from;
+    $('dateTo').value = state.to;
+    $('dateFrom').max = state.to || t;
+    $('dateTo').min = state.from;
+    $('dateTo').max = t;
+  }
+  $('dateFrom').addEventListener('change', function (e) {
+    state.from = e.target.value;
+    if (state.from && state.to && state.from > state.to) state.to = state.from;
+    syncDateInputs();
+    render();
+  });
+  $('dateTo').addEventListener('change', function (e) {
+    state.to = e.target.value;
+    if (state.from && state.to && state.to < state.from) state.from = state.to;
+    syncDateInputs();
     render();
   });
   $('search').addEventListener('input', function (e) { state.query = e.target.value; renderList(); });

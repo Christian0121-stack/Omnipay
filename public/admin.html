@@ -424,9 +424,10 @@ body.lock { overflow: hidden; }
       <div class="seg" id="dateSeg" role="group" aria-label="Filter by date">
         <button type="button" class="active" data-range="all">All</button>
         <button type="button" data-range="today">Today</button>
-        <button type="button" data-range="date">By date</button>
+        <button type="button" data-range="date">Date range</button>
       </div>
-      <input class="field hidden" id="dateInput" type="date" aria-label="Select date">
+      <input class="field hidden" id="dateFrom" type="date" aria-label="Start date" title="Start date">
+      <input class="field hidden" id="dateTo" type="date" aria-label="End date" title="End date">
       <span class="date-note" id="dateNote"></span>
     </div>
 

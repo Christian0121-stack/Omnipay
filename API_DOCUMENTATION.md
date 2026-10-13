@@ -15,6 +15,7 @@
 | **GitHub (Week 3 branch)** | https://github.com/Christian0121-stack/Omnipay/tree/week-3-deliverables |
 | **Hosting (Render)** | https://omnipay-m6hl.onrender.com |
 | **Domain (GoDaddy)** | https://omnipay.website/ |
+| **User guide (screenshots)** | See [README, User guide](README.md#user-guide-step-by-step) |
 | **SMS gateway number** | `09612490625` (+63 961 249 0625) |
 | **Soroban contract (Testnet)** | `CCR4IAHHPOKX6SEM2ED5N5AKIO4QRBEJ7AA5UH4LZYBUTRAIH7XTD6TH` — [Stellar Expert](https://stellar.expert/explorer/testnet/contract/CCR4IAHHPOKX6SEM2ED5N5AKIO4QRBEJ7AA5UH4LZYBUTRAIH7XTD6TH) |
 | **Network** | Horizon `https://horizon-testnet.stellar.org` · Soroban RPC `https://soroban-testnet.stellar.org` · Passphrase `Test SDF Network ; September 2015` |
@@ -67,6 +68,8 @@ The SMS and Signed API channels converge on one internal payment executor, so be
 ### Offline operation
 
 The web app checks connectivity with `navigator.onLine` and a probe request to Horizon (5 s timeout). When the device is offline the pay screen switches to **Offline Mode · Pay by SMS**: the app signs the `OMNIPAY-v1` payload locally with the wallet key, then hands the signed `SEND ... SIG ...` message to the phone's SMS app addressed to the gateway number. No network access is needed for signing. The service worker (`sw.js`, cache `omnipay-v2`) pre-caches the app shell and CDN libraries; `/api`, `/webhook`, `/dev`, `/health` and `/admin` are never cached.
+
+> **Important: add contacts before you go offline.** With no internet the app cannot search for other OmniPay users. Offline, the recipient search shows only the people you already saved under **Settings, Contacts**, so those are the recipients you can pick for **SMS Pay**. Adding a contact needs internet, so save everyone you plan to pay while you are online. You can still type an exact username or mobile number by hand, but it cannot be checked offline, and a typo is rejected by the relay (`recipient-not-found`).
 
 ### Order of operations (changed in Week 3)
 
@@ -560,11 +563,13 @@ Live version of §6.1 (server-sent events). Each change pushes `data: {"transact
 
 ### 6.3 `GET /api/search-recipients?q=<text>`
 
-Finds other users by name, username or phone. `q` shorter than 2 characters returns `{ "results": [] }`. Returns at most 8 results; names and phone numbers are masked according to each user's privacy settings.
+Finds other users by name, username or phone. **Requires internet**; it is not available in Offline Mode, where the app lists only the user's saved contacts (§6.4). `q` shorter than 2 characters returns `{ "results": [] }`. Returns at most 8 results; names and phone numbers are masked according to each user's privacy settings.
 
 **Response `200`:** `{ "results": [ { "uid", "name", "username", "phone", "walletPublic" } ], "selfMatch": false }` (`selfMatch` is `true` when the only match is the caller). Limits: 30 per minute and 300 per hour. **Errors:** `500` `search unavailable`.
 
 ### 6.4 `GET /api/contacts` and `PUT /api/contacts`
+
+Saved contacts are what the app offers as recipients when the device is offline, so a user must add the people they plan to pay by **SMS Pay** while online (**Settings, Contacts, Add contact**).
 
 `GET` → `{ "contacts": [ ... ], "updatedAt": <ms> }`. `PUT` with `{ "contacts": [ ... ] }` replaces the list and returns the sanitized list and `updatedAt`. **Errors:** `404` `account not found`, `400` `invalid contacts`, `500`.
 
@@ -633,6 +638,8 @@ Sent as plain text to the gateway number **09612490625** (+63 961 249 0625).
 | Check balance | `BAL <pin>` or `BALANCE <pin>` | `BAL 1234` |
 
 `<recipient>` can be another user's registered mobile number or username. `<amount>` has at most 7 decimals.
+
+> **Contacts required offline.** In the app, offline recipient search shows only saved contacts. The recipient must be added under **Settings, Contacts** while online before the sender goes offline. A recipient typed by hand that the relay cannot find is rejected with `validation_failed`, detail `recipient-not-found`.
 
 Example replies:
 - `OmniPay: Sent 50 XLM to aidan123. TX: faebe2d33e59... New balance: 4815.2886 XLM.`
@@ -792,7 +799,7 @@ curl -H "x-admin-key: $ADMIN_API_KEY" http://localhost:3000/api/replay-audit/<re
 
 ### Real SMS test
 
-In the app open **Send via SMS**, enter recipient, amount and SMS PIN, tap **Sign & Prepare SMS**, then send the prepared message to 09612490625. The relay server and the gateway phone must be online; coordinate a test window with the builder.
+First, while online, save the recipient under **Settings, Contacts**. Then in the app open **Send via SMS**, enter recipient, amount and SMS PIN, tap **Sign & Prepare SMS**, then send the prepared message to 09612490625. The relay server and the gateway phone must be online; coordinate a test window with the builder.
 
 ---
 

@@ -1237,7 +1237,7 @@ async function prepareSettlementSigner(secretKey) {
 }
 
 async function doLogin() {
-  var username = document.getElementById('loginUser').value.trim();
+  var username = document.getElementById('loginUser').value.trim().replace(/^@+/, '');
   var password = document.getElementById('loginPass').value;
   if (!username || !password) { showAlert('red','⚠️ Enter username and password'); return; }
   if (!navigator.onLine) { await doOfflineLogin(username, password); return; }
@@ -1267,6 +1267,7 @@ async function doLogin() {
     );
   } catch (e) {
     loginError = e;
+    console.warn('OmniPay sign-in error:', e);
     try { if (credential && credential.user) await auth.signOut(); } catch (_) {}
     account = null;
   }
@@ -1335,6 +1336,10 @@ async function doLogin() {
   } else {
     if (loginError && loginError.code === 'permission-denied') {
       showAlert('red','❌ Login is unavailable. Firestore rules need to allow reading the "usernames" collection.');
+    } else if (loginError && loginError.code === 'auth/too-many-requests') {
+      showAlert('red','⏳ Too many attempts. Please wait a few minutes and try again.');
+    } else if (loginError && loginError.message && !loginError.code) {
+      showAlert('red','❌ ' + loginError.message);
     } else {
       showAlert('red','❌ Invalid username or password');
     }
@@ -3617,11 +3622,11 @@ async function doSignAndPrepareSms() {
 
     var box     = document.getElementById('smsResultBox');
     var display = document.getElementById('smsComposedMessage');
-    if (display) display.textContent = message;
+    if (display) display.textContent = amtStr + ' XLM to ' + recipient + ' · signed and ready to send';
     if (box) box.style.display = 'block';
     scrollToSmsResult();
 
-    showAlert('green','✅ Payment signed. Review and send the SMS below.');
+    showAlert('green','✅ Payment signed. Tap Open Messages App to send.');
   } catch (err) {
     restoreSmsForm(smsDraft);
     showAlert('red','❌ Could not sign payment: ' + (err && err.message ? err.message : 'unknown error'));

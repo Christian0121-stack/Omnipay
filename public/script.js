@@ -1385,6 +1385,42 @@ async function doForgotPassword() {
   }
 }
 
+async function doForgotUsername() {
+  var email = document.getElementById('forgotUsernameEmail').value.trim();
+
+  if (!email) { showAlert('red','⚠️ Enter your email address'); return; }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { showAlert('orange','📧 Enter a valid email address'); return; }
+  if (!navigator.onLine) { showAlert('orange','📡 You need an internet connection to recover your username'); return; }
+
+  showLoading(true, 'Sending your username…');
+  try {
+    var resp = await fetch(API_BASE + '/api/forgot-username', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email })
+    });
+    showLoading(false);
+    if (resp.status === 429) {
+      showAlert('orange','⏳ Too many requests. Please wait a few minutes and try again.');
+      return;
+    }
+    if (resp.status === 400) {
+      showAlert('orange','📧 Enter a valid email address');
+      return;
+    }
+    if (!resp.ok) {
+      showAlert('red','❌ Could not send your username right now. Please try again later.');
+      return;
+    }
+    closeModal('forgotUsernameModal');
+    document.getElementById('forgotUsernameEmail').value = '';
+    showAlert('success','✅ If that email is registered, your username is on its way. Check your spam folder too.');
+  } catch (e) {
+    showLoading(false);
+    showAlert('red','❌ Could not send your username right now. Please try again later.');
+  }
+}
+
 var PHONE_CHANGE = { pendingLink: '', verified: false, keepSession: false };
 var PHONE_CHANGE_EMAIL_KEY = 'omnipay_phone_change_email';
 
@@ -3889,8 +3925,22 @@ function showAlert(type, msg) {
   alertTimer = setTimeout(function(){ banner.classList.remove('show'); }, 3500);
 }
 
-function showModal(id)  { document.getElementById(id).classList.add('show'); }
-function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+function collapseHelpFaq() {
+  document.querySelectorAll('#helpModal .help-faq details').forEach(function(d){ d.removeAttribute('open'); });
+}
+function showModal(id)  {
+  if (id === 'helpModal') collapseHelpFaq();
+  document.getElementById(id).classList.add('show');
+}
+function closeModal(id) {
+  document.getElementById(id).classList.remove('show');
+  if (id === 'helpModal') collapseHelpFaq();
+}
+function requestPinReset() {
+  var subject = encodeURIComponent('PIN Reset Request');
+  var body = encodeURIComponent('Hello,\n\nI forgot my PIN and need help resetting it.\n\nUsername: \nRegistered email: \nRegistered mobile number: \n\nThank you.');
+  window.location.href = 'mailto:Support.omnipay0121@gmail.com?subject=' + subject + '&body=' + body;
+}
 
 function showReceiveModal() {
   if (!STATE.isLoggedIn) { showAlert('orange','⚠️ Please log in first'); return; }
@@ -4650,7 +4700,7 @@ async function autoCheckFreighter() {
 }
 
 document.querySelectorAll('.modal-overlay').forEach(function(o){
-  o.addEventListener('click', function(e){ if (e.target === o) o.classList.remove('show'); });
+  o.addEventListener('click', function(e){ if (e.target === o) { o.classList.remove('show'); if (o.id === 'helpModal') collapseHelpFaq(); } });
 });
 
 var _camStream = null;

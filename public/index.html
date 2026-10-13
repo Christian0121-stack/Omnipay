@@ -136,13 +136,15 @@
           <button class="input-toggle" onclick="togglePass('loginPass',this)">👁</button>
         </div>
       </div>
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px 12px;margin-top:-4px;">
-        <a href="#" style="font-size:13px; color:var(--primary); font-weight:600;" onclick="event.preventDefault(); showChangePhoneModal()">Lost your SIM?</a>
-        <a href="#" style="font-size:13px; color:var(--primary); font-weight:600;" onclick="event.preventDefault(); showModal('forgotModal')">Forgot Password?</a>
+      <div style="display:flex;justify-content:flex-end;align-items:center;margin-top:-4px;">
+        <a href="#" style="font-size:13px; color:var(--primary); font-weight:600; text-decoration:none;" onclick="event.preventDefault(); showModal('forgotModal')">Forgot Password?</a>
       </div>
       <button class="btn btn-primary btn-block" id="loginBtn" onclick="doLogin()">Sign In →</button>
       <div class="auth-switch">
         Don't have an account? <a onclick="goTo('register')">Create Account</a>
+      </div>
+      <div class="auth-switch" style="margin-top:6px;">
+        Need help? <a onclick="showModal('helpModal')">Contact Support</a>
       </div>
     </div>
   </div>
@@ -1110,17 +1112,18 @@
       <div class="modal-handle"></div>
       <h3>💬 Help &amp; Support</h3>
       <p class="sub">We're here to help with payments, your account, and anything else.</p>
-      <a class="help-row" href="mailto:support@example.com">
+      <a class="help-row" href="mailto:Support.omnipay0121@gmail.com">
         <span class="help-row-icon">✉️</span>
-        <span class="help-row-info"><strong>Email us</strong><span>support@example.com</span></span>
+        <span class="help-row-info"><strong>Email us</strong><span>Support.omnipay0121@gmail.com</span></span>
         <span class="settings-arrow">›</span>
       </a>
       <div class="help-faq">
         <div class="help-faq-title">Quick answers</div>
         <details><summary>My payment is still pending</summary><p>Payments sent by SMS are relayed and settled on Stellar, which can take a short while. Check the status in History, and contact us if it stays pending.</p></details>
-        <details><summary>I forgot my PIN</summary><p>Your PIN confirms SMS payments. If you can't remember it, contact support so we can help you reset it securely.</p></details>
+        <details><summary>I forgot my PIN</summary><p>Your PIN confirms SMS payments. If you can't remember it, contact support so we can help you reset it securely.</p><button class="btn btn-primary btn-block mt-12" onclick="requestPinReset()">Contact Support to Reset PIN</button></details>
         <details><summary>I forgot my password</summary><p>On the Sign In screen, tap Forgot Password and enter the email on your account to receive a reset link.</p></details>
-        <details><summary>I lost my SIM or changed numbers</summary><p>Tap Lost your SIM? on the Sign In screen, or Change number in Edit Profile. We’ll email a verification link, then you can set your new mobile number.</p></details>
+        <details><summary>I forgot my username</summary><p>Enter the email on your account and we’ll send your username to that address.</p><button class="btn btn-primary btn-block mt-12" onclick="closeModal('helpModal'); showModal('forgotUsernameModal')">Recover My Username</button></details>
+        <details><summary>I lost my SIM or changed numbers</summary><p>We’ll email a verification link to your account email, then you can set your new mobile number.</p><button class="btn btn-primary btn-block mt-12" onclick="closeModal('helpModal'); showChangePhoneModal()">Change My Mobile Number</button></details>
         <details><summary>Is this real money?</summary><p>No. OmniPay currently runs on the Stellar Testnet, so balances are demo values with no real-world worth.</p></details>
       </div>
       <button class="btn btn-primary btn-block mt-16" onclick="closeModal('helpModal')">Close</button>
@@ -1220,6 +1223,20 @@
       </div>
        <button class="btn btn-primary btn-block mt-16" onclick="doForgotPassword()">Send Reset Link 🔐</button>
       <button class="btn btn-ghost btn-block mt-12" onclick="closeModal('forgotModal')">Cancel</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="forgotUsernameModal">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <h3>👤 Recover Username</h3>
+      <p class="sub">Enter the email on your account and we’ll send your username to that address.</p>
+      <div class="input-group">
+        <label>Email Address</label>
+        <input type="email" id="forgotUsernameEmail" placeholder="you@example.com" autocomplete="email" inputmode="email">
+      </div>
+      <button class="btn btn-primary btn-block mt-16" onclick="doForgotUsername()">Send My Username ✉️</button>
+      <button class="btn btn-ghost btn-block mt-12" onclick="closeModal('forgotUsernameModal')">Cancel</button>
     </div>
   </div>
 

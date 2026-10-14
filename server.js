@@ -2778,6 +2778,7 @@ function adminUserView(id, data) {
     cardFrozen: d.cardFrozen === true,
     vaultLocked: d.vaultLocked === true,
     hasPin: !!(d.smsPinHash && d.smsPinSalt),
+    walletResetPending: d.walletResetPending === true,
   };
 }
 
@@ -2846,6 +2847,83 @@ app.post('/api/admin/users/:id/reset-password', requireAdminKey, adminUserAction
     if (code === 'auth/user-not-found') return res.status(404).json({ error: 'login account not found' });
     if (code === 'auth/invalid-password') return res.status(400).json({ error: 'reset password is too short (Firebase needs at least 6 characters)' });
     res.status(500).json({ error: 'internal error' });
+  }
+});
+
+app.post('/api/admin/users/:id/reset-wallet', requireAdminKey, adminUserActionLimiter, async (req, res) => {
+  const uid = String(req.params.id || '');
+  if (!uid || uid.length > 128) return res.status(400).json({ error: 'invalid user id' });
+  try {
+    const ref = usersCol().doc(uid);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ error: 'user not found' });
+    await ref.update({
+      walletResetPending: true,
+      walletResetRequestedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    log('warn', 'admin', `Wallet reset requested by admin for user ${uid}`);
+    await logEvent(uid, '💼', 'Wallet reset was requested by an administrator', 'info');
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[api/admin/reset-wallet] failed:', err.message);
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
+const walletRebuildLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `uid:${req.authUid || ipKeyGenerator(req.ip)}`,
+  message: { error: 'too many requests, please try again later' },
+});
+
+app.post('/api/wallet/rebuild', requireUserToken, walletRebuildLimiter, async (req, res) => {
+  const body = req.body || {};
+  const walletPublic = String(body.walletPublic || '').trim();
+  const encrypted = String(body.walletSecretEncrypted || '');
+  const salt = String(body.walletSecretSalt || '');
+  const iv = String(body.walletSecretIv || '');
+  if (!StellarSdk.StrKey.isValidEd25519PublicKey(walletPublic)) {
+    return res.status(400).json({ error: 'invalid-wallet' });
+  }
+  if (!encrypted || encrypted.length > 512 || !/^[A-Za-z0-9+/=]+$/.test(encrypted)) {
+    return res.status(400).json({ error: 'invalid-wallet-record' });
+  }
+  if (!/^[0-9a-f]{16,64}$/i.test(salt) || !/^[A-Za-z0-9+/=]{8,64}$/.test(iv)) {
+    return res.status(400).json({ error: 'invalid-wallet-record' });
+  }
+  try {
+    const ref = usersCol().doc(req.authUid);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ error: 'account not found' });
+    const current = snap.data() || {};
+    if (current.walletResetPending !== true) {
+      return res.status(403).json({ error: 'wallet-reset-not-requested' });
+    }
+    const chainBalance = await getStellarNativeBalance(walletPublic);
+    const xlmBalance = chainBalance != null ? chainBalance : 0;
+    await ref.update({
+      walletPublic,
+      walletSecretEncrypted: encrypted,
+      walletSecretSalt: salt,
+      walletSecretIv: iv,
+      previousWalletPublic: current.walletPublic || null,
+      lastKnownWalletPublic: walletPublic,
+      xlmBalance,
+      walletResetPending: FieldValue.delete(),
+      walletResetAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    recipientDirectory.loadedAt = 0;
+    recordActivity(req.authUid, 'key-changed', req, deviceKeyFor(req, body.deviceId), 'Wallet was reset by an administrator').catch(() => {});
+    log('ok', 'wallet', `Wallet rebuilt for user ${req.authUid}`);
+    return res.json({ ok: true, xlmBalance });
+  } catch (err) {
+    log('error', 'wallet', `Rebuild failed: ${err.message}`);
+    return res.status(500).json({ error: 'could not set up wallet' });
   }
 });
 

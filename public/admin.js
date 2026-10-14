@@ -62,7 +62,10 @@
     resetMsg: null,
     pinConfirm: false,
     pinBusy: false,
-    pinMsg: null
+    pinMsg: null,
+    walletConfirm: false,
+    walletBusy: false,
+    walletMsg: null
   };
 
   function $(id) { return document.getElementById(id); }
@@ -712,6 +715,7 @@
       if (a.disabled) chips.push(chip('bad', 'Login disabled'));
     }
     chips.push(u.hasPin ? chip('ok', 'PIN set') : chip('warn', 'No PIN'));
+    if (u.walletResetPending) chips.push(chip('warn', 'Wallet reset pending'));
     if (u.cardFrozen) chips.push(chip('bad', 'Card frozen'));
     if (u.vaultLocked) chips.push(chip('bad', 'Vault locked'));
     if (u.type) chips.push(chip('', esc(u.type)));
@@ -779,6 +783,21 @@
       cancelAct: 'pin-cancel',
       label: 'Reset PIN to ' + pin,
       msg: state.pinMsg
+    }) + recovery({
+      icon: '💼',
+      title: 'Wallet',
+      hint: u.walletResetPending
+        ? 'A new wallet will be created automatically the next time this user signs in.'
+        : 'Use this when a wallet is locked and cannot be opened. The user gets a new wallet address on their next sign-in.',
+      busy: state.walletBusy,
+      busyText: 'Resetting…',
+      confirm: state.walletConfirm,
+      confirmText: 'Reset this wallet? The user will get a <b>new wallet address</b> on their next sign-in, and the current wallet key will no longer be used.',
+      askAct: 'wallet-ask',
+      doAct: 'wallet-do',
+      cancelAct: 'wallet-cancel',
+      label: u.walletResetPending ? 'Reset wallet again' : 'Reset wallet',
+      msg: state.walletMsg
     });
 
     $('umBody').innerHTML = '<div class="um-chips">' + chips.join('') + '</div>'
@@ -800,6 +819,9 @@
     state.pinConfirm = false;
     state.pinBusy = false;
     state.pinMsg = null;
+    state.walletConfirm = false;
+    state.walletBusy = false;
+    state.walletMsg = null;
     renderUserModal();
     $('userModal').classList.add('show');
     document.body.classList.add('lock');
@@ -826,6 +848,9 @@
     state.pinConfirm = false;
     state.pinBusy = false;
     state.pinMsg = null;
+    state.walletConfirm = false;
+    state.walletBusy = false;
+    state.walletMsg = null;
     $('userModal').classList.remove('show');
     document.body.classList.remove('lock');
   }
@@ -851,6 +876,33 @@
       state.resetMsg = { ok: false, text: 'Could not reset the password: ' + (e.message || 'unknown error') };
     } finally {
       state.resetBusy = false;
+      renderUserModal();
+    }
+  }
+
+  async function resetWallet() {
+    var u = state.activeUser;
+    if (!u || state.walletBusy) return;
+    state.walletBusy = true;
+    state.walletConfirm = false;
+    state.walletMsg = null;
+    renderUserModal();
+    try {
+      var resp = await fetch('/api/admin/users/' + encodeURIComponent(u.id) + '/reset-wallet', {
+        method: 'POST',
+        headers: { 'x-admin-key': state.key }
+      });
+      if (resp.status === 401 || resp.status === 503) { failAuth(resp.status); return; }
+      var data = {};
+      try { data = await resp.json(); } catch (e) {}
+      if (!resp.ok) throw new Error(data.error || ('http-' + resp.status));
+      u.walletResetPending = true;
+      state.users.forEach(function (x) { if (x.id === u.id) x.walletResetPending = true; });
+      state.walletMsg = { ok: true, text: 'Wallet reset. A new wallet is created automatically when the user signs in.' };
+    } catch (e) {
+      state.walletMsg = { ok: false, text: 'Could not reset the wallet: ' + (e.message || 'unknown error') };
+    } finally {
+      state.walletBusy = false;
       renderUserModal();
     }
   }
@@ -900,12 +952,15 @@
     var btn = e.target.closest('[data-act]');
     if (!btn) return;
     var act = btn.getAttribute('data-act');
-    if (act === 'reset-ask') { state.resetConfirm = true; state.resetMsg = null; state.pinConfirm = false; renderUserModal(); }
+    if (act === 'reset-ask') { state.resetConfirm = true; state.resetMsg = null; state.pinConfirm = false; state.walletConfirm = false; renderUserModal(); }
     else if (act === 'reset-cancel') { state.resetConfirm = false; renderUserModal(); }
     else if (act === 'reset-do') resetPassword();
-    else if (act === 'pin-ask') { state.pinConfirm = true; state.pinMsg = null; state.resetConfirm = false; renderUserModal(); }
+    else if (act === 'pin-ask') { state.pinConfirm = true; state.pinMsg = null; state.resetConfirm = false; state.walletConfirm = false; renderUserModal(); }
     else if (act === 'pin-cancel') { state.pinConfirm = false; renderUserModal(); }
     else if (act === 'pin-do') resetPin();
+    else if (act === 'wallet-ask') { state.walletConfirm = true; state.walletMsg = null; state.resetConfirm = false; state.pinConfirm = false; renderUserModal(); }
+    else if (act === 'wallet-cancel') { state.walletConfirm = false; renderUserModal(); }
+    else if (act === 'wallet-do') resetWallet();
   });
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && state.activeUser) closeUser(); });
 

@@ -1333,6 +1333,16 @@ async function doLogin() {
     setFbStatus('connected','🟢 Signed in as ' + firstName);
     startInboxListener(); // begin real-time incoming-payment listener
     reportLoginActivity();
+    if (!STATE.wallet.secretKey && account.walletSecretEncrypted) {
+      WALLET_RECOVERY.password = password;
+      WALLET_RECOVERY.record = {
+        walletSecretEncrypted: account.walletSecretEncrypted,
+        walletSecretSalt: account.walletSecretSalt,
+        walletSecretIv: account.walletSecretIv,
+        walletPublic: account.walletPublic || ''
+      };
+      setTimeout(showWalletRecoveryModal, 700);
+    }
   } else {
     if (loginError && loginError.code === 'permission-denied') {
       showAlert('red','❌ Login is unavailable. Firestore rules need to allow reading the "usernames" collection.');
@@ -4123,11 +4133,20 @@ async function doChangePassword() {
     await auth.currentUser.reauthenticateWithCredential(credential);
     var walletRef = db.collection(USERS_COLLECTION).doc(auth.currentUser.uid);
     var walletSecret = STATE.wallet && STATE.wallet.secretKey;
+    var walletSnap = await walletRef.get();
+    var walletData = walletSnap.data() || {};
+    if (!walletSecret && walletData.walletSecretEncrypted) {
+      walletSecret = await decryptWalletSecret(
+        walletData.walletSecretEncrypted,
+        walletData.walletSecretSalt,
+        walletData.walletSecretIv,
+        current
+      );
+      if (walletSecret && STATE.wallet) STATE.wallet.secretKey = walletSecret;
+    }
     var oldWallet = null;
     var newWallet = null;
     if (walletSecret) {
-      var walletSnap = await walletRef.get();
-      var walletData = walletSnap.data() || {};
       oldWallet = {
         walletSecretEncrypted: walletData.walletSecretEncrypted,
         walletSecretSalt: walletData.walletSecretSalt,
@@ -4148,6 +4167,10 @@ async function doChangePassword() {
       var vaults = readOfflineVaults();
       if (vaults[STATE._vaultKey]) { Object.assign(vaults[STATE._vaultKey], newWallet); writeOfflineVaults(vaults); }
     }
+    if (!newWallet && walletData.walletSecretEncrypted) {
+      WALLET_RECOVERY.password = newPass;
+      WALLET_RECOVERY.record = walletData;
+    }
   } catch (e) {
     showLoading(false);
     if (btn) { btn.disabled = false; btn.textContent = 'Update Password'; }
@@ -4163,6 +4186,77 @@ async function doChangePassword() {
   closeModal('changePasswordModal');
   showAlert('success','✅ Password updated successfully!');
   activityRequest('POST', '/api/activity/event', { type: 'password-changed', deviceId: getActivityDeviceId() }).catch(function(){});
+  if (WALLET_RECOVERY.record) setTimeout(showWalletRecoveryModal, 600);
+}
+
+var WALLET_RECOVERY = { password: '', record: null, busy: false };
+
+function showWalletRecoveryModal() {
+  var input = document.getElementById('recoverOldPass');
+  if (!input) return;
+  input.value = '';
+  input.type = 'password';
+  input.classList.remove('error');
+  showModal('walletRecoveryModal');
+  setTimeout(function() { try { input.focus(); } catch (e) {} }, 120);
+}
+
+function skipWalletRecovery() {
+  WALLET_RECOVERY.password = '';
+  WALLET_RECOVERY.record = null;
+  closeModal('walletRecoveryModal');
+}
+
+async function doRecoverWallet() {
+  if (WALLET_RECOVERY.busy) return;
+  var input = document.getElementById('recoverOldPass');
+  var oldPass = input.value;
+  if (!oldPass) { input.classList.add('error'); showAlert('red', '⚠️ Enter your previous password'); return; }
+  if (!WALLET_RECOVERY.record || !WALLET_RECOVERY.password || !auth || !auth.currentUser) {
+    skipWalletRecovery();
+    showAlert('red', '❌ Session expired. Sign in again.');
+    return;
+  }
+
+  var btn = document.getElementById('recoverSaveBtn');
+  WALLET_RECOVERY.busy = true;
+  if (btn) { btn.disabled = true; btn.textContent = 'Restoring…'; }
+
+  var rec = WALLET_RECOVERY.record;
+  var secret = await decryptWalletSecret(rec.walletSecretEncrypted, rec.walletSecretSalt, rec.walletSecretIv, oldPass);
+  var valid = false;
+  if (secret) {
+    try { valid = StellarSdk.Keypair.fromSecret(secret).publicKey() === (rec.walletPublic || STATE.wallet.publicKey); } catch (e) { valid = false; }
+  }
+  if (!valid) {
+    WALLET_RECOVERY.busy = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'Restore Wallet'; }
+    input.classList.add('error');
+    showAlert('red', '❌ That password does not unlock this wallet');
+    return;
+  }
+
+  try {
+    var enc = await encryptWalletSecret(secret, WALLET_RECOVERY.password);
+    var fresh = { walletSecretEncrypted: enc.ciphertext, walletSecretSalt: enc.salt, walletSecretIv: enc.iv };
+    await db.collection(USERS_COLLECTION).doc(auth.currentUser.uid).update(fresh);
+    if (STATE._vaultKey) {
+      var vaults = readOfflineVaults();
+      if (vaults[STATE._vaultKey]) { Object.assign(vaults[STATE._vaultKey], fresh); writeOfflineVaults(vaults); }
+    }
+    STATE.wallet.secretKey = secret;
+    WALLET_RECOVERY.password = '';
+    WALLET_RECOVERY.record = null;
+    WALLET_RECOVERY.busy = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'Restore Wallet'; }
+    input.value = '';
+    closeModal('walletRecoveryModal');
+    showAlert('success', '✅ Wallet restored successfully!');
+  } catch (e) {
+    WALLET_RECOVERY.busy = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'Restore Wallet'; }
+    showAlert('red', '❌ Could not restore your wallet. Try again.');
+  }
 }
 
 function copyWalletAddress() {

@@ -1236,6 +1236,35 @@ async function prepareSettlementSigner(secretKey) {
   }
 }
 
+async function rebuildWalletAfterReset(password) {
+  showLoading(true, 'Setting up your new wallet…');
+  try {
+    if (typeof StellarSdk === 'undefined' || !StellarSdk.Keypair) throw new Error('sdk-unavailable');
+    var kp = generateStellarKeypairReal();
+    await fundTestnetAccount(kp.publicKey);
+    var rec = await encryptWalletSecret(kp.secretKey, password);
+    var data = await activityRequest('POST', '/api/wallet/rebuild', {
+      walletPublic: kp.publicKey,
+      walletSecretEncrypted: rec.ciphertext,
+      walletSecretSalt: rec.salt,
+      walletSecretIv: rec.iv,
+      deviceId: getActivityDeviceId()
+    });
+    return {
+      walletPublic: kp.publicKey,
+      walletSecretEncrypted: rec.ciphertext,
+      walletSecretSalt: rec.salt,
+      walletSecretIv: rec.iv,
+      secret: kp.secretKey,
+      xlmBalance: data && data.xlmBalance != null ? data.xlmBalance : 10000
+    };
+  } catch (e) {
+    throw new Error('Could not set up your new wallet. Please try again.');
+  } finally {
+    showLoading(false);
+  }
+}
+
 async function doLogin() {
   var username = document.getElementById('loginUser').value.trim().replace(/^@+/, '');
   var password = document.getElementById('loginPass').value;
@@ -1265,6 +1294,15 @@ async function doLogin() {
       account.walletSecretIv,
       password
     );
+    if (account.walletResetPending === true) {
+      var fresh = await rebuildWalletAfterReset(password);
+      account.walletPublic = fresh.walletPublic;
+      account.walletSecretEncrypted = fresh.walletSecretEncrypted;
+      account.walletSecretSalt = fresh.walletSecretSalt;
+      account.walletSecretIv = fresh.walletSecretIv;
+      account._unlockedWalletSecret = fresh.secret;
+      account.xlmBalance = fresh.xlmBalance;
+    }
   } catch (e) {
     loginError = e;
     console.warn('OmniPay sign-in error:', e);
@@ -1334,14 +1372,7 @@ async function doLogin() {
     startInboxListener(); // begin real-time incoming-payment listener
     reportLoginActivity();
     if (!STATE.wallet.secretKey && account.walletSecretEncrypted) {
-      WALLET_RECOVERY.password = password;
-      WALLET_RECOVERY.record = {
-        walletSecretEncrypted: account.walletSecretEncrypted,
-        walletSecretSalt: account.walletSecretSalt,
-        walletSecretIv: account.walletSecretIv,
-        walletPublic: account.walletPublic || ''
-      };
-      setTimeout(showWalletRecoveryModal, 700);
+      setTimeout(function(){ showWalletRecoveryModal(null); }, 700);
     }
   } else {
     if (loginError && loginError.code === 'permission-denied') {
@@ -2262,7 +2293,7 @@ function doLogout() {
   STATE._smsPicked  = null;
   _stopMonitorAutoRefresh();
   MONITOR.relay = []; MONITOR.loadedAt = 0;
-  try { sessionStorage.removeItem('omnipay_session'); } catch(e) {}
+  try { sessionStorage.removeItem('omnipay_session'); sessionStorage.removeItem('omnipay_wk'); } catch(e) {}
   document.getElementById('bottomNav').style.display = 'none';
   goTo('login');
   clearLoginForm();
@@ -3234,7 +3265,8 @@ async function confirmSignPayment() {
     if (!pinOk) { fail('Incorrect PIN. Try again.'); return; }
 
     var amtStr    = amt.toFixed(7);
-    var timestamp = Date.now();
+    await syncNetworkClock();
+    var timestamp = networkNowMs();
     var nonce     = bytesToHex(randomBytes(16));
     var requestId = bytesToHex(randomBytes(16));
     var payload   = buildSignedPayloadString(STATE.uid, recipient, amtStr, timestamp, nonce, requestId);
@@ -3282,6 +3314,7 @@ function relayErrorMessage(status, data) {
     || (data.reason && (MONITOR_REASONS[data.reason] || data.reason))
     || key
     || ('Relay error (HTTP ' + status + ')');
+  if (key === 'invalid signature' && data.reason) msg = 'Signature check failed (' + (MONITOR_REASONS[data.reason] || data.reason) + '). Payment was not sent.';
   if (data.detail && typeof data.detail === 'string' && !RELAY_ERROR_MESSAGES[key]) msg += ' (' + data.detail + ')';
   if (data.relayId) msg += ' [ref ' + String(data.relayId).slice(0, 8) + ']';
   return msg;
@@ -3355,7 +3388,7 @@ async function executeSendMoney(signedAuth) {
   }
 
   if (!useFreighter && !secretKey) {
-    showAlert('red','❌ No signing method available. Re-login or connect Freighter.');
+    showWalletRecoveryModal(doSendMoney);
     return;
   }
 
@@ -3400,6 +3433,7 @@ async function executeSendMoney(signedAuth) {
 
       var account = new StellarSdk.Account(sourcePublic, accountData.sequence);
 
+      await syncNetworkClock();
       var txBuilder = new StellarSdk.TransactionBuilder(account, {
         fee: StellarSdk.BASE_FEE,
         networkPassphrase: StellarSdk.Networks.TESTNET
@@ -3410,7 +3444,7 @@ async function executeSendMoney(signedAuth) {
           amount:      amtStr
         }))
         .addMemo(StellarSdk.Memo.text(note.substring(0, 28)))
-        .setTimeout(180);
+        .setTimebounds(0, Math.floor(networkNowMs() / 1000) + 180);
 
       var tx = txBuilder.build();
       var txXdr;
@@ -3555,13 +3589,14 @@ async function ensureSettlementSigner(secretKey) {
   var accountJson = await accountResp.json();
   var enabled = (accountJson.signers || []).some(function(s){ return s.key === cfg.publicKey && Number(s.weight) > 0; });
   if (!enabled) {
+    await syncNetworkClock();
     var account = new StellarSdk.Account(keypair.publicKey(), accountJson.sequence);
     var tx = new StellarSdk.TransactionBuilder(account, {
       fee: StellarSdk.BASE_FEE,
       networkPassphrase: cfg.networkPassphrase || StellarSdk.Networks.TESTNET
     })
       .addOperation(StellarSdk.Operation.setOptions({ signer: { ed25519PublicKey: cfg.publicKey, weight: 1 } }))
-      .setTimeout(60)
+      .setTimebounds(0, Math.floor(networkNowMs() / 1000) + 120)
       .build();
     tx.sign(keypair);
     var submitResp = await fetch(STELLAR_HORIZON_TESTNET + '/transactions', {
@@ -3569,7 +3604,12 @@ async function ensureSettlementSigner(secretKey) {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: 'tx=' + encodeURIComponent(tx.toXDR())
     });
-    if (!submitResp.ok) throw new Error('Could not enable SMS settlement on your wallet.');
+    if (!submitResp.ok) {
+      var failBody = await submitResp.json().catch(function(){ return {}; });
+      var codes = failBody && failBody.extras && failBody.extras.result_codes;
+      var codeText = codes ? [codes.transaction].concat(codes.operations || []).filter(Boolean).join(', ') : ('HTTP ' + submitResp.status);
+      throw new Error('Could not enable SMS settlement on your wallet (' + codeText + ').');
+    }
   }
   STATE._settlementSignerReady = true;
 }
@@ -3585,7 +3625,7 @@ async function doSignAndPrepareSms() {
   if (!/^\d{4,6}$/.test(pin))        { showAlert('red','🔢 PIN must be 4–6 digits'); return; }
 
   var secretKey = STATE.wallet && STATE.wallet.secretKey;
-  if (!secretKey) { showAlert('red','❌ No signing key available. Re-login to unlock your wallet.'); return; }
+  if (!secretKey) { showWalletRecoveryModal(doSignAndPrepareSms); return; }
 
   var senderId = STATE.uid;
   if (!senderId) { showAlert('red','❌ You must be logged in to sign a payment.'); return; }
@@ -3615,7 +3655,8 @@ async function doSignAndPrepareSms() {
     await prepareSettlementSigner(secretKey);
 
     var amtStr      = amt.toFixed(7);
-    var timestamp   = Date.now();
+    await syncNetworkClock();
+    var timestamp   = networkNowMs();
     var nonce       = bytesToHex(randomBytes(16));
     var requestId   = bytesToHex(randomBytes(16));
 
@@ -4143,6 +4184,7 @@ async function doChangePassword() {
         current
       );
       if (walletSecret && STATE.wallet) STATE.wallet.secretKey = walletSecret;
+      if (!walletSecret) throw new Error('wallet-locked');
     }
     var oldWallet = null;
     var newWallet = null;
@@ -4167,13 +4209,16 @@ async function doChangePassword() {
       var vaults = readOfflineVaults();
       if (vaults[STATE._vaultKey]) { Object.assign(vaults[STATE._vaultKey], newWallet); writeOfflineVaults(vaults); }
     }
-    if (!newWallet && walletData.walletSecretEncrypted) {
-      WALLET_RECOVERY.password = newPass;
-      WALLET_RECOVERY.record = walletData;
-    }
+    if (!newWallet && walletData.walletSecretEncrypted) STATE._needsWalletUnlock = true;
   } catch (e) {
     showLoading(false);
     if (btn) { btn.disabled = false; btn.textContent = 'Update Password'; }
+    if (e && e.message === 'wallet-locked') {
+      closeModal('changePasswordModal');
+      showAlert('orange', '🔒 Unlock your wallet first, then change your password.');
+      setTimeout(function(){ showWalletRecoveryModal(null); }, 400);
+      return;
+    }
     var message = /wrong-password|invalid-credential|invalid-login-credentials/i.test(e.code || '')
       ? '❌ Current password is incorrect'
       : '❌ Could not update password. Sign in again and retry.';
@@ -4186,33 +4231,35 @@ async function doChangePassword() {
   closeModal('changePasswordModal');
   showAlert('success','✅ Password updated successfully!');
   activityRequest('POST', '/api/activity/event', { type: 'password-changed', deviceId: getActivityDeviceId() }).catch(function(){});
-  if (WALLET_RECOVERY.record) setTimeout(showWalletRecoveryModal, 600);
+  if (STATE._needsWalletUnlock) setTimeout(function(){ showWalletRecoveryModal(null); }, 600);
 }
 
-var WALLET_RECOVERY = { password: '', record: null, busy: false };
+var WALLET_RECOVERY = { onDone: null, busy: false };
 
-function showWalletRecoveryModal() {
-  var input = document.getElementById('recoverOldPass');
-  if (!input) return;
-  input.value = '';
-  input.type = 'password';
-  input.classList.remove('error');
+function showWalletRecoveryModal(onDone) {
+  var cur = document.getElementById('recoverCurrentPass');
+  var old = document.getElementById('recoverOldPass');
+  if (!cur || !old) return;
+  WALLET_RECOVERY.onDone = typeof onDone === 'function' ? onDone : null;
+  [cur, old].forEach(function(el) { el.value = ''; el.type = 'password'; el.classList.remove('error'); });
   showModal('walletRecoveryModal');
-  setTimeout(function() { try { input.focus(); } catch (e) {} }, 120);
+  setTimeout(function() { try { cur.focus(); } catch (e) {} }, 120);
 }
 
 function skipWalletRecovery() {
-  WALLET_RECOVERY.password = '';
-  WALLET_RECOVERY.record = null;
+  WALLET_RECOVERY.onDone = null;
+  STATE._needsWalletUnlock = false;
   closeModal('walletRecoveryModal');
 }
 
 async function doRecoverWallet() {
   if (WALLET_RECOVERY.busy) return;
-  var input = document.getElementById('recoverOldPass');
-  var oldPass = input.value;
-  if (!oldPass) { input.classList.add('error'); showAlert('red', '⚠️ Enter your previous password'); return; }
-  if (!WALLET_RECOVERY.record || !WALLET_RECOVERY.password || !auth || !auth.currentUser) {
+  var curEl = document.getElementById('recoverCurrentPass');
+  var oldEl = document.getElementById('recoverOldPass');
+  var current = curEl.value;
+  var previous = oldEl.value;
+  if (!current) { curEl.classList.add('error'); showAlert('red', '⚠️ Enter your current password'); return; }
+  if (!auth || !auth.currentUser || !db) {
     skipWalletRecovery();
     showAlert('red', '❌ Session expired. Sign in again.');
     return;
@@ -4220,42 +4267,76 @@ async function doRecoverWallet() {
 
   var btn = document.getElementById('recoverSaveBtn');
   WALLET_RECOVERY.busy = true;
-  if (btn) { btn.disabled = true; btn.textContent = 'Restoring…'; }
-
-  var rec = WALLET_RECOVERY.record;
-  var secret = await decryptWalletSecret(rec.walletSecretEncrypted, rec.walletSecretSalt, rec.walletSecretIv, oldPass);
-  var valid = false;
-  if (secret) {
-    try { valid = StellarSdk.Keypair.fromSecret(secret).publicKey() === (rec.walletPublic || STATE.wallet.publicKey); } catch (e) { valid = false; }
-  }
-  if (!valid) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Unlocking…'; }
+  function finish(label) {
     WALLET_RECOVERY.busy = false;
-    if (btn) { btn.disabled = false; btn.textContent = 'Restore Wallet'; }
-    input.classList.add('error');
-    showAlert('red', '❌ That password does not unlock this wallet');
+    if (btn) { btn.disabled = false; btn.textContent = 'Unlock Wallet'; }
+  }
+
+  try {
+    var credential = firebase.auth.EmailAuthProvider.credential(auth.currentUser.email, current);
+    await auth.currentUser.reauthenticateWithCredential(credential);
+  } catch (e) {
+    finish();
+    curEl.classList.add('error');
+    showAlert('red', /wrong-password|invalid-credential|invalid-login-credentials/i.test(e.code || '')
+      ? '❌ Current password is incorrect'
+      : '❌ Could not verify your password. Try again.');
     return;
   }
 
   try {
-    var enc = await encryptWalletSecret(secret, WALLET_RECOVERY.password);
-    var fresh = { walletSecretEncrypted: enc.ciphertext, walletSecretSalt: enc.salt, walletSecretIv: enc.iv };
-    await db.collection(USERS_COLLECTION).doc(auth.currentUser.uid).update(fresh);
-    if (STATE._vaultKey) {
-      var vaults = readOfflineVaults();
-      if (vaults[STATE._vaultKey]) { Object.assign(vaults[STATE._vaultKey], fresh); writeOfflineVaults(vaults); }
+    var uid = auth.currentUser.uid;
+    var snap = await db.collection(USERS_COLLECTION).doc(uid).get();
+    var rec = snap.data() || {};
+    if (!rec.walletSecretEncrypted) throw new Error('no-wallet');
+
+    var secret = await decryptWalletSecret(rec.walletSecretEncrypted, rec.walletSecretSalt, rec.walletSecretIv, current);
+    var reencrypt = false;
+    if (!secret && previous) {
+      secret = await decryptWalletSecret(rec.walletSecretEncrypted, rec.walletSecretSalt, rec.walletSecretIv, previous);
+      reencrypt = !!secret;
     }
+    var valid = false;
+    if (secret) {
+      try {
+        var expected = rec.walletPublic || (STATE.wallet && STATE.wallet.publicKey) || '';
+        valid = !expected || StellarSdk.Keypair.fromSecret(secret).publicKey() === expected;
+      } catch (e) { valid = false; }
+    }
+    if (!valid) {
+      finish();
+      oldEl.classList.add('error');
+      showAlert('red', previous
+        ? '❌ That previous password does not unlock this wallet'
+        : '⚠️ Wallet is locked with an older password. Enter your previous password below.');
+      return;
+    }
+
+    if (reencrypt) {
+      var enc = await encryptWalletSecret(secret, current);
+      var fresh = { walletSecretEncrypted: enc.ciphertext, walletSecretSalt: enc.salt, walletSecretIv: enc.iv };
+      await db.collection(USERS_COLLECTION).doc(uid).update(fresh);
+      if (STATE._vaultKey) {
+        var vaults = readOfflineVaults();
+        if (vaults[STATE._vaultKey]) { Object.assign(vaults[STATE._vaultKey], fresh); writeOfflineVaults(vaults); }
+      }
+    }
+
     STATE.wallet.secretKey = secret;
-    WALLET_RECOVERY.password = '';
-    WALLET_RECOVERY.record = null;
-    WALLET_RECOVERY.busy = false;
-    if (btn) { btn.disabled = false; btn.textContent = 'Restore Wallet'; }
-    input.value = '';
+    STATE._needsWalletUnlock = false;
+    saveSession();
+    var done = WALLET_RECOVERY.onDone;
+    WALLET_RECOVERY.onDone = null;
+    finish();
+    curEl.value = '';
+    oldEl.value = '';
     closeModal('walletRecoveryModal');
-    showAlert('success', '✅ Wallet restored successfully!');
+    showAlert('success', '🔓 Wallet unlocked');
+    if (done) setTimeout(done, 200);
   } catch (e) {
-    WALLET_RECOVERY.busy = false;
-    if (btn) { btn.disabled = false; btn.textContent = 'Restore Wallet'; }
-    showAlert('red', '❌ Could not restore your wallet. Try again.');
+    finish();
+    showAlert('red', '❌ Could not unlock your wallet. Try again.');
   }
 }
 
@@ -4398,6 +4479,27 @@ function initTheme() {
 }
 
 var STELLAR_HORIZON_TESTNET = 'https://horizon-testnet.stellar.org';
+
+var NETWORK_CLOCK = { offsetMs: 0, syncedAt: 0 };
+
+async function syncNetworkClock() {
+  if (NETWORK_CLOCK.syncedAt && Date.now() - NETWORK_CLOCK.syncedAt < 5 * 60 * 1000) return;
+  try {
+    var resp = await fetch(STELLAR_HORIZON_TESTNET + '/ledgers?order=desc&limit=1');
+    if (!resp.ok) return;
+    var data = await resp.json();
+    var record = data && data._embedded && data._embedded.records && data._embedded.records[0];
+    var closed = record && Date.parse(record.closed_at);
+    if (!closed) return;
+    var offset = closed - Date.now();
+    NETWORK_CLOCK.offsetMs = Math.abs(offset) > 30000 ? offset : 0;
+    NETWORK_CLOCK.syncedAt = Date.now();
+  } catch (e) {}
+}
+
+function networkNowMs() {
+  return Date.now() + NETWORK_CLOCK.offsetMs;
+}
 var STELLAR_TESTNET_PASSPHRASE = 'Test SDF Network ; September 2015';
 
 var FREIGHTER = {
@@ -4654,7 +4756,8 @@ async function doSendXLM() {
       txBuilder.addMemo(StellarSdk.Memo.text(memo.substring(0, 28)));
     }
 
-    txBuilder.setTimeout(30);
+    await syncNetworkClock();
+    txBuilder.setTimebounds(0, Math.floor(networkNowMs() / 1000) + 60);
     var transaction = txBuilder.build();
     var xdr         = transaction.toXDR();
 
@@ -5138,6 +5241,7 @@ function saveSession() {
       nonceLog:           STATE.nonceLog.slice(-50)
     };
     sessionStorage.setItem('omnipay_session', JSON.stringify(data));
+    if (STATE.wallet && STATE.wallet.secretKey) sessionStorage.setItem('omnipay_wk', STATE.uid + '|' + STATE.wallet.secretKey);
   } catch(e) {}
 }
 
@@ -5149,6 +5253,7 @@ function restoreSession() {
     if (!auth || !auth.currentUser) return false;
     if (!d || !d.isLoggedIn || d.uid !== auth.currentUser.uid) {
       sessionStorage.removeItem('omnipay_session');
+      sessionStorage.removeItem('omnipay_wk');
       return false;
     }
     STATE.isLoggedIn         = true;
@@ -5164,6 +5269,11 @@ function restoreSession() {
     STATE.memberSince        = d.memberSince        || '';
     STATE.wallet             = d.wallet             || STATE.wallet;
     STATE.wallet.secretKey   = '';
+    try {
+      var kept = String(sessionStorage.getItem('omnipay_wk') || '');
+      var sep = kept.indexOf('|');
+      if (sep > 0 && kept.slice(0, sep) === d.uid) STATE.wallet.secretKey = kept.slice(sep + 1);
+    } catch (e) {}
     STATE.wallets            = Array.isArray(d.wallets)       ? d.wallets       : [];
     STATE.activeWalletIndex  = d.activeWalletIndex  != null   ? d.activeWalletIndex : 0;
     STATE.transactions       = dedupeTransactions(d.transactions);

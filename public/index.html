@@ -1552,16 +1552,23 @@
   <div class="modal-overlay" id="walletRecoveryModal">
     <div class="modal">
       <div class="modal-handle"></div>
-      <h3>🔓 Restore your wallet</h3>
-      <p class="sub">Your wallet is still locked with an older password. Enter the password you used before to unlock it again.</p>
+      <h3>🔓 Unlock your wallet</h3>
+      <p class="sub">Enter your password to unlock your wallet and sign this payment.</p>
       <div class="input-group">
-        <label>Previous Password</label>
+        <label>Current Password</label>
         <div class="input-wrapper">
-          <input type="password" id="recoverOldPass" placeholder="Enter previous password" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();doRecoverWallet();}" oninput="this.classList.remove('error')">
+          <input type="password" id="recoverCurrentPass" placeholder="Enter current password" autocomplete="current-password" onkeydown="if(event.key==='Enter'){event.preventDefault();doRecoverWallet();}" oninput="this.classList.remove('error')">
+          <button class="input-toggle" type="button" onclick="togglePass('recoverCurrentPass',this)">👁</button>
+        </div>
+      </div>
+      <div class="input-group mt-12">
+        <label>Previous Password (only if you recently changed it)</label>
+        <div class="input-wrapper">
+          <input type="password" id="recoverOldPass" placeholder="Leave blank if unchanged" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();doRecoverWallet();}" oninput="this.classList.remove('error')">
           <button class="input-toggle" type="button" onclick="togglePass('recoverOldPass',this)">👁</button>
         </div>
       </div>
-      <button class="btn btn-primary btn-block mt-16" id="recoverSaveBtn" type="button" onclick="doRecoverWallet()">Restore Wallet</button>
+      <button class="btn btn-primary btn-block mt-16" id="recoverSaveBtn" type="button" onclick="doRecoverWallet()">Unlock Wallet</button>
       <button class="btn btn-ghost btn-block mt-12" type="button" onclick="skipWalletRecovery()">Not now</button>
     </div>
   </div>

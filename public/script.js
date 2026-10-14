@@ -3245,7 +3245,12 @@ async function confirmSignPayment() {
   if (!STATE.uid || !db)      { fail('You must be logged in to sign a payment.'); return; }
 
   var secretKey = STATE.wallet && STATE.wallet.secretKey;
-  if (!secretKey) { fail('No signing key available. Re-login to unlock your wallet.'); return; }
+  if (!secretKey) {
+    if (pinEl) pinEl.value = '';
+    closeModal('signPaymentModal');
+    showWalletRecoveryModal(function () { STATE._sendConfirmed = true; doSendMoney(); });
+    return;
+  }
 
   var recipient = normalizeStellarPublicKey((document.getElementById('sendRecipient') || {}).value || '');
   var amt       = parseFloat((document.getElementById('sendAmount') || {}).value);
@@ -3547,7 +3552,7 @@ async function executeSendMoney(signedAuth) {
     saveSession();
     renderHistory(); // refresh history tab immediately so the log appears
 
-    document.getElementById('successAmt').textContent      = fmtAmt(amt) + ' XLM';
+    document.getElementById('successAmt').textContent      = amt.toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:7}) + ' XLM';
     document.getElementById('successMerchant').textContent = 'Sent to ' + recipient.substring(0,4) + '…' + recipient.slice(-4);
     document.getElementById('successMode').textContent     = '✅ Settled on Stellar Testnet';
     document.getElementById('successMode').className       = 'badge mt-12 badge-green';

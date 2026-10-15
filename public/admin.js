@@ -65,7 +65,12 @@
     pinMsg: null,
     walletConfirm: false,
     walletBusy: false,
-    walletMsg: null
+    walletMsg: null,
+    editOpen: false,
+    editBusy: false,
+    editMsg: null,
+    editPhone: '',
+    editEmail: ''
   };
 
   function $(id) { return document.getElementById(id); }
@@ -677,6 +682,49 @@
       + '<div><b>' + o.title + '</b><p>' + o.hint + '</p></div></div>' + body + msg + '</div>';
   }
 
+  function resetEdit() {
+    state.editOpen = false;
+    state.editBusy = false;
+    state.editMsg = null;
+    state.editPhone = '';
+    state.editEmail = '';
+  }
+
+  function formatPhoneInput(raw) {
+    var value = String(raw || '').trim();
+    var digits = value.replace(/\D/g, '');
+    var national = '';
+    if (/^09\d{9}$/.test(digits)) national = digits.slice(1);
+    else if (/^639\d{9}$/.test(digits)) national = digits.slice(2);
+    else if (/^9\d{9}$/.test(digits) && value.charAt(0) !== '+') national = digits;
+    if (national) return '+63 ' + national.slice(0, 3) + ' ' + national.slice(3, 6) + ' ' + national.slice(6);
+    return value;
+  }
+
+  function contactBlock() {
+    var msg = state.editMsg
+      ? '<div class="reset-msg ' + (state.editMsg.ok ? 'ok' : 'err') + '">' + esc(state.editMsg.text) + '</div>'
+      : '';
+    if (!state.editOpen) {
+      return '<div class="um-recover"><div class="um-recover-h"><span class="um-recover-i info">✏️</span>'
+        + '<div><b>Phone and email</b><p>Correct the mobile number or email address linked to this user.</p></div></div>'
+        + '<div class="reset-actions"><button class="btn" type="button" data-act="edit-open">Edit contact details</button></div>'
+        + msg + '</div>';
+    }
+    var dis = state.editBusy ? ' disabled' : '';
+    return '<div class="um-recover"><div class="um-recover-h"><span class="um-recover-i info">✏️</span>'
+      + '<div><b>Edit contact details</b><p>Leave a field unchanged if it should stay the same.</p></div></div>'
+      + '<div class="um-form">'
+      + '<label class="um-label" for="editPhone">Mobile number</label>'
+      + '<input class="field" id="editPhone" type="tel" inputmode="tel" autocomplete="off" placeholder="+63 9XX XXX XXXX" value="' + esc(state.editPhone) + '"' + dis + '>'
+      + '<label class="um-label" for="editEmail">Email address</label>'
+      + '<input class="field" id="editEmail" type="email" inputmode="email" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="name@example.com" value="' + esc(state.editEmail) + '"' + dis + '>'
+      + '<p class="um-note">Changing the email also changes the address used to sign in, and signs this user out of all devices.</p>'
+      + '<div class="reset-actions"><button class="btn" type="button" data-act="edit-save"' + dis + '>' + (state.editBusy ? 'Saving…' : 'Save changes') + '</button>'
+      + '<button class="btn plain" type="button" data-act="edit-cancel"' + dis + '>Cancel</button></div>'
+      + '</div>' + msg + '</div>';
+  }
+
   function copyText(text, btn) {
     function done() {
       var old = btn.textContent;
@@ -803,6 +851,7 @@
     $('umBody').innerHTML = '<div class="um-chips">' + chips.join('') + '</div>'
       + stats
       + section('👤', 'Account', account)
+      + section('✏️', 'Contact details', contactBlock())
       + section('💼', 'Wallet', wallet)
       + section('🛡️', 'Security', security)
       + section('🛟', 'Account recovery', recover);
@@ -822,6 +871,7 @@
     state.walletConfirm = false;
     state.walletBusy = false;
     state.walletMsg = null;
+    resetEdit();
     renderUserModal();
     $('userModal').classList.add('show');
     document.body.classList.add('lock');
@@ -851,6 +901,7 @@
     state.walletConfirm = false;
     state.walletBusy = false;
     state.walletMsg = null;
+    resetEdit();
     $('userModal').classList.remove('show');
     document.body.classList.remove('lock');
   }
@@ -907,6 +958,56 @@
     }
   }
 
+  async function saveContact() {
+    var u = state.activeUser;
+    if (!u || state.editBusy) return;
+    var phone = formatPhoneInput(state.editPhone);
+    var email = String(state.editEmail || '').trim().toLowerCase();
+    var payload = {};
+    if (phone && phone !== String(u.phone || '')) payload.phone = phone;
+    if (email && email !== String(u.email || '').toLowerCase()) payload.email = email;
+    if (!payload.phone && !payload.email) {
+      state.editMsg = { ok: false, text: 'No changes to save.' };
+      renderUserModal();
+      return;
+    }
+    if (payload.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payload.email)) {
+      state.editMsg = { ok: false, text: 'Enter a valid email address.' };
+      renderUserModal();
+      return;
+    }
+    state.editBusy = true;
+    state.editMsg = null;
+    renderUserModal();
+    try {
+      var resp = await fetch('/api/admin/users/' + encodeURIComponent(u.id) + '/update-contact', {
+        method: 'POST',
+        headers: { 'x-admin-key': state.key, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (resp.status === 401 || resp.status === 503) { failAuth(resp.status); return; }
+      var data = {};
+      try { data = await resp.json(); } catch (e) {}
+      if (!resp.ok) throw new Error(data.error || ('http-' + resp.status));
+      if (data.user) {
+        state.activeUser = data.user;
+        state.users = state.users.map(function (x) { return x.id === data.user.id ? data.user : x; });
+        renderUsers();
+      }
+      if (data.auth) state.activeAuth = data.auth;
+      state.editOpen = false;
+      state.editPhone = '';
+      state.editEmail = '';
+      state.editMsg = { ok: true, text: 'Contact details updated.' };
+    } catch (e) {
+      var text = String(e && e.message ? e.message : 'unknown error');
+      state.editMsg = { ok: false, text: 'Could not save: ' + text.charAt(0).toUpperCase() + text.slice(1) };
+    } finally {
+      state.editBusy = false;
+      renderUserModal();
+    }
+  }
+
   async function resetPin() {
     var u = state.activeUser;
     if (!u || state.pinBusy) return;
@@ -952,6 +1053,18 @@
     var btn = e.target.closest('[data-act]');
     if (!btn) return;
     var act = btn.getAttribute('data-act');
+    if (act === 'edit-open') {
+      var cu = state.activeUser;
+      state.editOpen = true;
+      state.editMsg = null;
+      state.editPhone = cu ? cu.phone || '' : '';
+      state.editEmail = cu ? cu.email || '' : '';
+      state.resetConfirm = false; state.pinConfirm = false; state.walletConfirm = false;
+      renderUserModal();
+      return;
+    }
+    if (act === 'edit-cancel') { resetEdit(); renderUserModal(); return; }
+    if (act === 'edit-save') { saveContact(); return; }
     if (act === 'reset-ask') { state.resetConfirm = true; state.resetMsg = null; state.pinConfirm = false; state.walletConfirm = false; renderUserModal(); }
     else if (act === 'reset-cancel') { state.resetConfirm = false; renderUserModal(); }
     else if (act === 'reset-do') resetPassword();
@@ -961,6 +1074,16 @@
     else if (act === 'wallet-ask') { state.walletConfirm = true; state.walletMsg = null; state.resetConfirm = false; state.pinConfirm = false; renderUserModal(); }
     else if (act === 'wallet-cancel') { state.walletConfirm = false; renderUserModal(); }
     else if (act === 'wallet-do') resetWallet();
+  });
+  $('umBody').addEventListener('input', function (e) {
+    if (e.target.id === 'editPhone') state.editPhone = e.target.value;
+    else if (e.target.id === 'editEmail') state.editEmail = e.target.value;
+  });
+  $('umBody').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && (e.target.id === 'editPhone' || e.target.id === 'editEmail')) {
+      e.preventDefault();
+      saveContact();
+    }
   });
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && state.activeUser) closeUser(); });
 

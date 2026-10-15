@@ -2871,6 +2871,134 @@ app.post('/api/admin/users/:id/reset-wallet', requireAdminKey, adminUserActionLi
   }
 });
 
+const ADMIN_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function adminAuthView(record) {
+  return {
+    emailVerified: !!record.emailVerified,
+    disabled: !!record.disabled,
+    createdAt: record.metadata && record.metadata.creationTime ? record.metadata.creationTime : null,
+    lastSignInAt: record.metadata && record.metadata.lastSignInTime ? record.metadata.lastSignInTime : null,
+  };
+}
+
+app.post('/api/admin/users/:id/update-contact', requireAdminKey, adminUserActionLimiter, async (req, res) => {
+  const uid = String(req.params.id || '');
+  if (!uid || uid.length > 128) return res.status(400).json({ error: 'invalid user id' });
+  const body = req.body || {};
+  const hasPhone = typeof body.phone === 'string' && body.phone.trim() !== '';
+  const hasEmail = typeof body.email === 'string' && body.email.trim() !== '';
+  if (!hasPhone && !hasEmail) return res.status(400).json({ error: 'enter a phone number or an email address' });
+
+  let phone = null;
+  if (hasPhone) {
+    phone = cleanNewPhone(body.phone);
+    if (!phone) return res.status(400).json({ error: 'invalid phone number, use the format +63 9XX XXX XXXX' });
+  }
+  let email = null;
+  if (hasEmail) {
+    email = String(body.email).trim().toLowerCase();
+    if (!ADMIN_EMAIL_PATTERN.test(email) || email.length > 254) {
+      return res.status(400).json({ error: 'invalid email address' });
+    }
+  }
+
+  try {
+    const userRef = usersCol().doc(uid);
+    const snap = await userRef.get();
+    if (!snap.exists) return res.status(404).json({ error: 'user not found' });
+    const current = snap.data() || {};
+
+    let authRecord = null;
+    try {
+      authRecord = await getAuth().getUser(uid);
+    } catch (lookupErr) {
+      if (!lookupErr || lookupErr.code !== 'auth/user-not-found') throw lookupErr;
+    }
+
+    const phoneChanged = !!phone && phoneTail(phone) !== phoneTail(current.phone);
+    const currentEmail = String((authRecord && authRecord.email) || current.email || '').trim().toLowerCase();
+    const emailChanged = !!email && email !== currentEmail;
+    if (!phoneChanged && !emailChanged) return res.status(400).json({ error: 'no changes to save' });
+    if (emailChanged && !authRecord) return res.status(404).json({ error: 'login account not found' });
+
+    const newTail = phoneChanged ? phoneTail(phone) : '';
+    const all = await usersCol().select('phone', 'email').get();
+    for (const d of all.docs) {
+      if (d.id === uid) continue;
+      const other = d.data() || {};
+      if (phoneChanged && phoneTail(other.phone) === newTail) {
+        return res.status(409).json({ error: 'that phone number is already used by another user' });
+      }
+      if (emailChanged && String(other.email || '').trim().toLowerCase() === email) {
+        return res.status(409).json({ error: 'that email address is already used by another user' });
+      }
+    }
+    if (emailChanged) {
+      try {
+        const existing = await getAuth().getUserByEmail(email);
+        if (existing.uid !== uid) {
+          return res.status(409).json({ error: 'that email address is already used by another user' });
+        }
+      } catch (lookupErr) {
+        if (!lookupErr || lookupErr.code !== 'auth/user-not-found') throw lookupErr;
+      }
+    }
+
+    if (emailChanged) {
+      await getAuth().updateUser(uid, { email, emailVerified: false });
+      await getAuth().revokeRefreshTokens(uid);
+      const loginName = String(current.username || '').trim().toLowerCase();
+      if (loginName) {
+        await db.collection('usernames').doc(loginName).set({ uid, email }, { merge: true });
+      }
+    }
+
+    const fields = { updatedAt: FieldValue.serverTimestamp() };
+    if (emailChanged) fields.email = email;
+    if (phoneChanged) {
+      fields.phone = phone;
+      fields.previousPhone = current.phone || null;
+      fields.phoneChangedAt = FieldValue.serverTimestamp();
+    }
+    await userRef.update(fields);
+
+    recipientDirectory.loadedAt = 0;
+    relayNameCache.at = 0;
+    if (phoneChanged) {
+      if (current.phone) clearPinFailures(current.phone);
+      clearPinFailures(phone);
+    }
+
+    const changedLabels = [phoneChanged ? 'mobile number' : null, emailChanged ? 'email address' : null].filter(Boolean).join(' and ');
+    log('warn', 'admin', `Contact details updated by admin for user ${uid} (${changedLabels})`);
+    await logEvent(uid, '📝', `Your ${changedLabels} was updated by an administrator`, 'info');
+
+    if (phoneChanged) {
+      if (current.phone) {
+        sendSms(current.phone, 'OmniPay: The mobile number on your account was changed. If this was not you, contact support right away.').catch(() => {});
+      }
+      sendSms(phone, 'OmniPay: This number is now linked to your OmniPay account.').catch(() => {});
+    }
+
+    const fresh = await userRef.get();
+    let auth = null;
+    try {
+      auth = adminAuthView(await getAuth().getUser(uid));
+    } catch (_e) {
+      auth = null;
+    }
+    return res.json({ ok: true, user: adminUserView(fresh.id, fresh.data()), auth });
+  } catch (err) {
+    const code = err && err.code ? String(err.code) : '';
+    console.error('[api/admin/update-contact] failed:', err.message);
+    if (code === 'auth/email-already-exists') return res.status(409).json({ error: 'that email address is already used by another user' });
+    if (code === 'auth/invalid-email') return res.status(400).json({ error: 'invalid email address' });
+    if (code === 'auth/user-not-found') return res.status(404).json({ error: 'login account not found' });
+    return res.status(500).json({ error: 'internal error' });
+  }
+});
+
 const walletRebuildLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 10,

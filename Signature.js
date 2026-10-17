@@ -1,6 +1,7 @@
 const StellarSdk = require('stellar-sdk');
 
-const SIGNATURE_MAX_SKEW_MS = 5 * 60 * 1000;
+const configuredSkewMs = parseInt(process.env.SIGNATURE_MAX_SKEW_MS, 10);
+const SIGNATURE_MAX_SKEW_MS = configuredSkewMs > 0 ? configuredSkewMs : 5 * 60 * 1000;
 const PAYLOAD_VERSION = 'OMNIPAY-v1';
 const FIELD_DELIMITER = '|';
 

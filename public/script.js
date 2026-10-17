@@ -439,6 +439,28 @@ function renderConnectivityUI() {
   }
   if (payLabel)    payLabel.textContent = online ? 'Online Mode · Instant Settlement' : 'Offline Mode · Pay by SMS';
   if (heroPending) heroPending.textContent = online ? 'Online' : 'Offline';
+  applyPayTabAvailability();
+}
+
+function applyPayTabAvailability() {
+  var online = isEffectivelyOnline();
+  var smsTab = null;
+  document.querySelectorAll('.pay-tab[data-pay-tab]').forEach(function(t) {
+    if (t.getAttribute('data-pay-tab') === 'sms') { smsTab = t; return; }
+    t.disabled = !online;
+    t.setAttribute('aria-disabled', online ? 'false' : 'true');
+    t.title = online ? '' : 'Unavailable offline. Use SMS Pay.';
+  });
+  var hint = document.getElementById('payOfflineHint');
+  if (hint) hint.classList.toggle('show', !online);
+  if (!online && smsTab) {
+    var smsPanel = document.getElementById('panel-sms');
+    var smsReady = smsTab.classList.contains('active') && smsPanel && smsPanel.classList.contains('active');
+    if (!smsReady) {
+      try { stopCamera(); } catch (e) {}
+      switchPayTab('sms', smsTab);
+    }
+  }
 }
 
 function applyConnectivity(announce) {
@@ -514,10 +536,10 @@ function initConnectivity() {
 }
 
 function getTrustTier(score) {
-  if (score <= 25) return { tier:'New',      pct:30, uses:1,  icon:'⚪', color:'#8A8FA8', bg:'rgba(138,143,168,0.2)' };
-  if (score <= 50) return { tier:'Building', pct:50, uses:2,  icon:'🟡', color:'#FFA502', bg:'rgba(255,165,2,0.2)' };
-  if (score <= 75) return { tier:'Trusted',  pct:65, uses:4,  icon:'🟠', color:'#FF7F00', bg:'rgba(255,127,0,0.2)' };
-  return               { tier:'VIP',      pct:80, uses:99, icon:'🟢', color:'#2ED573', bg:'rgba(46,213,115,0.2)' };
+  if (score <= 25) return { tier:'New',      pct:30, uses:1,  icon:'⚪', color:'#64748B', bg:'rgba(100,116,139,0.2)' };
+  if (score <= 50) return { tier:'Building', pct:50, uses:2,  icon:'🟡', color:'#F59E0B', bg:'rgba(245,158,11,0.2)' };
+  if (score <= 75) return { tier:'Trusted',  pct:65, uses:4,  icon:'🟠', color:'#D97706', bg:'rgba(217,119,6,0.2)' };
+  return               { tier:'VIP',      pct:80, uses:99, icon:'🟢', color:'#10B981', bg:'rgba(16,185,129,0.2)' };
 }
 
 function showLoading(show, msg) {
@@ -528,6 +550,10 @@ function showLoading(show, msg) {
 }
 
 function goTo(screenId) {
+  var activeScreen = document.querySelector('.screen.active');
+  var fromId = activeScreen ? activeScreen.id : '';
+  if (fromId === 'login' && screenId === 'register') clearLoginForm();
+  if (fromId === 'register' && screenId === 'login') resetRegisterForm();
   document.querySelectorAll('.screen').forEach(function(s){ s.classList.remove('active'); });
   var el = document.getElementById(screenId);
   if (el) el.classList.add('active');
@@ -536,6 +562,8 @@ function goTo(screenId) {
 function navTo(screenId) {
   if (screenId !== 'pay') { try { stopCamera(); } catch(e) {} }
   goTo(screenId);
+  if (screenId !== 'profile') { resetSummaryReveal(); lockProfileEdit(); resetSettingsTab(); }
+  if (screenId !== 'home') resetHomeBalance();
   document.querySelectorAll('.nav-item').forEach(function(n){ n.classList.remove('active'); });
   var nav = document.getElementById('nav-' + screenId);
   if (nav) nav.classList.add('active');
@@ -550,12 +578,26 @@ function navTo(screenId) {
   syncContacts(false);
 }
 
+function resetSettingsTab() {
+  var btns = document.querySelectorAll('.settings-tab-btn');
+  if (!btns.length) return;
+  btns.forEach(function(b){ b.classList.remove('active'); });
+  document.querySelectorAll('.settings-panel').forEach(function(p){ p.classList.remove('active'); });
+  btns[0].classList.add('active');
+  var summary = document.getElementById('spanel-summary');
+  if (summary) summary.classList.add('active');
+  var row = document.querySelector('.settings-tabs');
+  if (row) row.scrollLeft = 0;
+}
+
 function switchSettingsTab(tab, btn) {
   document.querySelectorAll('.settings-tab-btn').forEach(function(b){ b.classList.remove('active'); });
   document.querySelectorAll('.settings-panel').forEach(function(p){ p.classList.remove('active'); });
   btn.classList.add('active');
+  try { btn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' }); } catch (e) {}
   var panel = document.getElementById('spanel-' + tab);
   if (panel) panel.classList.add('active');
+  if (tab !== 'profile-edit') lockProfileEdit();
   if (tab === 'profile-edit') populateProfileEditForm();
   if (tab === 'privacy') loadPrivacySettings();
   if (tab === 'activity') loadActivity();
@@ -565,17 +607,17 @@ function switchSettingsTab(tab, btn) {
 var ACTIVITY = { alerts: [], busy: false };
 
 var ACTIVITY_META = {
-  'login':            { icon: '🔐', bg: 'linear-gradient(135deg,#E8FFF6,#C6F9E8)', title: 'Signed in' },
-  'new-device':       { icon: '📲', bg: 'linear-gradient(135deg,#FFF3E0,#FFE0B2)', title: 'New device signed in' },
-  'key-changed':      { icon: '🔑', bg: 'linear-gradient(135deg,#FFE9E9,#FFD0D0)', title: 'Wallet key changed' },
-  'password-changed': { icon: '🛡️', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)', title: 'Password changed' },
-  'profile-updated':  { icon: '✏️', bg: 'linear-gradient(135deg,#F0E8FF,#DDD5FF)', title: 'Profile updated' },
-  'phone-changed':    { icon: '📱', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)', title: 'Mobile number changed' },
-  'privacy-changed':  { icon: '🙈', bg: 'linear-gradient(135deg,#F0E8FF,#DDD5FF)', title: 'Privacy settings changed' },
-  'logout':           { icon: '🚪', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)', title: 'Signed out' },
-  'payment-sent':     { icon: '💸', bg: 'linear-gradient(135deg,#E8FFF6,#C6F9E8)', title: 'Payment sent' },
-  'payment-rejected': { icon: '🚫', bg: 'linear-gradient(135deg,#FFE9E9,#FFD0D0)', title: 'Payment rejected' },
-  'payment-pending':  { icon: '⏳', bg: 'linear-gradient(135deg,#FFF3E0,#FFE0B2)', title: 'Payment in progress' }
+  'login':            { icon: '🔐', bg: 'var(--icon-bg)', title: 'Signed in' },
+  'new-device':       { icon: '📲', bg: 'var(--icon-bg)', title: 'New device signed in' },
+  'key-changed':      { icon: '🔑', bg: 'var(--icon-bg)', title: 'Wallet key changed' },
+  'password-changed': { icon: '🛡️', bg: 'var(--icon-bg)', title: 'Password changed' },
+  'profile-updated':  { icon: '✏️', bg: 'var(--icon-bg)', title: 'Profile updated' },
+  'phone-changed':    { icon: '📱', bg: 'var(--icon-bg)', title: 'Mobile number changed' },
+  'privacy-changed':  { icon: '🙈', bg: 'var(--icon-bg)', title: 'Privacy settings changed' },
+  'logout':           { icon: '🚪', bg: 'var(--icon-bg)', title: 'Signed out' },
+  'payment-sent':     { icon: '💸', bg: 'var(--icon-bg)', title: 'Payment sent' },
+  'payment-rejected': { icon: '🚫', bg: 'var(--icon-bg)', title: 'Payment rejected' },
+  'payment-pending':  { icon: '⏳', bg: 'var(--icon-bg)', title: 'Payment in progress' }
 };
 
 var ACTIVITY_REASONS = {
@@ -718,7 +760,7 @@ function renderActivity(data) {
   if (!devices.length) devBox.appendChild(activityEl('p', 'activity-empty', 'No devices recorded yet.'));
   devices.forEach(function (d) {
     devBox.appendChild(activityRow(
-      { icon: d.thisDevice ? '📱' : '💻', bg: 'linear-gradient(135deg,#EAF1FF,#D6E4FF)' },
+      { icon: d.thisDevice ? '📱' : '💻', bg: 'var(--icon-bg)' },
       d.label,
       ['Last active ' + formatActivityTime(d.lastSeen), 'First seen ' + formatActivityTime(d.firstSeen)],
       d.thisDevice ? 'This device' : '',
@@ -842,9 +884,124 @@ function populateProfileEditForm() {
   document.getElementById('editEmail').value = STATE.user.email || '';
   var typeEl = document.getElementById('editType');
   if (typeEl) typeEl.value = STATE.user.type || 'personal';
+  applyProfileLock();
+}
+
+var PROFILE_LOCK = { unlocked: false, timer: null, busy: false };
+var PROFILE_LOCK_MS = 5 * 60 * 1000;
+
+function applyProfileLock() {
+  var open = PROFILE_LOCK.unlocked;
+  ['editFirst', 'editLast', 'editType'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.disabled = !open;
+  });
+  var saveBtn = document.getElementById('saveProfileBtn');
+  if (saveBtn) saveBtn.disabled = !open;
+  var link = document.getElementById('changeNumberLink');
+  if (link) { link.style.opacity = open ? '1' : '0.5'; }
+  var card = document.getElementById('profileLockCard');
+  if (card) card.setAttribute('data-state', open ? 'unlocked' : 'locked');
+  var icon = document.getElementById('profileLockIcon');
+  if (icon) icon.textContent = open ? '🔓' : '🔒';
+  var title = document.getElementById('profileLockTitle');
+  if (title) title.textContent = open ? 'Editing unlocked' : 'Profile is locked';
+  var text = document.getElementById('profileLockText');
+  if (text) text.textContent = open
+    ? 'You can now update your details. It locks again after saving or after 5 minutes.'
+    : 'Enter your password to edit your personal information.';
+  var btn = document.getElementById('profileLockBtn');
+  if (btn) {
+    btn.textContent = open ? 'Lock' : 'Unlock';
+    btn.className = 'btn btn-sm edit-lock-btn ' + (open ? 'btn-ghost' : 'btn-primary');
+  }
+}
+
+function lockProfileEdit() {
+  if (PROFILE_LOCK.timer) { clearTimeout(PROFILE_LOCK.timer); PROFILE_LOCK.timer = null; }
+  PROFILE_LOCK.unlocked = false;
+  applyProfileLock();
+}
+
+function onProfileLockBtn() {
+  if (PROFILE_LOCK.unlocked) { lockProfileEdit(); showAlert('yellow', '🔒 Profile locked'); return; }
+  showProfileUnlockModal();
+}
+
+function requireProfileUnlock() {
+  if (PROFILE_LOCK.unlocked) return true;
+  showProfileUnlockModal();
+  return false;
+}
+
+function showProfileUnlockModal() {
+  var input = document.getElementById('unlockPass');
+  input.value = '';
+  input.type = 'password';
+  input.classList.remove('error');
+  showModal('profileUnlockModal');
+  setTimeout(function() { try { input.focus(); } catch (e) {} }, 120);
+}
+
+async function verifyAccountPassword(password) {
+  if (navigator.onLine && auth && auth.currentUser && auth.currentUser.email) {
+    try {
+      var credential = firebase.auth.EmailAuthProvider.credential(auth.currentUser.email, password);
+      await auth.currentUser.reauthenticateWithCredential(credential);
+      return 'ok';
+    } catch (e) {
+      if (/wrong-password|invalid-credential|invalid-login-credentials/i.test(e.code || '')) return 'wrong';
+      if (/too-many-requests/i.test(e.code || '')) return 'limited';
+      if (!isNetworkFailure(e)) return 'error';
+    }
+  }
+  var vault = readOfflineVaults()[STATE._vaultKey];
+  if (vault && vault.walletSecretEncrypted) {
+    try {
+      await decryptWalletSecret(vault.walletSecretEncrypted, vault.walletSecretSalt, vault.walletSecretIv, password);
+      return 'ok';
+    } catch (e) { return 'wrong'; }
+  }
+  return 'error';
+}
+
+async function doUnlockProfile() {
+  if (PROFILE_LOCK.busy) return;
+  var input = document.getElementById('unlockPass');
+  var password = input.value;
+  if (!password) { input.classList.add('error'); showAlert('red', '⚠️ Enter your password'); return; }
+
+  var btn = document.getElementById('unlockSaveBtn');
+  PROFILE_LOCK.busy = true;
+  if (btn) { btn.disabled = true; btn.textContent = 'Verifying…'; }
+  var result = await verifyAccountPassword(password);
+  PROFILE_LOCK.busy = false;
+  if (btn) { btn.disabled = false; btn.textContent = 'Unlock'; }
+  input.value = '';
+
+  if (result !== 'ok') {
+    input.classList.add('error');
+    showAlert('red', result === 'wrong' ? '❌ Incorrect password'
+      : result === 'limited' ? '⏳ Too many attempts. Try again later.'
+      : '❌ Could not verify your password. Try again.');
+    return;
+  }
+
+  closeModal('profileUnlockModal');
+  PROFILE_LOCK.unlocked = true;
+  if (PROFILE_LOCK.timer) clearTimeout(PROFILE_LOCK.timer);
+  PROFILE_LOCK.timer = setTimeout(function() {
+    lockProfileEdit();
+    showAlert('yellow', '🔒 Profile locked after inactivity');
+  }, PROFILE_LOCK_MS);
+  applyProfileLock();
+  showAlert('success', '🔓 Profile unlocked');
+  var first = document.getElementById('editFirst');
+  if (first) { try { first.focus(); } catch (e) {} }
 }
 
 async function doSaveProfile() {
+  if (!requireProfileUnlock()) return;
   var first = document.getElementById('editFirst').value.trim();
   var last  = document.getElementById('editLast').value.trim();
   var phone = document.getElementById('editPhone').value.trim();
@@ -883,6 +1040,7 @@ async function doSaveProfile() {
 
   showLoading(false);
   if (btn) { btn.disabled = false; btn.textContent = '💾 Save Profile'; }
+  lockProfileEdit();
   renderProfile();
   showAlert('success','✅ Profile updated successfully!');
   activityRequest('POST', '/api/activity/event', { type: 'profile-updated', deviceId: getActivityDeviceId() }).catch(function(){});
@@ -922,6 +1080,8 @@ function _getCountryConfig(country) {
   return { coin: 'USDC', sym: '$', cur: 'usd' };
 }
 
+var XLM_RATE_CACHE = { cur: '', rate: null, at: 0 };
+
 async function _updateXLMConversion(xlmAmt) {
   var convEl = document.getElementById('heroConvText');
   if (!convEl) return;
@@ -952,6 +1112,8 @@ async function _updateXLMConversion(xlmAmt) {
     } catch(_e2) {}
   }
   if (rate !== null) {
+    XLM_RATE_CACHE = { cur: cfg.cur, rate: rate, at: Date.now() };
+    updateSummaryTotalBalance();
     var total    = xlmAmt * rate;
     var decimals = (cfg.cur === 'jpy' || cfg.cur === 'krw' || cfg.cur === 'vnd' || cfg.cur === 'idr') ? 0 : 2;
     var totalStr = cfg.sym + total.toLocaleString('en',{minimumFractionDigits:decimals,maximumFractionDigits:decimals});
@@ -1074,8 +1236,37 @@ async function prepareSettlementSigner(secretKey) {
   }
 }
 
+async function rebuildWalletAfterReset(password) {
+  showLoading(true, 'Setting up your new wallet…');
+  try {
+    if (typeof StellarSdk === 'undefined' || !StellarSdk.Keypair) throw new Error('sdk-unavailable');
+    var kp = generateStellarKeypairReal();
+    await fundTestnetAccount(kp.publicKey);
+    var rec = await encryptWalletSecret(kp.secretKey, password);
+    var data = await activityRequest('POST', '/api/wallet/rebuild', {
+      walletPublic: kp.publicKey,
+      walletSecretEncrypted: rec.ciphertext,
+      walletSecretSalt: rec.salt,
+      walletSecretIv: rec.iv,
+      deviceId: getActivityDeviceId()
+    });
+    return {
+      walletPublic: kp.publicKey,
+      walletSecretEncrypted: rec.ciphertext,
+      walletSecretSalt: rec.salt,
+      walletSecretIv: rec.iv,
+      secret: kp.secretKey,
+      xlmBalance: data && data.xlmBalance != null ? data.xlmBalance : 10000
+    };
+  } catch (e) {
+    throw new Error('Could not set up your new wallet. Please try again.');
+  } finally {
+    showLoading(false);
+  }
+}
+
 async function doLogin() {
-  var username = document.getElementById('loginUser').value.trim();
+  var username = document.getElementById('loginUser').value.trim().replace(/^@+/, '');
   var password = document.getElementById('loginPass').value;
   if (!username || !password) { showAlert('red','⚠️ Enter username and password'); return; }
   if (!navigator.onLine) { await doOfflineLogin(username, password); return; }
@@ -1103,8 +1294,18 @@ async function doLogin() {
       account.walletSecretIv,
       password
     );
+    if (account.walletResetPending === true) {
+      var fresh = await rebuildWalletAfterReset(password);
+      account.walletPublic = fresh.walletPublic;
+      account.walletSecretEncrypted = fresh.walletSecretEncrypted;
+      account.walletSecretSalt = fresh.walletSecretSalt;
+      account.walletSecretIv = fresh.walletSecretIv;
+      account._unlockedWalletSecret = fresh.secret;
+      account.xlmBalance = fresh.xlmBalance;
+    }
   } catch (e) {
     loginError = e;
+    console.warn('OmniPay sign-in error:', e);
     try { if (credential && credential.user) await auth.signOut(); } catch (_) {}
     account = null;
   }
@@ -1170,9 +1371,16 @@ async function doLogin() {
     setFbStatus('connected','🟢 Signed in as ' + firstName);
     startInboxListener(); // begin real-time incoming-payment listener
     reportLoginActivity();
+    if (!STATE.wallet.secretKey && account.walletSecretEncrypted) {
+      setTimeout(function(){ showWalletRecoveryModal(null); }, 700);
+    }
   } else {
     if (loginError && loginError.code === 'permission-denied') {
       showAlert('red','❌ Login is unavailable. Firestore rules need to allow reading the "usernames" collection.');
+    } else if (loginError && loginError.code === 'auth/too-many-requests') {
+      showAlert('red','⏳ Too many attempts. Please wait a few minutes and try again.');
+    } else if (loginError && loginError.message && !loginError.code) {
+      showAlert('red','❌ ' + loginError.message);
     } else {
       showAlert('red','❌ Invalid username or password');
     }
@@ -1191,7 +1399,28 @@ async function doForgotPassword() {
 
   showLoading(true, 'Sending reset link…');
   try {
-    await auth.sendPasswordResetEmail(email);
+    var serverSent = false;
+    try {
+      var resp = await fetch(API_BASE + '/api/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email })
+      });
+      if (resp.status === 429) {
+        showLoading(false);
+        showAlert('orange','⏳ Too many requests. Please wait a few minutes and try again.');
+        return;
+      }
+      if (resp.status === 400) {
+        showLoading(false);
+        showAlert('orange','📧 Enter a valid email address');
+        return;
+      }
+      serverSent = resp.ok;
+    } catch (_) {
+      serverSent = false;
+    }
+    if (!serverSent) await auth.sendPasswordResetEmail(email);
     showLoading(false);
     closeModal('forgotModal');
     document.getElementById('forgotEmail').value = '';
@@ -1199,6 +1428,42 @@ async function doForgotPassword() {
   } catch (e) {
     showLoading(false);
     showAlert('red','❌ Could not send the reset link. Check the email and try again.');
+  }
+}
+
+async function doForgotUsername() {
+  var email = document.getElementById('forgotUsernameEmail').value.trim();
+
+  if (!email) { showAlert('red','⚠️ Enter your email address'); return; }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { showAlert('orange','📧 Enter a valid email address'); return; }
+  if (!navigator.onLine) { showAlert('orange','📡 You need an internet connection to recover your username'); return; }
+
+  showLoading(true, 'Sending your username…');
+  try {
+    var resp = await fetch(API_BASE + '/api/forgot-username', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email })
+    });
+    showLoading(false);
+    if (resp.status === 429) {
+      showAlert('orange','⏳ Too many requests. Please wait a few minutes and try again.');
+      return;
+    }
+    if (resp.status === 400) {
+      showAlert('orange','📧 Enter a valid email address');
+      return;
+    }
+    if (!resp.ok) {
+      showAlert('red','❌ Could not send your username right now. Please try again later.');
+      return;
+    }
+    closeModal('forgotUsernameModal');
+    document.getElementById('forgotUsernameEmail').value = '';
+    showAlert('success','✅ If that email is registered, your username is on its way. Check your spam folder too.');
+  } catch (e) {
+    showLoading(false);
+    showAlert('red','❌ Could not send your username right now. Please try again later.');
   }
 }
 
@@ -1478,6 +1743,21 @@ function finishPasswordReset() {
 
 window.addEventListener('load', handlePasswordResetLink);
 
+async function checkRegistrationAvailability(fields) {
+  try {
+    var resp = await fetch(API_BASE + '/api/check-availability', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(fields)
+    });
+    if (!resp.ok) return null;
+    var data = await resp.json();
+    return Array.isArray(data.conflicts) ? data.conflicts : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function doRegister() {
   var first = document.getElementById('regFirst').value.trim();
   var last  = document.getElementById('regLast').value.trim();
@@ -1535,8 +1815,37 @@ async function doRegister() {
 
   var fullName = first + ' ' + last;
 
+  var conflicts = await checkRegistrationAvailability({
+    firstName: first, lastName: last, username: user, phone: phone, email: email
+  });
+
   showLoading(false);
   if (btn) { btn.disabled = false; btn.textContent = 'Create Account & Generate Wallet →'; }
+
+  if (conflicts === null) {
+    showAlert('red', '❌ Could not check availability. Check your connection and try again.');
+    return;
+  }
+  if (conflicts.length) {
+    var conflictFields = { phone: ['regPhone'], email: ['regEmail'], username: ['regUser'], name: ['regFirst', 'regLast'] };
+    var conflictText = {
+      phone:    'Phone number already exists',
+      email:    'Email address already exists',
+      username: 'Username already exists',
+      name:     'User first name and last name already exist'
+    };
+    conflicts.forEach(function(key) {
+      (conflictFields[key] || []).forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.classList.add('error');
+      });
+    });
+    var firstConflict = conflicts[0];
+    var focusEl = document.getElementById((conflictFields[firstConflict] || [])[0]);
+    if (focusEl) { focusEl.focus(); focusEl.scrollIntoView({ behavior:'smooth', block:'center' }); }
+    showAlert('red', '❌ ' + conflictText[firstConflict]);
+    return;
+  }
 
   if (!auth || typeof StellarSdk === 'undefined' || !StellarSdk.Keypair) {
     showAlert('red', '❌ Required services are not loaded. Refresh the page and try again.');
@@ -1564,7 +1873,7 @@ async function doRegister() {
   var country  = (document.getElementById('regCountry') || {}).value || '\U0001f1f5\U0001f1ed Philippines';
   var now = new Date();
   var monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  var memberSince = monthNames[now.getMonth()] + ' ' + now.getFullYear();
+  var memberSince = monthNames[now.getMonth()] + ' ' + now.getDate() + ', ' + now.getFullYear();
 
   PENDING_USER = {
     uid:             user.toLowerCase(),
@@ -1679,7 +1988,7 @@ async function finishWalletSetup() {
     var authCode = authError && authError.code ? authError.code : '';
     console.warn('OmniPay sign-up error:', authError);
     var authMessages = {
-      'auth/email-already-in-use': '❌ An account already exists for this email address.',
+      'auth/email-already-in-use': '❌ Email address already exists',
       'auth/invalid-email': '❌ That email address is not valid.',
       'auth/weak-password': '❌ Password is too weak. Use at least 6 characters with a number.',
       'auth/operation-not-allowed': '❌ Email/Password sign-in is turned off. Enable it in Firebase Console → Authentication → Sign-in method.',
@@ -1803,13 +2112,7 @@ async function finishWalletSetup() {
   delete pendingCopy._password;
   PENDING_USER = null;
 
-  ['regFirst','regLast','regUser','regPhone','regEmail','regPass','regPassConfirm','regPin'].forEach(function(id){
-    var el = document.getElementById(id);
-    if (el) el.value = '';
-  });
-  syncRegPhoneToCountry();
-  var terms = document.getElementById('regTerms');
-  if (terms) terms.checked = false;
+  resetRegisterForm();
 
   document.getElementById('bottomNav').style.display = 'flex';
   navTo('home');
@@ -1936,6 +2239,27 @@ async function doPayBill() {
   setTimeout(fetchLiveXLMBalance, 2500);
 }
 
+var PROFILE_WALLET_KEY = { full: false };
+
+function shortWalletAddress(addr) {
+  addr = String(addr || '');
+  return addr.length > 14 ? addr.slice(0, 6) + '…' + addr.slice(-4) : addr;
+}
+
+function renderProfileWalletKey() {
+  var el = document.getElementById('profileWalletKey');
+  if (!el) return;
+  var addr = (STATE.wallet && STATE.wallet.publicKey) || '';
+  if (!addr) { el.textContent = 'Generating…'; el.removeAttribute('data-short'); return; }
+  el.textContent = PROFILE_WALLET_KEY.full ? addr : shortWalletAddress(addr);
+  el.setAttribute('data-short', PROFILE_WALLET_KEY.full ? 'false' : 'true');
+}
+
+function toggleProfileWalletKey() {
+  PROFILE_WALLET_KEY.full = !PROFILE_WALLET_KEY.full;
+  renderProfileWalletKey();
+}
+
 function copyInternalWalletAddress() {
   var addr = (STATE.wallet && STATE.wallet.publicKey) || '';
   if (!addr) { showAlert('orange','⚠️ No wallet address found'); return; }
@@ -1960,17 +2284,21 @@ function doLogout() {
   var activityTab = document.getElementById('activityTabBtn');
   if (activityTab) activityTab.classList.remove('has-alert');
   if (auth) auth.signOut().catch(function(){});
+  lockProfileEdit();
+  resetSettingsTab();
+  resetHomeBalance();
   STATE.isLoggedIn = false;
   STATE.uid        = null;
   STATE._sendPicked = null;
   STATE._smsPicked  = null;
   _stopMonitorAutoRefresh();
   MONITOR.relay = []; MONITOR.loadedAt = 0;
-  try { sessionStorage.removeItem('omnipay_session'); } catch(e) {}
+  try { sessionStorage.removeItem('omnipay_session'); sessionStorage.removeItem('omnipay_wk'); } catch(e) {}
   document.getElementById('bottomNav').style.display = 'none';
   goTo('login');
-  document.getElementById('loginUser').value = '';
-  document.getElementById('loginPass').value = '';
+  clearLoginForm();
+  resetRegisterForm();
+  resetSummaryReveal();
   setFbStatus('', 'Connecting to Firebase…');
   showAlert('yellow','👋 Signed out successfully');
 }
@@ -1979,6 +2307,59 @@ function togglePass(id, btn) {
   var inp = document.getElementById(id);
   if (inp.type === 'password') { inp.type = 'text';     btn.textContent = '🙈'; }
   else                         { inp.type = 'password'; btn.textContent = '👁'; }
+}
+
+function hidePassField(id) {
+  var input = document.getElementById(id);
+  if (!input) return;
+  input.type = 'password';
+  var toggle = input.parentNode && input.parentNode.querySelector('.input-toggle');
+  if (toggle) toggle.textContent = '👁';
+}
+
+function updateRegPassMatch() {
+  var pass = document.getElementById('regPass');
+  var confirm = document.getElementById('regPassConfirm');
+  var hint = document.getElementById('regPassMatch');
+  if (!pass || !confirm || !hint) return;
+  if (!confirm.value) {
+    hint.className = 'match-hint';
+    hint.textContent = '';
+    return;
+  }
+  var matches = pass.value === confirm.value;
+  hint.className = 'match-hint show ' + (matches ? 'match' : 'mismatch');
+  hint.textContent = matches ? '✅ Passwords match' : '❌ Passwords do not match';
+}
+
+function clearLoginForm() {
+  ['loginUser', 'loginPass'].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) { el.value = ''; el.classList.remove('error'); }
+  });
+  hidePassField('loginPass');
+}
+
+function resetRegisterForm() {
+  ['regFirst','regLast','regUser','regPhone','regEmail','regPass','regPassConfirm','regPin'].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) { el.value = ''; el.classList.remove('error'); }
+  });
+  ['regPass','regPassConfirm','regPin'].forEach(function(id){ hidePassField(id); });
+  ['regCountry','regType'].forEach(function(id){
+    var sel = document.getElementById(id);
+    if (!sel) return;
+    var idx = 0;
+    for (var i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].defaultSelected) { idx = i; break; }
+    }
+    sel.selectedIndex = idx;
+  });
+  syncRegPhoneToCountry();
+  var terms = document.getElementById('regTerms');
+  if (terms) terms.checked = false;
+  updateRegPassMatch();
+  prevRegStep();
 }
 
 function fmtAmt(n) {
@@ -2103,7 +2484,7 @@ function renderHome() {
 
 function renderTxItem(tx) {
   var isCredit  = tx.type === 'receive';
-  var iconBg    = isCredit ? 'rgba(46,213,115,0.1)' : tx.status==='failed' ? 'rgba(255,71,87,0.1)' : tx.mode==='offline' ? 'rgba(47,111,237,0.1)' : 'rgba(255,165,2,0.1)';
+  var iconBg    = 'var(--icon-bg)';
   var statusText= tx.status==='synced'?'✅ Synced':tx.status==='pending'?'⏳ Pending Sync':tx.status==='offline'?'📴 Offline':'❌ Failed';
   var hashLine = '';
   if (tx.txHash) {
@@ -2551,12 +2932,137 @@ function filterTx(filter, el) {
   renderHistory(filter);
 }
 
+var SUMMARY_REVEAL = { name: false, email: false, phone: false, balance: false };
+
+function maskDetail(value) {
+  return String(value).replace(/[^\s@.+\-()]/g, '*');
+}
+
+function maskPhone(value) {
+  var text  = String(value);
+  var total = (text.match(/\d/g) || []).length;
+  var seen  = 0;
+  return text.replace(/\d/g, function(d) {
+    seen += 1;
+    return seen > total - 2 ? d : '*';
+  });
+}
+
+function maskEmail(value) {
+  var text = String(value);
+  var at   = text.lastIndexOf('@');
+  if (at < 1) return maskDetail(text);
+  var local  = text.slice(0, at);
+  var domain = text.slice(at);
+  if (local.length <= 3) return local.charAt(0) + local.slice(1).replace(/./g, '*') + domain;
+  return local.charAt(0) + local.slice(1, -2).replace(/./g, '*') + local.slice(-2) + domain;
+}
+
+function maskName(value) {
+  return String(value).replace(/\S+/g, function(word) {
+    return word.charAt(0) + word.slice(1).replace(/./g, '*');
+  });
+}
+
+function summaryMaskRow(label, field, style) {
+  return '<div class="info-row"><span class="info-label">' + label + '</span><span class="info-val info-val-mask"' + (style ? ' style="' + style + '"' : '') + '><span class="mask-text" data-mask-text="' + field + '"></span><button type="button" class="mask-toggle" data-mask-btn="' + field + '" onclick="toggleSummaryField(\'' + field + '\')"></button></span></div>';
+}
+
+function summaryBalanceRow(label, id) {
+  return '<div class="info-row"><span class="info-label">' + label + '</span><span class="info-val info-val-mask"><span class="mask-text" id="' + id + '" data-bal-real=""></span><button type="button" class="mask-toggle" data-mask-btn="balance" onclick="toggleSummaryField(\'balance\')"></button></span></div>';
+}
+
+function setSummaryBalance(el, text) {
+  if (!el) return;
+  el.setAttribute('data-bal-real', text);
+  el.textContent = SUMMARY_REVEAL.balance ? text : maskBalanceText(text);
+}
+
+function setMaskText(el, field, text) {
+  var at = text.indexOf('@') + 1;
+  if (field !== 'email' || at < 2) { el.textContent = text; return; }
+  el.textContent = '';
+  [text.slice(0, at), text.slice(at)].forEach(function(part){
+    var piece = document.createElement('span');
+    piece.style.display = 'inline-block';
+    piece.textContent = part;
+    el.appendChild(piece);
+  });
+}
+
+function applySummaryMask() {
+  var labels = { name: 'full name', email: 'email address', phone: 'phone number' };
+  Object.keys(labels).forEach(function(field){
+    var value = String((STATE.user && STATE.user[field]) || '');
+    var shown = SUMMARY_REVEAL[field];
+    document.querySelectorAll('[data-mask-text="' + field + '"]').forEach(function(el){
+      setMaskText(el, field, value ? (shown ? value : (field === 'name' ? maskName(value) : field === 'email' ? maskEmail(value) : field === 'phone' ? maskPhone(value) : maskDetail(value))) : (el.getAttribute('data-mask-empty') || '—'));
+    });
+    document.querySelectorAll('[data-mask-btn="' + field + '"]').forEach(function(btn){
+      btn.style.display = value ? '' : 'none';
+      btn.textContent = shown ? '🙈' : '👁';
+      btn.setAttribute('aria-label', (shown ? 'Hide ' : 'Show ') + labels[field]);
+      btn.setAttribute('aria-pressed', shown ? 'true' : 'false');
+    });
+  });
+  applyBalanceMask();
+}
+
+function applyBalanceMask() {
+  var shown = SUMMARY_REVEAL.balance;
+  document.querySelectorAll('[data-bal-real]').forEach(function(el) {
+    var real = el.getAttribute('data-bal-real') || '';
+    el.textContent = shown ? real : maskBalanceText(real);
+  });
+  document.querySelectorAll('[data-mask-btn="balance"]').forEach(function(btn) {
+    btn.textContent = shown ? '🙈' : '👁';
+    btn.setAttribute('aria-label', shown ? 'Hide balance' : 'Show balance');
+    btn.setAttribute('aria-pressed', shown ? 'true' : 'false');
+  });
+}
+
+function toggleSummaryField(field) {
+  SUMMARY_REVEAL[field] = !SUMMARY_REVEAL[field];
+  applySummaryMask();
+}
+
+function resetSummaryReveal() {
+  if (!SUMMARY_REVEAL.name && !SUMMARY_REVEAL.email && !SUMMARY_REVEAL.phone && !SUMMARY_REVEAL.balance) return;
+  SUMMARY_REVEAL.name = false;
+  SUMMARY_REVEAL.email = false;
+  SUMMARY_REVEAL.phone = false;
+  SUMMARY_REVEAL.balance = false;
+  applySummaryMask();
+}
+
+function formatMemberSince() {
+  var raw = String(STATE.memberSince || '');
+  if (/^[A-Za-z]{3,9}\.? \d{1,2}, \d{4}$/.test(raw)) return raw;
+  var created = auth && auth.currentUser && auth.currentUser.metadata && auth.currentUser.metadata.creationTime;
+  var date = created ? new Date(created) : null;
+  if (date && !isNaN(date.getTime())) {
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+  return raw || '—';
+}
+
+function updateSummaryTotalBalance() {
+  var el = document.getElementById('summaryTotalBalance');
+  if (!el || !STATE.wallet) return;
+  var xlmTotal = STATE.wallet.xlmBalance || 0;
+  var cfg = _getCountryConfig(STATE.user && STATE.user.country);
+  if (XLM_RATE_CACHE.rate !== null && XLM_RATE_CACHE.cur === cfg.cur) {
+    var decimals = (cfg.cur === 'jpy' || cfg.cur === 'krw' || cfg.cur === 'vnd' || cfg.cur === 'idr') ? 0 : 2;
+    setSummaryBalance(el, '\u2248 ' + cfg.sym + (xlmTotal * XLM_RATE_CACHE.rate).toLocaleString('en', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }));
+  } else {
+    setSummaryBalance(el, xlmTotal.toLocaleString('en', { minimumFractionDigits: 4, maximumFractionDigits: 4 }) + ' XLM');
+  }
+}
+
 function renderProfile() {
   normalizeTransactionState();
   syncSpendableBalance();
   var t = getTrustTier(STATE.trustScore);
-  document.getElementById('profileName').textContent        = STATE.user.name || 'User';
-  document.getElementById('profilePhone').textContent       = STATE.user.phone || '—';
   document.getElementById('profileTrustScore').textContent  = STATE.trustScore;
   document.getElementById('profileTrustFill').style.width   = STATE.trustScore+'%';
   document.getElementById('profileTrustFill').style.background = 'linear-gradient(90deg,'+t.color+',rgba(255,255,255,0.5))';
@@ -2572,7 +3078,8 @@ function renderProfile() {
   document.getElementById('profileType').textContent  = typeMap[STATE.user.type] || STATE.user.type;
 
   document.getElementById('profileXLM').textContent       = STATE.wallet.xlmBalance.toLocaleString('en',{minimumFractionDigits:4})+' XLM';
-  document.getElementById('profileWalletKey').textContent = STATE.wallet.publicKey || 'Generating…';
+  PROFILE_WALLET_KEY.full = false;
+  renderProfileWalletKey();
 
   var activeLabel = document.getElementById('activeWalletLabel');
   if (activeLabel) {
@@ -2594,18 +3101,24 @@ function renderProfile() {
   var synced  = STATE.transactions.filter(function(tx){ return tx.status==='synced'; }).length;
   var pending = STATE.transactions.filter(function(tx){ return tx.status==='pending'; }).length;
   document.getElementById('accountSummary').innerHTML =
-    '<div class="info-row"><span class="info-label">Full Name</span><span class="info-val">'+safeText(STATE.user.name||'—')+'</span></div>'+
+    summaryMaskRow('Full Name','name','')+
     '<div class="info-row"><span class="info-label">Username</span><span class="info-val">@'+safeText(STATE.user.username||'—')+'</span></div>'+
-    '<div class="info-row"><span class="info-label">Email</span><span class="info-val" style="font-size:12px;">'+safeText(STATE.user.email||'—')+'</span></div>'+
-    '<div class="info-row"><span class="info-label">Phone</span><span class="info-val">'+safeText(STATE.user.phone||'—')+'</span></div>'+
+    summaryMaskRow('Email','email','font-size:11.5px;')+
+    summaryMaskRow('Phone','phone','')+
     '<div class="info-row"><span class="info-label">Total Transactions</span><span class="info-val">'+totalTx+'</span></div>'+
     '<div class="info-row"><span class="info-label">Synced</span><span class="info-val" style="color:var(--success);">'+synced+'</span></div>'+
     '<div class="info-row"><span class="info-label">Pending Sync</span><span class="info-val" style="color:var(--warning);">'+pending+'</span></div>'+
-    '<div class="info-row"><span class="info-label">Total Balance</span><span class="info-val">'+fmtAmt(STATE.balance)+'</span></div>'+
+    summaryBalanceRow('Total Balance','summaryTotalBalance')+
     '<div class="info-row"><span class="info-label">Offline Vault</span><span class="info-val">'+fmtAmt(STATE.vaultLocked)+'</span></div>'+
-    '<div class="info-row"><span class="info-label">XLM Balance</span><span class="info-val">'+STATE.wallet.xlmBalance.toLocaleString('en')+'</span></div>'+
+    summaryBalanceRow('XLM Balance','summaryXlmBalance')+
     '<div class="info-row"><span class="info-label">Account Type</span><span class="info-val" style="text-transform:capitalize;">'+safeText(STATE.user.type||'personal')+'</span></div>'+
-    '<div class="info-row"><span class="info-label">Member Since</span><span class="info-val">'+safeText(STATE.memberSince||'—')+'</span></div>';
+    '<div class="info-row"><span class="info-label">Member Since</span><span class="info-val">'+safeText(formatMemberSince())+'</span></div>';
+  setSummaryBalance(document.getElementById('summaryXlmBalance'), STATE.wallet.xlmBalance.toLocaleString('en'));
+  applySummaryMask();
+  updateSummaryTotalBalance();
+  if (navigator.onLine !== false && (XLM_RATE_CACHE.rate === null || Date.now() - XLM_RATE_CACHE.at > 60000)) {
+    _updateXLMConversion(STATE.wallet.xlmBalance || 0);
+  }
 }
 
 function simulateScan() {
@@ -2623,6 +3136,8 @@ function processManualPay() {
   var amt = parseFloat(document.getElementById('manualAmount').value);
   if (!isFinite(amt) || amt <= 0) { showAlert('red','⚠️ Enter a valid amount'); return; }
   closeModal('manualPayModal');
+  document.getElementById('manualCode').value   = '';
+  document.getElementById('manualAmount').value = '';
   doPaymentSuccess(amt, 'Aling Nena Store', STATE.isOnline ? 'online' : 'offline');
 }
 
@@ -2730,7 +3245,12 @@ async function confirmSignPayment() {
   if (!STATE.uid || !db)      { fail('You must be logged in to sign a payment.'); return; }
 
   var secretKey = STATE.wallet && STATE.wallet.secretKey;
-  if (!secretKey) { fail('No signing key available. Re-login to unlock your wallet.'); return; }
+  if (!secretKey) {
+    if (pinEl) pinEl.value = '';
+    closeModal('signPaymentModal');
+    showWalletRecoveryModal(function () { STATE._sendConfirmed = true; doSendMoney(); });
+    return;
+  }
 
   var recipient = normalizeStellarPublicKey((document.getElementById('sendRecipient') || {}).value || '');
   var amt       = parseFloat((document.getElementById('sendAmount') || {}).value);
@@ -2750,7 +3270,8 @@ async function confirmSignPayment() {
     if (!pinOk) { fail('Incorrect PIN. Try again.'); return; }
 
     var amtStr    = amt.toFixed(7);
-    var timestamp = Date.now();
+    await syncNetworkClock();
+    var timestamp = networkNowMs();
     var nonce     = bytesToHex(randomBytes(16));
     var requestId = bytesToHex(randomBytes(16));
     var payload   = buildSignedPayloadString(STATE.uid, recipient, amtStr, timestamp, nonce, requestId);
@@ -2798,6 +3319,7 @@ function relayErrorMessage(status, data) {
     || (data.reason && (MONITOR_REASONS[data.reason] || data.reason))
     || key
     || ('Relay error (HTTP ' + status + ')');
+  if (key === 'invalid signature' && data.reason) msg = 'Signature check failed (' + (MONITOR_REASONS[data.reason] || data.reason) + '). Payment was not sent.';
   if (data.detail && typeof data.detail === 'string' && !RELAY_ERROR_MESSAGES[key]) msg += ' (' + data.detail + ')';
   if (data.relayId) msg += ' [ref ' + String(data.relayId).slice(0, 8) + ']';
   return msg;
@@ -2871,7 +3393,7 @@ async function executeSendMoney(signedAuth) {
   }
 
   if (!useFreighter && !secretKey) {
-    showAlert('red','❌ No signing method available. Re-login or connect Freighter.');
+    showWalletRecoveryModal(doSendMoney);
     return;
   }
 
@@ -2916,6 +3438,7 @@ async function executeSendMoney(signedAuth) {
 
       var account = new StellarSdk.Account(sourcePublic, accountData.sequence);
 
+      await syncNetworkClock();
       var txBuilder = new StellarSdk.TransactionBuilder(account, {
         fee: StellarSdk.BASE_FEE,
         networkPassphrase: StellarSdk.Networks.TESTNET
@@ -2926,7 +3449,7 @@ async function executeSendMoney(signedAuth) {
           amount:      amtStr
         }))
         .addMemo(StellarSdk.Memo.text(note.substring(0, 28)))
-        .setTimeout(180);
+        .setTimebounds(0, Math.floor(networkNowMs() / 1000) + 180);
 
       var tx = txBuilder.build();
       var txXdr;
@@ -3024,14 +3547,12 @@ async function executeSendMoney(signedAuth) {
 
     var sendBal = document.getElementById('sendBal');
     if (sendBal) sendBal.textContent = (STATE.balance || 0).toFixed(6) + ' XLM';
-    resetSendRecipient();
-    document.getElementById('sendAmount').value    = '';
-    if (document.getElementById('sendNote')) document.getElementById('sendNote').value = '';
+    clearSendForm();
 
     saveSession();
     renderHistory(); // refresh history tab immediately so the log appears
 
-    document.getElementById('successAmt').textContent      = fmtAmt(amt) + ' XLM';
+    document.getElementById('successAmt').textContent      = amt.toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:7}) + ' XLM';
     document.getElementById('successMerchant').textContent = 'Sent to ' + recipient.substring(0,4) + '…' + recipient.slice(-4);
     document.getElementById('successMode').textContent     = '✅ Settled on Stellar Testnet';
     document.getElementById('successMode').className       = 'badge mt-12 badge-green';
@@ -3073,13 +3594,14 @@ async function ensureSettlementSigner(secretKey) {
   var accountJson = await accountResp.json();
   var enabled = (accountJson.signers || []).some(function(s){ return s.key === cfg.publicKey && Number(s.weight) > 0; });
   if (!enabled) {
+    await syncNetworkClock();
     var account = new StellarSdk.Account(keypair.publicKey(), accountJson.sequence);
     var tx = new StellarSdk.TransactionBuilder(account, {
       fee: StellarSdk.BASE_FEE,
       networkPassphrase: cfg.networkPassphrase || StellarSdk.Networks.TESTNET
     })
       .addOperation(StellarSdk.Operation.setOptions({ signer: { ed25519PublicKey: cfg.publicKey, weight: 1 } }))
-      .setTimeout(60)
+      .setTimebounds(0, Math.floor(networkNowMs() / 1000) + 120)
       .build();
     tx.sign(keypair);
     var submitResp = await fetch(STELLAR_HORIZON_TESTNET + '/transactions', {
@@ -3087,7 +3609,12 @@ async function ensureSettlementSigner(secretKey) {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: 'tx=' + encodeURIComponent(tx.toXDR())
     });
-    if (!submitResp.ok) throw new Error('Could not enable SMS settlement on your wallet.');
+    if (!submitResp.ok) {
+      var failBody = await submitResp.json().catch(function(){ return {}; });
+      var codes = failBody && failBody.extras && failBody.extras.result_codes;
+      var codeText = codes ? [codes.transaction].concat(codes.operations || []).filter(Boolean).join(', ') : ('HTTP ' + submitResp.status);
+      throw new Error('Could not enable SMS settlement on your wallet (' + codeText + ').');
+    }
   }
   STATE._settlementSignerReady = true;
 }
@@ -3103,7 +3630,7 @@ async function doSignAndPrepareSms() {
   if (!/^\d{4,6}$/.test(pin))        { showAlert('red','🔢 PIN must be 4–6 digits'); return; }
 
   var secretKey = STATE.wallet && STATE.wallet.secretKey;
-  if (!secretKey) { showAlert('red','❌ No signing key available. Re-login to unlock your wallet.'); return; }
+  if (!secretKey) { showWalletRecoveryModal(doSignAndPrepareSms); return; }
 
   var senderId = STATE.uid;
   if (!senderId) { showAlert('red','❌ You must be logged in to sign a payment.'); return; }
@@ -3118,6 +3645,14 @@ async function doSignAndPrepareSms() {
   }
   STATE._smsConfirmed = false;
 
+  var smsDraft = {
+    recipient: document.getElementById('smsRecipient').value,
+    amount:    document.getElementById('smsAmount').value,
+    pin:       document.getElementById('smsPin').value,
+    picked:    STATE._smsPicked
+  };
+  clearSmsForm();
+
   var btn = document.querySelector('[onclick="doSignAndPrepareSms()"]');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Signing…'; }
 
@@ -3125,7 +3660,8 @@ async function doSignAndPrepareSms() {
     await prepareSettlementSigner(secretKey);
 
     var amtStr      = amt.toFixed(7);
-    var timestamp   = Date.now();
+    await syncNetworkClock();
+    var timestamp   = networkNowMs();
     var nonce       = bytesToHex(randomBytes(16));
     var requestId   = bytesToHex(randomBytes(16));
 
@@ -3142,15 +3678,68 @@ async function doSignAndPrepareSms() {
 
     var box     = document.getElementById('smsResultBox');
     var display = document.getElementById('smsComposedMessage');
-    if (display) display.textContent = message;
+    if (display) display.textContent = amtStr + ' XLM to ' + recipient + ' · signed and ready to send';
     if (box) box.style.display = 'block';
+    scrollToSmsResult();
 
-    showAlert('green','✅ Payment signed. Review and send the SMS below.');
+    showAlert('green','✅ Payment signed. Tap Open Messages App to send.');
   } catch (err) {
+    restoreSmsForm(smsDraft);
     showAlert('red','❌ Could not sign payment: ' + (err && err.message ? err.message : 'unknown error'));
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '🔏 Sign & Prepare SMS'; }
   }
+}
+
+function clearSmsForm() {
+  var recipient = document.getElementById('smsRecipient');
+  var amount    = document.getElementById('smsAmount');
+  var pin       = document.getElementById('smsPin');
+  if (recipient) { recipient.value = ''; recipient.classList.remove('error'); }
+  if (amount)    { amount.value = ''; amount.style.borderColor = ''; }
+  if (pin)       { pin.value = ''; pin.classList.remove('error'); }
+  RECIPIENT_SEARCH.seq.sms = (RECIPIENT_SEARCH.seq.sms || 0) + 1;
+  hideRecipientResults('smsRecipientResults');
+  STATE._smsPicked = null;
+  refreshSaveButtons();
+}
+
+function scrollToSmsResult() {
+  var box = document.getElementById('smsResultBox');
+  if (!box) return;
+  var smooth = !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  var behavior = smooth ? 'smooth' : 'auto';
+  setTimeout(function() {
+    var screen = box.closest('.screen');
+    if (screen && screen.scrollHeight > screen.clientHeight + 4) {
+      screen.scrollTo({ top: screen.scrollHeight, behavior: behavior });
+    } else {
+      box.scrollIntoView({ behavior: behavior, block: 'end' });
+    }
+  }, 150);
+}
+
+function restoreSmsForm(draft) {
+  if (!draft) return;
+  var recipient = document.getElementById('smsRecipient');
+  var amount    = document.getElementById('smsAmount');
+  var pin       = document.getElementById('smsPin');
+  if (recipient) recipient.value = draft.recipient || '';
+  if (amount)    amount.value    = draft.amount || '';
+  if (pin)       pin.value       = draft.pin || '';
+  STATE._smsPicked = draft.picked || null;
+  refreshSaveButtons();
+}
+
+function clearSendForm() {
+  resetSendRecipient();
+  var amount = document.getElementById('sendAmount');
+  var note   = document.getElementById('sendNote');
+  var pin    = document.getElementById('signPin');
+  if (amount) { amount.value = ''; amount.style.borderColor = ''; }
+  if (note)   note.value = '';
+  if (pin)    { pin.value = ''; pin.classList.remove('error'); }
+  updateXlmConversion();
 }
 
 function openSmsApp() {
@@ -3357,6 +3946,10 @@ function toggleOfflineMode() {
 }
 
 function switchPayTab(tab, el) {
+  if ((tab === 'scan' || tab === 'send') && !isEffectivelyOnline()) {
+    showAlert('orange', '📴 You are offline. Only SMS Pay is available.');
+    return;
+  }
   document.querySelectorAll('.pay-tab').forEach(function(t){ t.classList.remove('active'); });
   document.querySelectorAll('.pay-panel').forEach(function(p){ p.classList.remove('active'); });
   el.classList.add('active');
@@ -3393,8 +3986,22 @@ function showAlert(type, msg) {
   alertTimer = setTimeout(function(){ banner.classList.remove('show'); }, 3500);
 }
 
-function showModal(id)  { document.getElementById(id).classList.add('show'); }
-function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+function collapseHelpFaq() {
+  document.querySelectorAll('#helpModal .help-faq details').forEach(function(d){ d.removeAttribute('open'); });
+}
+function showModal(id)  {
+  if (id === 'helpModal') collapseHelpFaq();
+  document.getElementById(id).classList.add('show');
+}
+function closeModal(id) {
+  document.getElementById(id).classList.remove('show');
+  if (id === 'helpModal') collapseHelpFaq();
+}
+function requestPinReset() {
+  var subject = encodeURIComponent('PIN Reset Request');
+  var body = encodeURIComponent('Hello,\n\nI forgot my PIN and need help resetting it.\n\nUsername: \nRegistered email: \nRegistered mobile number: \n\nThank you.');
+  window.location.href = 'mailto:Support.omnipay0121@gmail.com?subject=' + subject + '&body=' + body;
+}
 
 function showReceiveModal() {
   if (!STATE.isLoggedIn) { showAlert('orange','⚠️ Please log in first'); return; }
@@ -3572,11 +4179,21 @@ async function doChangePassword() {
     await auth.currentUser.reauthenticateWithCredential(credential);
     var walletRef = db.collection(USERS_COLLECTION).doc(auth.currentUser.uid);
     var walletSecret = STATE.wallet && STATE.wallet.secretKey;
+    var walletSnap = await walletRef.get();
+    var walletData = walletSnap.data() || {};
+    if (!walletSecret && walletData.walletSecretEncrypted) {
+      walletSecret = await decryptWalletSecret(
+        walletData.walletSecretEncrypted,
+        walletData.walletSecretSalt,
+        walletData.walletSecretIv,
+        current
+      );
+      if (walletSecret && STATE.wallet) STATE.wallet.secretKey = walletSecret;
+      if (!walletSecret) throw new Error('wallet-locked');
+    }
     var oldWallet = null;
     var newWallet = null;
     if (walletSecret) {
-      var walletSnap = await walletRef.get();
-      var walletData = walletSnap.data() || {};
       oldWallet = {
         walletSecretEncrypted: walletData.walletSecretEncrypted,
         walletSecretSalt: walletData.walletSecretSalt,
@@ -3597,9 +4214,16 @@ async function doChangePassword() {
       var vaults = readOfflineVaults();
       if (vaults[STATE._vaultKey]) { Object.assign(vaults[STATE._vaultKey], newWallet); writeOfflineVaults(vaults); }
     }
+    if (!newWallet && walletData.walletSecretEncrypted) STATE._needsWalletUnlock = true;
   } catch (e) {
     showLoading(false);
     if (btn) { btn.disabled = false; btn.textContent = 'Update Password'; }
+    if (e && e.message === 'wallet-locked') {
+      closeModal('changePasswordModal');
+      showAlert('orange', '🔒 Unlock your wallet first, then change your password.');
+      setTimeout(function(){ showWalletRecoveryModal(null); }, 400);
+      return;
+    }
     var message = /wrong-password|invalid-credential|invalid-login-credentials/i.test(e.code || '')
       ? '❌ Current password is incorrect'
       : '❌ Could not update password. Sign in again and retry.';
@@ -3612,6 +4236,113 @@ async function doChangePassword() {
   closeModal('changePasswordModal');
   showAlert('success','✅ Password updated successfully!');
   activityRequest('POST', '/api/activity/event', { type: 'password-changed', deviceId: getActivityDeviceId() }).catch(function(){});
+  if (STATE._needsWalletUnlock) setTimeout(function(){ showWalletRecoveryModal(null); }, 600);
+}
+
+var WALLET_RECOVERY = { onDone: null, busy: false };
+
+function showWalletRecoveryModal(onDone) {
+  var cur = document.getElementById('recoverCurrentPass');
+  var old = document.getElementById('recoverOldPass');
+  if (!cur || !old) return;
+  WALLET_RECOVERY.onDone = typeof onDone === 'function' ? onDone : null;
+  [cur, old].forEach(function(el) { el.value = ''; el.type = 'password'; el.classList.remove('error'); });
+  showModal('walletRecoveryModal');
+  setTimeout(function() { try { cur.focus(); } catch (e) {} }, 120);
+}
+
+function skipWalletRecovery() {
+  WALLET_RECOVERY.onDone = null;
+  STATE._needsWalletUnlock = false;
+  closeModal('walletRecoveryModal');
+}
+
+async function doRecoverWallet() {
+  if (WALLET_RECOVERY.busy) return;
+  var curEl = document.getElementById('recoverCurrentPass');
+  var oldEl = document.getElementById('recoverOldPass');
+  var current = curEl.value;
+  var previous = oldEl.value;
+  if (!current) { curEl.classList.add('error'); showAlert('red', '⚠️ Enter your current password'); return; }
+  if (!auth || !auth.currentUser || !db) {
+    skipWalletRecovery();
+    showAlert('red', '❌ Session expired. Sign in again.');
+    return;
+  }
+
+  var btn = document.getElementById('recoverSaveBtn');
+  WALLET_RECOVERY.busy = true;
+  if (btn) { btn.disabled = true; btn.textContent = 'Unlocking…'; }
+  function finish(label) {
+    WALLET_RECOVERY.busy = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'Unlock Wallet'; }
+  }
+
+  try {
+    var credential = firebase.auth.EmailAuthProvider.credential(auth.currentUser.email, current);
+    await auth.currentUser.reauthenticateWithCredential(credential);
+  } catch (e) {
+    finish();
+    curEl.classList.add('error');
+    showAlert('red', /wrong-password|invalid-credential|invalid-login-credentials/i.test(e.code || '')
+      ? '❌ Current password is incorrect'
+      : '❌ Could not verify your password. Try again.');
+    return;
+  }
+
+  try {
+    var uid = auth.currentUser.uid;
+    var snap = await db.collection(USERS_COLLECTION).doc(uid).get();
+    var rec = snap.data() || {};
+    if (!rec.walletSecretEncrypted) throw new Error('no-wallet');
+
+    var secret = await decryptWalletSecret(rec.walletSecretEncrypted, rec.walletSecretSalt, rec.walletSecretIv, current);
+    var reencrypt = false;
+    if (!secret && previous) {
+      secret = await decryptWalletSecret(rec.walletSecretEncrypted, rec.walletSecretSalt, rec.walletSecretIv, previous);
+      reencrypt = !!secret;
+    }
+    var valid = false;
+    if (secret) {
+      try {
+        var expected = rec.walletPublic || (STATE.wallet && STATE.wallet.publicKey) || '';
+        valid = !expected || StellarSdk.Keypair.fromSecret(secret).publicKey() === expected;
+      } catch (e) { valid = false; }
+    }
+    if (!valid) {
+      finish();
+      oldEl.classList.add('error');
+      showAlert('red', previous
+        ? '❌ That previous password does not unlock this wallet'
+        : '⚠️ Wallet is locked with an older password. Enter your previous password below.');
+      return;
+    }
+
+    if (reencrypt) {
+      var enc = await encryptWalletSecret(secret, current);
+      var fresh = { walletSecretEncrypted: enc.ciphertext, walletSecretSalt: enc.salt, walletSecretIv: enc.iv };
+      await db.collection(USERS_COLLECTION).doc(uid).update(fresh);
+      if (STATE._vaultKey) {
+        var vaults = readOfflineVaults();
+        if (vaults[STATE._vaultKey]) { Object.assign(vaults[STATE._vaultKey], fresh); writeOfflineVaults(vaults); }
+      }
+    }
+
+    STATE.wallet.secretKey = secret;
+    STATE._needsWalletUnlock = false;
+    saveSession();
+    var done = WALLET_RECOVERY.onDone;
+    WALLET_RECOVERY.onDone = null;
+    finish();
+    curEl.value = '';
+    oldEl.value = '';
+    closeModal('walletRecoveryModal');
+    showAlert('success', '🔓 Wallet unlocked');
+    if (done) setTimeout(done, 200);
+  } catch (e) {
+    finish();
+    showAlert('red', '❌ Could not unlock your wallet. Try again.');
+  }
 }
 
 function copyWalletAddress() {
@@ -3753,6 +4484,27 @@ function initTheme() {
 }
 
 var STELLAR_HORIZON_TESTNET = 'https://horizon-testnet.stellar.org';
+
+var NETWORK_CLOCK = { offsetMs: 0, syncedAt: 0 };
+
+async function syncNetworkClock() {
+  if (NETWORK_CLOCK.syncedAt && Date.now() - NETWORK_CLOCK.syncedAt < 5 * 60 * 1000) return;
+  try {
+    var resp = await fetch(STELLAR_HORIZON_TESTNET + '/ledgers?order=desc&limit=1');
+    if (!resp.ok) return;
+    var data = await resp.json();
+    var record = data && data._embedded && data._embedded.records && data._embedded.records[0];
+    var closed = record && Date.parse(record.closed_at);
+    if (!closed) return;
+    var offset = closed - Date.now();
+    NETWORK_CLOCK.offsetMs = Math.abs(offset) > 30000 ? offset : 0;
+    NETWORK_CLOCK.syncedAt = Date.now();
+  } catch (e) {}
+}
+
+function networkNowMs() {
+  return Date.now() + NETWORK_CLOCK.offsetMs;
+}
 var STELLAR_TESTNET_PASSPHRASE = 'Test SDF Network ; September 2015';
 
 var FREIGHTER = {
@@ -3858,7 +4610,7 @@ function updateFreighterUI() {
   var heroXLMBal     = document.getElementById('heroXLMBal');
 
   if (FREIGHTER.isConnected) {
-    if (connBadge) { connBadge.textContent = '● Connected'; connBadge.style.color = '#2ED573'; }
+    if (connBadge) { connBadge.textContent = '● Connected'; connBadge.style.color = '#10B981'; }
 
     var balStr = FREIGHTER.xlmBalance !== null
       ? FREIGHTER.xlmBalance.toLocaleString('en', { minimumFractionDigits: 4, maximumFractionDigits: 7 }) + ' XLM'
@@ -4009,7 +4761,8 @@ async function doSendXLM() {
       txBuilder.addMemo(StellarSdk.Memo.text(memo.substring(0, 28)));
     }
 
-    txBuilder.setTimeout(30);
+    await syncNetworkClock();
+    txBuilder.setTimebounds(0, Math.floor(networkNowMs() / 1000) + 60);
     var transaction = txBuilder.build();
     var xdr         = transaction.toXDR();
 
@@ -4101,7 +4854,7 @@ function renderXLMTxResult(success, hash, amount, dest, errorMsg) {
   if (success) {
     var safeHash = /^[A-Fa-f0-9]{16,128}$/.test(String(hash || '')) ? String(hash) : '';
     resultEl.style.background   = 'linear-gradient(135deg,#D4F7EC,#C6F9E8)';
-    resultEl.style.borderColor  = 'rgba(46,213,115,0.4)';
+    resultEl.style.borderColor  = 'rgba(16,185,129,0.4)';
     if (iconEl)  iconEl.textContent  = '✅';
     if (titleEl) { titleEl.textContent = 'Transaction Successful!'; titleEl.style.color = 'var(--success)'; }
     if (hashEl) {
@@ -4116,7 +4869,7 @@ function renderXLMTxResult(success, hash, amount, dest, errorMsg) {
 
   } else {
     resultEl.style.background  = 'linear-gradient(135deg,#FFE0E3,#FFDDE0)';
-    resultEl.style.borderColor = 'rgba(255,71,87,0.4)';
+    resultEl.style.borderColor = 'rgba(239,68,68,0.4)';
     if (iconEl)  iconEl.textContent = '❌';
     if (titleEl) { titleEl.textContent = 'Transaction Failed'; titleEl.style.color = 'var(--danger)'; }
     if (hashEl)  hashEl.style.display = 'none';
@@ -4154,7 +4907,7 @@ async function autoCheckFreighter() {
 }
 
 document.querySelectorAll('.modal-overlay').forEach(function(o){
-  o.addEventListener('click', function(e){ if (e.target === o) o.classList.remove('show'); });
+  o.addEventListener('click', function(e){ if (e.target === o) { o.classList.remove('show'); if (o.id === 'helpModal') collapseHelpFaq(); } });
 });
 
 var _camStream = null;
@@ -4493,6 +5246,7 @@ function saveSession() {
       nonceLog:           STATE.nonceLog.slice(-50)
     };
     sessionStorage.setItem('omnipay_session', JSON.stringify(data));
+    if (STATE.wallet && STATE.wallet.secretKey) sessionStorage.setItem('omnipay_wk', STATE.uid + '|' + STATE.wallet.secretKey);
   } catch(e) {}
 }
 
@@ -4504,6 +5258,7 @@ function restoreSession() {
     if (!auth || !auth.currentUser) return false;
     if (!d || !d.isLoggedIn || d.uid !== auth.currentUser.uid) {
       sessionStorage.removeItem('omnipay_session');
+      sessionStorage.removeItem('omnipay_wk');
       return false;
     }
     STATE.isLoggedIn         = true;
@@ -4519,6 +5274,11 @@ function restoreSession() {
     STATE.memberSince        = d.memberSince        || '';
     STATE.wallet             = d.wallet             || STATE.wallet;
     STATE.wallet.secretKey   = '';
+    try {
+      var kept = String(sessionStorage.getItem('omnipay_wk') || '');
+      var sep = kept.indexOf('|');
+      if (sep > 0 && kept.slice(0, sep) === d.uid) STATE.wallet.secretKey = kept.slice(sep + 1);
+    } catch (e) {}
     STATE.wallets            = Array.isArray(d.wallets)       ? d.wallets       : [];
     STATE.activeWalletIndex  = d.activeWalletIndex  != null   ? d.activeWalletIndex : 0;
     STATE.transactions       = dedupeTransactions(d.transactions);
@@ -4534,13 +5294,9 @@ function restoreSession() {
 function quickSend() {
   navTo('pay');
   setTimeout(function(){
-    var tabs = document.querySelectorAll('.pay-tab');
-    for (var i = 0; i < tabs.length; i++) {
-      if (tabs[i].textContent.trim().indexOf('Send') !== -1) {
-        switchPayTab('send', tabs[i]);
-        break;
-      }
-    }
+    var want = isEffectivelyOnline() ? 'send' : 'sms';
+    var tab = document.querySelector('.pay-tab[data-pay-tab="' + want + '"]');
+    if (tab) switchPayTab(want, tab);
   }, 60);
 }
 
@@ -5540,7 +6296,7 @@ function removeContactFromEdit() {
 function useContact(username) {
   var c = findContact(username);
   if (!c) return;
-  var useSms = !navigator.onLine || STATE.offlineMode;
+  var useSms = !navigator.onLine || !isEffectivelyOnline() || STATE.offlineMode;
   if (!useSms && !c.walletPublic) useSms = true;
   navTo('pay');
   var want = useSms ? 'SMS Pay' : 'Send';
@@ -5558,3 +6314,112 @@ function useContact(username) {
     pickSendRecipient(contactToResult(c));
   }
 }
+
+(function initScrollRows() {
+  function setup(el) {
+    if (!el || el._scrollRowReady) return;
+    el._scrollRowReady = true;
+    var down = false, moved = false, startX = 0, startLeft = 0;
+
+    function update() {
+      var max = el.scrollWidth - el.clientWidth;
+      el.classList.toggle('fade-left', el.scrollLeft > 4);
+      el.classList.toggle('fade-right', max > 4 && el.scrollLeft < max - 4);
+    }
+
+    el.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update);
+
+    el.addEventListener('wheel', function (e) {
+      var max = el.scrollWidth - el.clientWidth;
+      if (max <= 0 || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+      var next = el.scrollLeft + e.deltaY;
+      if (next < 0 || next > max) return;
+      el.scrollLeft = next;
+      e.preventDefault();
+    }, { passive: false });
+
+    el.addEventListener('pointerdown', function (e) {
+      if (e.pointerType === 'touch') return;
+      down = true; moved = false; startX = e.clientX; startLeft = el.scrollLeft;
+    });
+    window.addEventListener('pointermove', function (e) {
+      if (!down) return;
+      var dx = e.clientX - startX;
+      if (Math.abs(dx) > 4) moved = true;
+      if (moved) el.scrollLeft = startLeft - dx;
+    });
+    window.addEventListener('pointerup', function () { down = false; });
+    el.addEventListener('click', function (e) {
+      if (moved) { e.stopPropagation(); e.preventDefault(); moved = false; }
+    }, true);
+
+    update();
+    setTimeout(update, 300);
+  }
+
+  function run() {
+    document.querySelectorAll('.settings-tabs, .filter-row').forEach(setup);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run);
+  else run();
+  window.addEventListener('load', run);
+})();
+
+var HOME_BALANCE = { visible: false, ready: false };
+
+function maskBalanceText(text) {
+  return String(text).replace(/\d[\d.,]*/g, '****');
+}
+
+function syncBalanceEl(el) {
+  var current = el.textContent;
+  if (current === el._shown) return;
+  el._real = current;
+  var shown = HOME_BALANCE.visible ? current : maskBalanceText(current);
+  el._shown = shown;
+  if (el.textContent !== shown) el.textContent = shown;
+}
+
+function renderHomeBalanceMask() {
+  document.querySelectorAll('[data-bal-mask]').forEach(function(el) {
+    if (typeof el._real !== 'string') el._real = el.textContent;
+    var shown = HOME_BALANCE.visible ? el._real : maskBalanceText(el._real);
+    el._shown = shown;
+    if (el.textContent !== shown) el.textContent = shown;
+  });
+  var btn = document.getElementById('balanceToggleBtn');
+  if (btn) {
+    btn.textContent = HOME_BALANCE.visible ? '🙈' : '👁';
+    btn.setAttribute('aria-label', HOME_BALANCE.visible ? 'Hide balance' : 'Show balance');
+    btn.setAttribute('aria-pressed', HOME_BALANCE.visible ? 'true' : 'false');
+  }
+}
+
+function toggleHomeBalance() {
+  HOME_BALANCE.visible = !HOME_BALANCE.visible;
+  renderHomeBalanceMask();
+}
+
+function resetHomeBalance() {
+  if (!HOME_BALANCE.visible) return;
+  HOME_BALANCE.visible = false;
+  renderHomeBalanceMask();
+}
+
+(function initHomeBalanceMask() {
+  function run() {
+    if (HOME_BALANCE.ready) return;
+    var els = document.querySelectorAll('[data-bal-mask]');
+    if (!els.length) return;
+    HOME_BALANCE.ready = true;
+    els.forEach(function(el) {
+      el._real = el.textContent;
+      new MutationObserver(function() { syncBalanceEl(el); })
+        .observe(el, { childList: true, characterData: true, subtree: true });
+    });
+    renderHomeBalanceMask();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run);
+  else run();
+})();

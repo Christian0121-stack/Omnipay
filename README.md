@@ -30,6 +30,28 @@ The admin dashboard is a public page, but all of its data endpoints require the 
 
 For the complete endpoint reference see [API_DOCUMENTATION.md](API_DOCUMENTATION.md).
 
+## User guide (step by step)
+
+Four one-page guides walk a new user through the app. Follow them in this order.
+
+> **Important: add contacts before you go offline.** With no internet the app cannot search for other OmniPay users. Offline, the recipient search shows only the people you already saved under **Settings, Contacts**, so those are the recipients you can pick for **SMS Pay**. Adding a contact needs internet, so save everyone you plan to pay while you are online. You can still type an exact username or mobile number by hand, but it cannot be checked offline, and a typo is rejected by the relay (`recipient-not-found`).
+
+### 1. Register
+
+![Register: create your OmniPay account](docs/images/01-register.png)
+
+### 2. Add contacts (do this while online)
+
+![Add contacts for offline use](docs/images/02-add-contacts-offline.png)
+
+### 3. Send a payment online
+
+![Send payment online](docs/images/03-send-payment-online.png)
+
+### 4. Send a payment by SMS (no internet)
+
+![Send payment by SMS without internet](docs/images/04-send-payment-sms-offline.png)
+
 ## Part of
 
 Instawards SOW: OmniPay v2 (THE MOON PROJECT, Christian Mendigoria and Marielle Lingad), 30-day sprint.
@@ -120,6 +142,8 @@ BAL <pin>        (or BALANCE <pin>)
 ```
 
 `<recipient>` can be another OmniPay user's registered mobile number or username. `<amount>` must be a positive number with at most 7 decimal places and `<pin>` is 4 to 6 digits.
+
+> In the app, offline recipient search only finds saved contacts. Add the recipient under **Settings, Contacts** while online before you use **SMS Pay** (see the [user guide](#user-guide-step-by-step)).
 
 ### Signed (authenticated) variant
 
@@ -338,6 +362,7 @@ The **Transaction Monitoring** screen of the web app reads `GET /api/my-transact
 |---|---|
 | Connectivity detection | `navigator.onLine` plus a probe request to Horizon (5 s timeout). Online and offline browser events trigger a new check. The status badge reads "Online - Stellar Testnet" or "Offline - SMS Pay available". |
 | Mode switch | Offline: the pay screen shows "Offline Mode - Pay by SMS". Online: "Online Mode - Instant Settlement". A manual offline switch is available for demos. |
+| Recipients offline | Searching for users needs internet. Offline, the search lists only saved contacts, so add contacts while online (**Settings, Contacts, Add contact**). A username or mobile number can still be typed by hand, but it cannot be verified offline. |
 | Signing on the device | The payload `OMNIPAY-v1\|sender\|recipient\|amount\|timestamp\|nonce\|requestId` is signed locally with the wallet key (Ed25519). |
 | Sending | The signed message is handed to the phone's SMS app addressed to `09612490625`. SMS travels over the cellular network, not mobile data or Wi-Fi. |
 | Service worker | `sw.js` (cache `omnipay-v2`) pre-caches the app shell and the CDN libraries (Firebase, Stellar SDK, QR libraries, Inter font). Navigation falls back to the cached `index.html` after a 4 s timeout. `/api`, `/webhook`, `/dev`, `/health` and `/admin` are never cached. |
@@ -381,7 +406,7 @@ The end-to-end test cases E1 to E9 against the deployed server are listed in [AP
 4. Open https://omnipay.website/ to see the web application. The connection badge shows Online or Offline.
 5. Open https://omnipay.website/health to see Firestore, Horizon and Soroban status.
 
-**Real SMS test:** in the app open **Send via SMS**, enter the recipient, amount and SMS PIN, tap **Sign & Prepare SMS**, then send the prepared message to `09612490625`. The relay server and the gateway phone must be online, so coordinate a test window with the builders.
+**Real SMS test:** first, while online, save the recipient under **Settings, Contacts**. Then, in the app open **Send via SMS**, enter the recipient, amount and SMS PIN, tap **Sign & Prepare SMS**, then send the prepared message to `09612490625`. The relay server and the gateway phone must be online, so coordinate a test window with the builders.
 
 ## Firestore collections used
 
@@ -416,7 +441,12 @@ Firestore holds application state only. The Stellar Testnet is the authoritative
 │       ├── lib.rs
 │       └── test.rs
 ├── docs/
-│   └── SETTLEMENT_ORDER_REVIEW.md
+│   ├── SETTLEMENT_ORDER_REVIEW.md
+│   └── images/            # User guide pages used in this README
+│       ├── 01-register.png
+│       ├── 02-add-contacts-offline.png
+│       ├── 03-send-payment-online.png
+│       └── 04-send-payment-sms-offline.png
 ├── public/                # Served by server.js
 │   ├── index.html         # OmniPay web app
 │   ├── script.js          # App logic, Firebase Auth + Firestore client, SMS signing, offline mode
@@ -447,6 +477,10 @@ Firestore holds application state only. The Stellar Testnet is the authoritative
 - [x] Offline detection, SMS Pay mode and service worker
 - [x] `GET /health` with Firestore, Horizon and Soroban checks
 - [x] End-to-end test cases E1 to E9 and demo evidence (payment settled with no Wi-Fi and no mobile data)
+
+**Documentation added:**
+
+- [x] Step-by-step user guide (register, add contacts, send online, send by SMS) with the offline contacts requirement
 
 **Not included in Week 3:**
 

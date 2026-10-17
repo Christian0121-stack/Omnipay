@@ -38,6 +38,9 @@
     fresh: {},
     filter: 'all',
     channel: '',
+    range: 'all',
+    from: '',
+    to: '',
     query: '',
     open: {},
     audits: {},
@@ -45,7 +48,29 @@
     streamLive: false,
     retryId: null,
     pollId: null,
-    loading: false
+    loading: false,
+    users: [],
+    usersLoaded: false,
+    usersLoading: false,
+    userQuery: '',
+    activeUser: null,
+    activeAuth: null,
+    defaultPassword: '123456',
+    defaultPin: '123456',
+    resetConfirm: false,
+    resetBusy: false,
+    resetMsg: null,
+    pinConfirm: false,
+    pinBusy: false,
+    pinMsg: null,
+    walletConfirm: false,
+    walletBusy: false,
+    walletMsg: null,
+    editOpen: false,
+    editBusy: false,
+    editMsg: null,
+    editPhone: '',
+    editEmail: ''
   };
 
   function $(id) { return document.getElementById(id); }
@@ -133,11 +158,11 @@
   }
 
   function senderLabel(r) {
-    return r.senderUsername ? '@' + r.senderUsername : (r.senderId || r.senderPhone || 'Unknown sender');
+    return r.senderUsername ? r.senderUsername : (r.senderId || r.senderPhone || 'Unknown sender');
   }
 
   function recipientLabel(r) {
-    if (r.recipientUsername) return '@' + r.recipientUsername;
+    if (r.recipientUsername) return r.recipientUsername;
     return r.recipient || 'Unknown';
   }
 
@@ -163,6 +188,10 @@
   }
 
   function showGate(message) {
+    closeUser();
+    state.users = [];
+    state.usersLoaded = false;
+    setView('relay');
     $('dash').classList.add('hidden');
     $('gate').classList.remove('hidden');
     $('gateMsg').textContent = message || '';
@@ -293,7 +322,41 @@
     if (state.pollId) { clearInterval(state.pollId); state.pollId = null; }
   }
 
+  function dayKey(ms) {
+    var d = new Date(ms);
+    return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+  }
+
+  function inRange(r) {
+    if (state.range === 'all') return true;
+    if (!r.createdAt) return false;
+    if (state.range === 'today') return dayKey(r.createdAt) === dayKey(Date.now());
+    var k = dayKey(r.createdAt);
+    if (state.from && k < state.from) return false;
+    if (state.to && k > state.to) return false;
+    return true;
+  }
+
+  function scoped() {
+    return state.rows.filter(inRange);
+  }
+
+  function fmtDay(s) {
+    var p = s.split('-');
+    return new Date(+p[0], +p[1] - 1, +p[2]).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+
+  function rangeLabel() {
+    if (state.range === 'today') return 'Today';
+    if (state.range === 'date' && (state.from || state.to)) {
+      if (state.from && state.to) return state.from === state.to ? fmtDay(state.from) : fmtDay(state.from) + ' – ' + fmtDay(state.to);
+      return state.from ? 'From ' + fmtDay(state.from) : 'Until ' + fmtDay(state.to);
+    }
+    return '';
+  }
+
   function matches(r) {
+    if (!inRange(r)) return false;
     if (state.filter !== 'all' && r.category !== state.filter) return false;
     if (state.channel && r.channel !== state.channel) return false;
     var q = state.query.trim().toLowerCase();
@@ -304,17 +367,18 @@
   }
 
   function counts() {
-    var c = { all: state.rows.length, settled: 0, progress: 0, rejected: 0, failed: 0 };
-    state.rows.forEach(function (r) { c[r.category]++; });
+    var base = scoped();
+    var c = { all: base.length, settled: 0, progress: 0, rejected: 0, failed: 0 };
+    base.forEach(function (r) { c[r.category]++; });
     return c;
   }
 
   function renderKpis(c) {
     var settledVolume = 0;
-    state.rows.forEach(function (r) { if (r.category === 'settled' && r.amount) settledVolume += r.amount; });
+    scoped().forEach(function (r) { if (r.category === 'settled' && r.amount) settledVolume += r.amount; });
     var rate = c.all ? Math.round((c.settled / c.all) * 100) : 0;
     var items = [
-      ['Total requests', c.all, '📨', '', 'Latest 200 records'],
+      ['Total requests', c.all, '📨', '', rangeLabel() || 'Latest 200 records'],
       ['Settled', c.settled, '✅', 'k-ok', rate + '% success · ' + fmtAmount(settledVolume) + ' XLM'],
       ['In progress', c.progress, '⏳', 'k-wait', 'Awaiting settlement'],
       ['Rejected', c.rejected, '🛡️', 'k-bad', 'Failed validation'],
@@ -345,7 +409,7 @@
     }).join('');
 
     var tally = {};
-    state.rows.forEach(function (r) {
+    scoped().forEach(function (r) {
       if (!r.reason) return;
       var label = reasonText(r.reason);
       tally[label] = (tally[label] || 0) + 1;
@@ -357,7 +421,7 @@
           return '<div class="reason-row"><span class="rn">' + esc(t[0]) + '</span><span class="rb"><i style="width:'
             + (t[1] / top[0][1] * 100).toFixed(0) + '%"></i></span><span class="rc">' + t[1] + '</span></div>';
         }).join('')
-      : '<div class="none-note">No rejected or failed requests yet.</div>';
+      : '<div class="none-note">No rejected or failed requests' + (rangeLabel() ? ' for this period.' : ' yet.') + '</div>';
   }
 
   function renderChips(c) {
@@ -391,8 +455,8 @@
     }
     var rows = '<dl class="kv">'
       + '<dt>Relay ID</dt><dd>' + esc(r.id) + '</dd>'
-      + '<dt>Sender username</dt><dd>' + esc(r.senderUsername ? '@' + r.senderUsername : '—') + '</dd>'
-      + '<dt>Recipient username</dt><dd>' + esc(r.recipientUsername ? '@' + r.recipientUsername : '—') + '</dd>'
+      + '<dt>Sender username</dt><dd>' + esc(r.senderUsername ? r.senderUsername : '—') + '</dd>'
+      + '<dt>Recipient username</dt><dd>' + esc(r.recipientUsername ? r.recipientUsername : '—') + '</dd>'
       + '<dt>Sender ID</dt><dd>' + esc(r.senderId || '—') + '</dd>'
       + '<dt>Sender phone</dt><dd>' + esc(r.senderPhone || '—') + '</dd>'
       + '<dt>Recipient</dt><dd>' + esc(r.recipient || '—') + '</dd>'
@@ -456,7 +520,17 @@
     $('list').innerHTML = rows.map(renderRow).join('');
   }
 
+  function renderDateBar() {
+    Array.prototype.forEach.call($('dateSeg').children, function (b) {
+      b.classList.toggle('active', b.getAttribute('data-range') === state.range);
+    });
+    $('dateFrom').classList.toggle('hidden', state.range !== 'date');
+    $('dateTo').classList.toggle('hidden', state.range !== 'date');
+    $('dateNote').textContent = state.range === 'all' ? '' : (rangeLabel() ? 'Showing ' + rangeLabel() : 'Pick a date range');
+  }
+
   function render() {
+    renderDateBar();
     var c = counts();
     renderKpis(c);
     renderOverview(c);
@@ -506,12 +580,550 @@
     showGate('');
   }
 
+
+  function initials(u) {
+    var s = String(u.name || u.username || '?').trim();
+    return s ? s.charAt(0).toUpperCase() : '?';
+  }
+
+  function setView(name) {
+    $('viewRelay').classList.toggle('hidden', name !== 'relay');
+    $('viewUsers').classList.toggle('hidden', name !== 'users');
+    Array.prototype.forEach.call($('tabs').children, function (t) {
+      t.classList.toggle('active', t.getAttribute('data-view') === name);
+    });
+    if (name === 'users' && !state.usersLoaded) loadUsers();
+  }
+
+  async function loadUsers() {
+    if (state.usersLoading || !state.key) return;
+    state.usersLoading = true;
+    if (!state.users.length) {
+      $('usersList').innerHTML = '<div class="card empty" style="grid-column:1/-1;"><div class="e-ico">⏳</div><b>Loading users…</b></div>';
+    }
+    try {
+      var resp = await api('/api/admin/users');
+      if (resp.status === 401 || resp.status === 503) { failAuth(resp.status); return; }
+      if (!resp.ok) { var failure = new Error('http-' + resp.status); failure.status = resp.status; throw failure; }
+      var data = await resp.json();
+      state.users = Array.isArray(data.users) ? data.users : [];
+      if (data.defaultPassword) state.defaultPassword = data.defaultPassword;
+      if (data.defaultPin) state.defaultPin = data.defaultPin;
+      state.usersLoaded = true;
+      renderUsers();
+    } catch (e) {
+      var why = 'Check the connection and tap Refresh.';
+      if (e && e.status === 404) why = 'The server does not have the users endpoint yet. Deploy the updated server.js and restart the server.';
+      else if (e && e.status === 429) why = 'Too many requests. Wait a moment, then tap Refresh.';
+      else if (e && e.status) why = 'Server error (' + e.status + '). Check the server logs for details.';
+      $('usersList').innerHTML = '<div class="card empty" style="grid-column:1/-1;"><div class="e-ico">⚠️</div><b>Could not load users</b>' + esc(why) + '</div>';
+    } finally {
+      state.usersLoading = false;
+    }
+  }
+
+  function renderUsers() {
+    var q = state.userQuery.trim().toLowerCase();
+    var rows = state.users.filter(function (u) {
+      if (!q) return true;
+      return [u.name, u.username, u.email, u.phone, u.id].join(' ').toLowerCase().indexOf(q) !== -1;
+    });
+    $('userCount').textContent = '(' + rows.length + ')';
+    if (!rows.length) {
+      $('usersList').innerHTML = '<div class="card empty" style="grid-column:1/-1;"><div class="e-ico">🔎</div><b>No users found</b>Try a different search.</div>';
+      return;
+    }
+    $('usersList').innerHTML = rows.map(function (u) {
+      return '<button class="card user-card" type="button" data-user="' + esc(u.id) + '">'
+        + '<span class="avatar">' + esc(initials(u)) + '</span>'
+        + '<span class="user-main"><div class="user-name">' + esc(u.name || u.username || 'Unnamed user') + '</div>'
+        + '<div class="user-sub">' + esc(u.username ? u.username : '—') + (u.email ? ' · ' + esc(u.email) : '') + '</div>'
+        + '<div class="user-sub">' + esc(u.phone || 'No phone') + '</div></span>'
+        + '<span class="user-arrow">›</span></button>';
+    }).join('');
+  }
+
+  function yesNo(v) { return v ? 'Yes' : 'No'; }
+
+  function chip(cls, text) { return '<span class="um-chip ' + cls + '">' + text + '</span>'; }
+
+  function rows(pairs) {
+    return '<div class="um-rows">' + pairs.map(function (p) {
+      var empty = p[1] == null || p[1] === '';
+      var copy = !empty && p[2]
+        ? '<button class="um-copy" type="button" data-copy="' + esc(p[1]) + '" aria-label="Copy ' + esc(p[0]) + '">Copy</button>'
+        : '';
+      return '<div class="um-row"><div class="um-k">' + esc(p[0]) + '</div>'
+        + '<div class="um-v' + (p[3] ? ' mono' : '') + '">' + esc(empty ? '—' : p[1]) + '</div>' + copy + '</div>';
+    }).join('') + '</div>';
+  }
+
+  function section(icon, title, inner) {
+    return '<section class="um-sec"><div class="um-sec-h"><span class="um-sec-i">' + icon + '</span>' + title + '</div>' + inner + '</section>';
+  }
+
+  function stat(label, value) {
+    return '<div class="um-stat"><span>' + label + '</span><b>' + esc(value) + '</b></div>';
+  }
+
+  function recovery(o) {
+    var body;
+    if (o.busy) {
+      body = '<div class="reset-actions"><button class="btn danger" type="button" disabled>' + o.busyText + '</button></div>';
+    } else if (o.confirm) {
+      body = '<p class="um-confirm">' + o.confirmText + '</p>'
+        + '<div class="reset-actions"><button class="btn danger" type="button" data-act="' + o.doAct + '">Yes, reset</button>'
+        + '<button class="btn plain" type="button" data-act="' + o.cancelAct + '">Cancel</button></div>';
+    } else {
+      body = '<div class="reset-actions"><button class="btn danger" type="button" data-act="' + o.askAct + '">' + o.label + '</button></div>';
+    }
+    var msg = o.msg ? '<div class="reset-msg ' + (o.msg.ok ? 'ok' : 'err') + '">' + esc(o.msg.text) + '</div>' : '';
+    return '<div class="um-recover"><div class="um-recover-h"><span class="um-recover-i">' + o.icon + '</span>'
+      + '<div><b>' + o.title + '</b><p>' + o.hint + '</p></div></div>' + body + msg + '</div>';
+  }
+
+  function resetEdit() {
+    state.editOpen = false;
+    state.editBusy = false;
+    state.editMsg = null;
+    state.editPhone = '';
+    state.editEmail = '';
+  }
+
+  function formatPhoneInput(raw) {
+    var value = String(raw || '').trim();
+    var digits = value.replace(/\D/g, '');
+    var national = '';
+    if (/^09\d{9}$/.test(digits)) national = digits.slice(1);
+    else if (/^639\d{9}$/.test(digits)) national = digits.slice(2);
+    else if (/^9\d{9}$/.test(digits) && value.charAt(0) !== '+') national = digits;
+    if (national) return '+63 ' + national.slice(0, 3) + ' ' + national.slice(3, 6) + ' ' + national.slice(6);
+    return value;
+  }
+
+  function contactBlock() {
+    var msg = state.editMsg
+      ? '<div class="reset-msg ' + (state.editMsg.ok ? 'ok' : 'err') + '">' + esc(state.editMsg.text) + '</div>'
+      : '';
+    if (!state.editOpen) {
+      return '<div class="um-recover"><div class="um-recover-h"><span class="um-recover-i info">✏️</span>'
+        + '<div><b>Phone and email</b><p>Correct the mobile number or email address linked to this user.</p></div></div>'
+        + '<div class="reset-actions"><button class="btn" type="button" data-act="edit-open">Edit contact details</button></div>'
+        + msg + '</div>';
+    }
+    var dis = state.editBusy ? ' disabled' : '';
+    return '<div class="um-recover"><div class="um-recover-h"><span class="um-recover-i info">✏️</span>'
+      + '<div><b>Edit contact details</b><p>Leave a field unchanged if it should stay the same.</p></div></div>'
+      + '<div class="um-form">'
+      + '<label class="um-label" for="editPhone">Mobile number</label>'
+      + '<input class="field" id="editPhone" type="tel" inputmode="tel" autocomplete="off" placeholder="+63 9XX XXX XXXX" value="' + esc(state.editPhone) + '"' + dis + '>'
+      + '<label class="um-label" for="editEmail">Email address</label>'
+      + '<input class="field" id="editEmail" type="email" inputmode="email" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="name@example.com" value="' + esc(state.editEmail) + '"' + dis + '>'
+      + '<p class="um-note">Changing the email also changes the address used to sign in, and signs this user out of all devices.</p>'
+      + '<div class="reset-actions"><button class="btn" type="button" data-act="edit-save"' + dis + '>' + (state.editBusy ? 'Saving…' : 'Save changes') + '</button>'
+      + '<button class="btn plain" type="button" data-act="edit-cancel"' + dis + '>Cancel</button></div>'
+      + '</div>' + msg + '</div>';
+  }
+
+  function copyText(text, btn) {
+    function done() {
+      var old = btn.textContent;
+      btn.textContent = 'Copied';
+      btn.classList.add('done');
+      setTimeout(function () { btn.textContent = old; btn.classList.remove('done'); }, 1200);
+    }
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) {}
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  function renderUserModal() {
+    var u = state.activeUser;
+    if (!u) return;
+    var a = state.activeAuth;
+    $('umAvatar').textContent = initials(u);
+    $('umName').textContent = u.name || u.username || 'Unnamed user';
+    $('umUser').textContent = u.username || '—';
+
+    var chips = [];
+    if (a) {
+      chips.push(a.emailVerified ? chip('ok', '✓ Email verified') : chip('warn', 'Email not verified'));
+      if (a.disabled) chips.push(chip('bad', 'Login disabled'));
+    }
+    chips.push(u.hasPin ? chip('ok', 'PIN set') : chip('warn', 'No PIN'));
+    if (u.walletResetPending) chips.push(chip('warn', 'Wallet reset pending'));
+    if (u.cardFrozen) chips.push(chip('bad', 'Card frozen'));
+    if (u.vaultLocked) chips.push(chip('bad', 'Vault locked'));
+    if (u.type) chips.push(chip('', esc(u.type)));
+
+    var stats = '<div class="um-stats">'
+      + stat('Balance', u.balance == null ? '—' : fmtAmount(u.balance))
+      + stat('XLM balance', u.xlmBalance == null ? '—' : fmtAmount(u.xlmBalance))
+      + stat('Daily limit', u.dailyLimit == null ? '—' : fmtAmount(u.dailyLimit))
+      + stat('Trust score', u.trustScore == null ? '—' : u.trustScore)
+      + '</div>';
+
+    var account = rows([
+      ['Full name', u.name],
+      ['Username', u.username, true],
+      ['Email', u.email, true],
+      ['Phone', u.phone, true],
+      ['Previous phone', u.previousPhone],
+      ['Phone changed', u.phoneChangedAt ? fmtTime(toMs(u.phoneChangedAt)) : ''],
+      ['Account type', u.type],
+      ['Country', u.country],
+      ['Member since', u.memberSince],
+      ['User ID', u.id, true, true]
+    ]);
+
+    var wallet = rows([
+      ['Wallet address', u.walletPublic, true, true],
+      ['Good transactions', u.goodTxCount]
+    ]);
+
+    var security = rows([
+      ['SMS PIN set', yesNo(u.hasPin)],
+      ['Card frozen', yesNo(u.cardFrozen)],
+      ['Vault locked', yesNo(u.vaultLocked)],
+      ['Email verified', a ? yesNo(a.emailVerified) : ''],
+      ['Login disabled', a ? yesNo(a.disabled) : ''],
+      ['Account created', a && a.createdAt ? fmtTime(Date.parse(a.createdAt)) : ''],
+      ['Last sign-in', a && a.lastSignInAt ? fmtTime(Date.parse(a.lastSignInAt)) : '']
+    ]);
+
+    var pw = esc(state.defaultPassword);
+    var pin = esc(state.defaultPin);
+    var recover = recovery({
+      icon: '🔑',
+      title: 'Password',
+      hint: 'Use this when a user is locked out. They can sign in right away with the reset password.',
+      busy: state.resetBusy,
+      busyText: 'Resetting…',
+      confirm: state.resetConfirm,
+      confirmText: 'Set the password to <b>' + pw + '</b> and sign this user out of all devices?',
+      askAct: 'reset-ask',
+      doAct: 'reset-do',
+      cancelAct: 'reset-cancel',
+      label: 'Reset password to ' + pw,
+      msg: state.resetMsg
+    }) + recovery({
+      icon: '🔢',
+      title: 'SMS PIN',
+      hint: 'Use this when a user forgot their PIN. The old PIN stops working right away.',
+      busy: state.pinBusy,
+      busyText: 'Resetting…',
+      confirm: state.pinConfirm,
+      confirmText: 'Set the PIN to <b>' + pin + '</b>? The current PIN will stop working.',
+      askAct: 'pin-ask',
+      doAct: 'pin-do',
+      cancelAct: 'pin-cancel',
+      label: 'Reset PIN to ' + pin,
+      msg: state.pinMsg
+    }) + recovery({
+      icon: '💼',
+      title: 'Wallet',
+      hint: u.walletResetPending
+        ? 'A new wallet will be created automatically the next time this user signs in.'
+        : 'Use this when a wallet is locked and cannot be opened. The user gets a new wallet address on their next sign-in.',
+      busy: state.walletBusy,
+      busyText: 'Resetting…',
+      confirm: state.walletConfirm,
+      confirmText: 'Reset this wallet? The user will get a <b>new wallet address</b> on their next sign-in, and the current wallet key will no longer be used.',
+      askAct: 'wallet-ask',
+      doAct: 'wallet-do',
+      cancelAct: 'wallet-cancel',
+      label: u.walletResetPending ? 'Reset wallet again' : 'Reset wallet',
+      msg: state.walletMsg
+    });
+
+    $('umBody').innerHTML = '<div class="um-chips">' + chips.join('') + '</div>'
+      + stats
+      + section('👤', 'Account', account)
+      + section('✏️', 'Contact details', contactBlock())
+      + section('💼', 'Wallet', wallet)
+      + section('🛡️', 'Security', security)
+      + section('🛟', 'Account recovery', recover);
+  }
+
+  async function openUser(id) {
+    var u = state.users.filter(function (x) { return x.id === id; })[0];
+    if (!u) return;
+    state.activeUser = u;
+    state.activeAuth = null;
+    state.resetConfirm = false;
+    state.resetBusy = false;
+    state.resetMsg = null;
+    state.pinConfirm = false;
+    state.pinBusy = false;
+    state.pinMsg = null;
+    state.walletConfirm = false;
+    state.walletBusy = false;
+    state.walletMsg = null;
+    resetEdit();
+    renderUserModal();
+    $('userModal').classList.add('show');
+    document.body.classList.add('lock');
+    $('umBody').scrollTop = 0;
+    try {
+      var resp = await api('/api/admin/users/' + encodeURIComponent(id));
+      if (resp.status === 401 || resp.status === 503) { failAuth(resp.status); return; }
+      if (!resp.ok) return;
+      var data = await resp.json();
+      if (state.activeUser && state.activeUser.id === id) {
+        if (data.user) state.activeUser = data.user;
+        state.activeAuth = data.auth || null;
+        renderUserModal();
+      }
+    } catch (e) {}
+  }
+
+  function closeUser() {
+    state.activeUser = null;
+    state.activeAuth = null;
+    state.resetConfirm = false;
+    state.resetBusy = false;
+    state.resetMsg = null;
+    state.pinConfirm = false;
+    state.pinBusy = false;
+    state.pinMsg = null;
+    state.walletConfirm = false;
+    state.walletBusy = false;
+    state.walletMsg = null;
+    resetEdit();
+    $('userModal').classList.remove('show');
+    document.body.classList.remove('lock');
+  }
+
+  async function resetPassword() {
+    var u = state.activeUser;
+    if (!u || state.resetBusy) return;
+    state.resetBusy = true;
+    state.resetConfirm = false;
+    state.resetMsg = null;
+    renderUserModal();
+    try {
+      var resp = await fetch('/api/admin/users/' + encodeURIComponent(u.id) + '/reset-password', {
+        method: 'POST',
+        headers: { 'x-admin-key': state.key }
+      });
+      if (resp.status === 401 || resp.status === 503) { failAuth(resp.status); return; }
+      var data = {};
+      try { data = await resp.json(); } catch (e) {}
+      if (!resp.ok) throw new Error(data.error || ('http-' + resp.status));
+      state.resetMsg = { ok: true, text: 'Password reset. The user can now sign in with ' + (data.password || state.defaultPassword) + '.' };
+    } catch (e) {
+      state.resetMsg = { ok: false, text: 'Could not reset the password: ' + (e.message || 'unknown error') };
+    } finally {
+      state.resetBusy = false;
+      renderUserModal();
+    }
+  }
+
+  async function resetWallet() {
+    var u = state.activeUser;
+    if (!u || state.walletBusy) return;
+    state.walletBusy = true;
+    state.walletConfirm = false;
+    state.walletMsg = null;
+    renderUserModal();
+    try {
+      var resp = await fetch('/api/admin/users/' + encodeURIComponent(u.id) + '/reset-wallet', {
+        method: 'POST',
+        headers: { 'x-admin-key': state.key }
+      });
+      if (resp.status === 401 || resp.status === 503) { failAuth(resp.status); return; }
+      var data = {};
+      try { data = await resp.json(); } catch (e) {}
+      if (!resp.ok) throw new Error(data.error || ('http-' + resp.status));
+      u.walletResetPending = true;
+      state.users.forEach(function (x) { if (x.id === u.id) x.walletResetPending = true; });
+      state.walletMsg = { ok: true, text: 'Wallet reset. A new wallet is created automatically when the user signs in.' };
+    } catch (e) {
+      state.walletMsg = { ok: false, text: 'Could not reset the wallet: ' + (e.message || 'unknown error') };
+    } finally {
+      state.walletBusy = false;
+      renderUserModal();
+    }
+  }
+
+  async function saveContact() {
+    var u = state.activeUser;
+    if (!u || state.editBusy) return;
+    var phone = formatPhoneInput(state.editPhone);
+    var email = String(state.editEmail || '').trim().toLowerCase();
+    var payload = {};
+    if (phone && phone !== String(u.phone || '')) payload.phone = phone;
+    if (email && email !== String(u.email || '').toLowerCase()) payload.email = email;
+    if (!payload.phone && !payload.email) {
+      state.editMsg = { ok: false, text: 'No changes to save.' };
+      renderUserModal();
+      return;
+    }
+    if (payload.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payload.email)) {
+      state.editMsg = { ok: false, text: 'Enter a valid email address.' };
+      renderUserModal();
+      return;
+    }
+    state.editBusy = true;
+    state.editMsg = null;
+    renderUserModal();
+    try {
+      var resp = await fetch('/api/admin/users/' + encodeURIComponent(u.id) + '/update-contact', {
+        method: 'POST',
+        headers: { 'x-admin-key': state.key, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (resp.status === 401 || resp.status === 503) { failAuth(resp.status); return; }
+      var data = {};
+      try { data = await resp.json(); } catch (e) {}
+      if (!resp.ok) throw new Error(data.error || ('http-' + resp.status));
+      if (data.user) {
+        state.activeUser = data.user;
+        state.users = state.users.map(function (x) { return x.id === data.user.id ? data.user : x; });
+        renderUsers();
+      }
+      if (data.auth) state.activeAuth = data.auth;
+      state.editOpen = false;
+      state.editPhone = '';
+      state.editEmail = '';
+      state.editMsg = { ok: true, text: 'Contact details updated.' };
+    } catch (e) {
+      var text = String(e && e.message ? e.message : 'unknown error');
+      state.editMsg = { ok: false, text: 'Could not save: ' + text.charAt(0).toUpperCase() + text.slice(1) };
+    } finally {
+      state.editBusy = false;
+      renderUserModal();
+    }
+  }
+
+  async function resetPin() {
+    var u = state.activeUser;
+    if (!u || state.pinBusy) return;
+    state.pinBusy = true;
+    state.pinConfirm = false;
+    state.pinMsg = null;
+    renderUserModal();
+    try {
+      var resp = await fetch('/api/admin/users/' + encodeURIComponent(u.id) + '/reset-pin', {
+        method: 'POST',
+        headers: { 'x-admin-key': state.key }
+      });
+      if (resp.status === 401 || resp.status === 503) { failAuth(resp.status); return; }
+      var data = {};
+      try { data = await resp.json(); } catch (e) {}
+      if (!resp.ok) throw new Error(data.error || ('http-' + resp.status));
+      u.hasPin = true;
+      state.users.forEach(function (x) { if (x.id === u.id) x.hasPin = true; });
+      state.pinMsg = { ok: true, text: 'PIN reset. The user can now confirm payments with ' + (data.pin || state.defaultPin) + '.' };
+    } catch (e) {
+      state.pinMsg = { ok: false, text: 'Could not reset the PIN: ' + (e.message || 'unknown error') };
+    } finally {
+      state.pinBusy = false;
+      renderUserModal();
+    }
+  }
+
+  $('tabs').addEventListener('click', function (e) {
+    var btn = e.target.closest('.tab');
+    if (btn) setView(btn.getAttribute('data-view'));
+  });
+  $('userSearch').addEventListener('input', function (e) { state.userQuery = e.target.value; renderUsers(); });
+  $('usersRefreshBtn').addEventListener('click', loadUsers);
+  $('usersList').addEventListener('click', function (e) {
+    var card = e.target.closest('[data-user]');
+    if (card) openUser(card.getAttribute('data-user'));
+  });
+  $('umClose').addEventListener('click', closeUser);
+  $('userModal').addEventListener('click', function (e) { if (e.target === $('userModal')) closeUser(); });
+  $('umBody').addEventListener('click', function (e) {
+    var cp = e.target.closest('[data-copy]');
+    if (cp) { copyText(cp.getAttribute('data-copy'), cp); return; }
+    var btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    var act = btn.getAttribute('data-act');
+    if (act === 'edit-open') {
+      var cu = state.activeUser;
+      state.editOpen = true;
+      state.editMsg = null;
+      state.editPhone = cu ? cu.phone || '' : '';
+      state.editEmail = cu ? cu.email || '' : '';
+      state.resetConfirm = false; state.pinConfirm = false; state.walletConfirm = false;
+      renderUserModal();
+      return;
+    }
+    if (act === 'edit-cancel') { resetEdit(); renderUserModal(); return; }
+    if (act === 'edit-save') { saveContact(); return; }
+    if (act === 'reset-ask') { state.resetConfirm = true; state.resetMsg = null; state.pinConfirm = false; state.walletConfirm = false; renderUserModal(); }
+    else if (act === 'reset-cancel') { state.resetConfirm = false; renderUserModal(); }
+    else if (act === 'reset-do') resetPassword();
+    else if (act === 'pin-ask') { state.pinConfirm = true; state.pinMsg = null; state.resetConfirm = false; state.walletConfirm = false; renderUserModal(); }
+    else if (act === 'pin-cancel') { state.pinConfirm = false; renderUserModal(); }
+    else if (act === 'pin-do') resetPin();
+    else if (act === 'wallet-ask') { state.walletConfirm = true; state.walletMsg = null; state.resetConfirm = false; state.pinConfirm = false; renderUserModal(); }
+    else if (act === 'wallet-cancel') { state.walletConfirm = false; renderUserModal(); }
+    else if (act === 'wallet-do') resetWallet();
+  });
+  $('umBody').addEventListener('input', function (e) {
+    if (e.target.id === 'editPhone') state.editPhone = e.target.value;
+    else if (e.target.id === 'editEmail') state.editEmail = e.target.value;
+  });
+  $('umBody').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && (e.target.id === 'editPhone' || e.target.id === 'editEmail')) {
+      e.preventDefault();
+      saveContact();
+    }
+  });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && state.activeUser) closeUser(); });
+
   $('connectBtn').addEventListener('click', connect);
   $('keyInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') connect(); });
   $('signOutBtn').addEventListener('click', signOut);
   $('refreshBtn').addEventListener('click', load);
   $('auto').addEventListener('change', function () {
     if ($('auto').checked) { load(); startLive(); } else { stopLive(); setLive('off', 'Paused'); }
+  });
+  $('dateSeg').addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-range]');
+    if (!btn) return;
+    state.range = btn.getAttribute('data-range');
+    if (state.range === 'date') {
+      var t = dayKey(Date.now());
+      if (!state.from && !state.to) { state.from = t; state.to = t; }
+      syncDateInputs();
+    }
+    render();
+  });
+  function syncDateInputs() {
+    var t = dayKey(Date.now());
+    $('dateFrom').value = state.from;
+    $('dateTo').value = state.to;
+    $('dateFrom').max = state.to || t;
+    $('dateTo').min = state.from;
+    $('dateTo').max = t;
+  }
+  $('dateFrom').addEventListener('change', function (e) {
+    state.from = e.target.value;
+    if (state.from && state.to && state.from > state.to) state.to = state.from;
+    syncDateInputs();
+    render();
+  });
+  $('dateTo').addEventListener('change', function (e) {
+    state.to = e.target.value;
+    if (state.from && state.to && state.to < state.from) state.from = state.to;
+    syncDateInputs();
+    render();
   });
   $('search').addEventListener('input', function (e) { state.query = e.target.value; renderList(); });
   $('channel').addEventListener('change', function (e) { state.channel = e.target.value; renderList(); });

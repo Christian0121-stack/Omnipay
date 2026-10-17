@@ -22,6 +22,12 @@ const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { getAuth } = require('firebase-admin/auth');
 const StellarSdk = require('stellar-sdk');
+let nodemailer = null;
+try {
+  nodemailer = require('nodemailer');
+} catch (_) {
+  nodemailer = null;
+}
 
 const COLOR_ENABLED = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
 const paint = (code, text) => (COLOR_ENABLED ? `\x1b[${code}m${text}\x1b[0m` : text);
@@ -80,6 +86,25 @@ if (SETTLEMENT_SIGNER_SECRET) {
 }
 const REQUIRE_SIGNED_SMS = String(process.env.REQUIRE_SIGNED_SMS || 'true').toLowerCase() === 'true';
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || '';
+const SMTP_HOST = (process.env.SMTP_HOST || '').trim();
+const SMTP_PORT = parseInt(process.env.SMTP_PORT, 10) || 587;
+const SMTP_SECURE = String(process.env.SMTP_SECURE || (SMTP_PORT === 465 ? 'true' : 'false')).toLowerCase() === 'true';
+const SMTP_USER = (process.env.SMTP_USER || '').trim();
+const SMTP_PASS = process.env.SMTP_PASS || '';
+const MAIL_FROM = (process.env.MAIL_FROM || (SMTP_USER ? `OmniPay <${SMTP_USER}>` : '')).trim();
+const APP_BASE_URL = (process.env.APP_BASE_URL || '').trim().replace(/\/+$/, '');
+const MAIL_ENABLED = Boolean(nodemailer && SMTP_HOST && SMTP_USER && SMTP_PASS && MAIL_FROM);
+const mailTransport = MAIL_ENABLED
+  ? nodemailer.createTransport({
+      host: SMTP_HOST,
+      port: SMTP_PORT,
+      secure: SMTP_SECURE,
+      auth: { user: SMTP_USER, pass: SMTP_PASS },
+      connectionTimeout: 15000,
+      greetingTimeout: 15000,
+      socketTimeout: 20000,
+    })
+  : null;
 const REPLAY_CHECK_ENABLED =
   process.argv.includes('--replay-check') || String(process.env.REPLAY_CHECK || '').toLowerCase() === 'true';
 const PROOF_CHECK_ENABLED =
@@ -1054,7 +1079,7 @@ async function handleIncomingSms(senderPhone, messageText, eventKey) {
         const senderName = sender.username || sender.id;
         await sendSms(
           senderPhone,
-          `OmniPay: Sent ${amount} ${ASSET_LABEL} to ${recipientName}. TX: ${result.txHash.slice(0, 12)}... New balance: ${result.newSenderBal.toFixed(4)} ${ASSET_LABEL}.`
+          `OmniPay: Sent ${amount} ${ASSET_LABEL} to ${recipientName}. New balance: ${result.newSenderBal.toFixed(4)} ${ASSET_LABEL}.\nTX: ${result.txHash}`
         );
         if (recipient.phone) {
           await sendSms(
@@ -1637,6 +1662,312 @@ app.post('/api/change-phone', requireUserToken, phoneChangeLimiter, async (req, 
   }
 });
 
+const availabilityLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too many requests, please try again later' },
+});
+
+const collapseName = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+app.post('/api/check-availability', availabilityLimiter, async (req, res) => {
+  const body = req.body || {};
+  const email = String(body.email || '').trim().toLowerCase();
+  const username = String(body.username || '').trim().toLowerCase();
+  const tail = phoneTail(body.phone);
+  const fullName = collapseName(`${body.firstName || ''} ${body.lastName || ''}`);
+  if (!email || !username || !tail || !fullName) return res.status(400).json({ error: 'missing-fields' });
+
+  try {
+    const conflicts = new Set();
+    const snap = await usersCol().select('phone', 'email', 'username', 'name', 'nameLower').get();
+    snap.docs.forEach((d) => {
+      const u = d.data() || {};
+      if (phoneTail(u.phone) === tail) conflicts.add('phone');
+      if (String(u.email || '').trim().toLowerCase() === email) conflicts.add('email');
+      if (String(u.username || '').trim().toLowerCase() === username) conflicts.add('username');
+      if (collapseName(u.nameLower || u.name) === fullName) conflicts.add('name');
+    });
+
+    try {
+      await getAuth().getUserByEmail(email);
+      conflicts.add('email');
+    } catch (e) {
+      if (!e || (e.code !== 'auth/user-not-found' && e.code !== 'auth/invalid-email')) throw e;
+    }
+
+    const lookup = await db.collection('usernames').doc(username).get();
+    if (lookup.exists) conflicts.add('username');
+
+    return res.json({ conflicts: ['phone', 'email', 'username', 'name'].filter((k) => conflicts.has(k)) });
+  } catch (err) {
+    log('error', 'register', `Availability check failed: ${err.message}`);
+    return res.status(500).json({ error: 'could not check availability' });
+  }
+});
+
+const forgotPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too many requests, please try again later' },
+});
+
+const RESET_EMAIL_COOLDOWN_MS = 60 * 1000;
+const resetEmailCooldowns = new Map();
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function resolveAppBaseUrl() {
+  if (APP_BASE_URL) return APP_BASE_URL;
+  if (ALLOWED_ORIGINS.length) return ALLOWED_ORIGINS[0].replace(/\/+$/, '');
+  return '';
+}
+
+function buildResetEmail(link) {
+  const safeLink = escapeHtml(link);
+  const year = new Date().getFullYear();
+  const text =
+    'Reset your OmniPay password\n\n' +
+    'We received a request to reset the password on your OmniPay account. ' +
+    'Open the link below to choose a new password:\n\n' +
+    `${link}\n\n` +
+    'This link expires in 1 hour and can only be used once.\n' +
+    'If you did not request this, you can safely ignore this email. Your password will not change.\n\n' +
+    `(c) ${year} OmniPay`;
+  const html =
+    '<!doctype html><html><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<style>@media only screen and (max-width:520px){.card{border-radius:18px !important}.pad{padding-left:20px !important;padding-right:20px !important}.hd{padding:28px 20px !important}}</style>' +
+    '</head><body style="margin:0;padding:0;background:#eef3ff;">' +
+    '<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#eef3ff;">Use this link to choose a new OmniPay password. It expires in 1 hour.</div>' +
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#eef3ff" style="background:#eef3ff;">' +
+    '<tr><td align="center" style="padding:32px 12px;font-family:Inter,\'Segoe UI\',Roboto,Arial,sans-serif;">' +
+    '<table role="presentation" class="card" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;background:#ffffff;border-radius:24px;overflow:hidden;border:1px solid #dbe5ff;">' +
+    '<tr><td class="hd" align="center" bgcolor="#2563eb" style="padding:36px 28px 32px;background:#2563eb;background-image:linear-gradient(135deg,#4a86ff 0%,#1d4ed8 100%);">' +
+    '<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" width="64" height="64" bgcolor="#ffffff" style="width:64px;height:64px;border-radius:32px;background:#ffffff;font-size:30px;line-height:64px;text-align:center;">&#128272;</td></tr></table>' +
+    '<div style="margin-top:18px;font-size:28px;font-weight:800;letter-spacing:-0.5px;color:#ffffff;">OmniPay</div>' +
+    '<div style="margin-top:6px;font-size:14px;color:#dbe7ff;">Password reset request</div>' +
+    '</td></tr>' +
+    '<tr><td class="pad" style="padding:34px 36px 8px;color:#1e293b;">' +
+    '<div style="font-size:21px;font-weight:800;line-height:1.3;color:#0f172a;">Forgot your password?</div>' +
+    '<p style="margin:12px 0 0;font-size:15px;line-height:1.7;color:#475569;">No worries. We received a request to reset the password on your OmniPay account. Tap the button below to choose a new one.</p>' +
+    '</td></tr>' +
+    '<tr><td class="pad" align="center" style="padding:26px 36px 8px;">' +
+    `<a href="${safeLink}" target="_blank" style="display:block;padding:16px 20px;border-radius:16px;background:#2563eb;background-image:linear-gradient(135deg,#4a86ff 0%,#1d4ed8 100%);color:#ffffff;font-size:16px;font-weight:700;text-align:center;text-decoration:none;">Reset My Password &rarr;</a>` +
+    '</td></tr>' +
+    '<tr><td class="pad" style="padding:22px 36px 4px;">' +
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>' +
+    '<td bgcolor="#eff6ff" style="padding:14px 16px;background:#eff6ff;border-left:4px solid #2563eb;border-radius:10px;font-size:13px;line-height:1.6;color:#1e40af;">' +
+    '<strong>&#9201; Expires in 1 hour.</strong> For your security, this link works only once.</td>' +
+    '</tr></table>' +
+    '</td></tr>' +
+    '<tr><td class="pad" style="padding:22px 36px 6px;">' +
+    '<div style="font-size:12px;line-height:1.6;color:#64748b;">Button not working? Copy and paste this link into your browser:</div>' +
+    `<div style="margin-top:6px;font-size:12px;line-height:1.6;word-break:break-all;"><a href="${safeLink}" target="_blank" style="color:#2563eb;text-decoration:underline;">${safeLink}</a></div>` +
+    '</td></tr>' +
+    '<tr><td class="pad" style="padding:22px 36px 30px;">' +
+    '<div style="border-top:1px solid #e2e8f0;padding-top:18px;font-size:13px;line-height:1.7;color:#64748b;">' +
+    '<strong style="color:#334155;">Didn\'t ask for this?</strong> You can safely ignore this email. Your password will stay the same and no changes will be made to your account.</div>' +
+    '</td></tr>' +
+    '<tr><td align="center" bgcolor="#f8fafc" style="padding:20px 24px;background:#f8fafc;border-top:1px solid #e2e8f0;font-size:12px;line-height:1.6;color:#94a3b8;">' +
+    `&copy; ${year} OmniPay. All rights reserved.<br>This is an automated message, please do not reply.` +
+    '</td></tr>' +
+    '</table></td></tr></table></body></html>';
+  return { subject: 'Reset your OmniPay password', text, html };
+}
+
+app.post('/api/forgot-password', forgotPasswordLimiter, async (req, res) => {
+  log('info', 'mail', 'Password reset request received.');
+  const email = String((req.body && req.body.email) || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+    return res.status(400).json({ error: 'invalid-email' });
+  }
+  if (!MAIL_ENABLED) {
+    log('warn', 'mail', 'Reset email requested but SMTP is not configured (SMTP_HOST, SMTP_USER, SMTP_PASS, MAIL_FROM).');
+    return res.status(503).json({ error: 'email-not-configured' });
+  }
+
+  const last = resetEmailCooldowns.get(email) || 0;
+  if (Date.now() - last < RESET_EMAIL_COOLDOWN_MS) {
+    return res.json({ ok: true });
+  }
+  resetEmailCooldowns.set(email, Date.now());
+  for (const [key, at] of resetEmailCooldowns) {
+    if (Date.now() - at > RESET_EMAIL_COOLDOWN_MS) resetEmailCooldowns.delete(key);
+  }
+
+  try {
+    let firebaseLink = null;
+    try {
+      firebaseLink = await getAuth().generatePasswordResetLink(email);
+    } catch (err) {
+      const noLink = err && /Unable to create the email action link/i.test(String(err.message));
+      if (!err || (err.code !== 'auth/user-not-found' && err.code !== 'auth/invalid-email' && !noLink)) throw err;
+      try {
+        await getAuth().getUserByEmail(email);
+        log('error', 'mail', 'This email EXISTS in Firebase Authentication, but Firebase still could not create a reset link. Check the service account role (Firebase Authentication Admin) and that the Identity Toolkit API is enabled.');
+      } catch (lookupErr) {
+        if (lookupErr && lookupErr.code === 'auth/user-not-found') {
+          log('warn', 'mail', 'Confirmed: no Firebase Authentication account uses this email. Use the exact email listed in Firebase Console -> Authentication -> Users.');
+        } else {
+          log('error', 'mail', `Could not check the account (${(lookupErr && lookupErr.code) || 'unknown'}): ${lookupErr && lookupErr.message}. This usually means the service account lacks permission or the project does not match.`);
+        }
+      }
+    }
+
+    if (firebaseLink) {
+      let link = firebaseLink;
+      const base = resolveAppBaseUrl();
+      if (base) {
+        const oobCode = new URL(firebaseLink).searchParams.get('oobCode');
+        if (oobCode) link = `${base}/?mode=resetPassword&oobCode=${encodeURIComponent(oobCode)}`;
+      }
+      const message = buildResetEmail(link);
+      await mailTransport.sendMail({
+        from: MAIL_FROM,
+        to: email,
+        subject: message.subject,
+        text: message.text,
+        html: message.html,
+      });
+      log('ok', 'mail', 'Password reset email sent.');
+    } else {
+      log('info', 'mail', 'Password reset requested for an unregistered email; nothing sent.');
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    resetEmailCooldowns.delete(email);
+    log('error', 'mail', `Password reset email failed: ${err.message}`);
+    return res.status(502).json({ error: 'email-send-failed' });
+  }
+});
+
+const forgotUsernameLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too many requests, please try again later' },
+});
+
+const USERNAME_EMAIL_COOLDOWN_MS = 60 * 1000;
+const usernameEmailCooldowns = new Map();
+
+function buildUsernameEmail(username, signInLink) {
+  const safeUser = escapeHtml(username);
+  const year = new Date().getFullYear();
+  const text =
+    'Your OmniPay username\n\n' +
+    'We received a request to recover the username on your OmniPay account.\n\n' +
+    `Your username is: ${username}\n\n` +
+    (signInLink ? `Sign in here: ${signInLink}\n\n` : '') +
+    'If you did not request this, you can safely ignore this email. Nothing on your account has changed.\n\n' +
+    `(c) ${year} OmniPay`;
+  const button = signInLink
+    ? '<tr><td class="pad" align="center" style="padding:6px 36px 8px;">' +
+      `<a href="${escapeHtml(signInLink)}" target="_blank" style="display:block;padding:16px 20px;border-radius:16px;background:#2563eb;background-image:linear-gradient(135deg,#4a86ff 0%,#1d4ed8 100%);color:#ffffff;font-size:16px;font-weight:700;text-align:center;text-decoration:none;">Go to Sign In &rarr;</a>` +
+      '</td></tr>'
+    : '';
+  const html =
+    '<!doctype html><html><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<style>@media only screen and (max-width:520px){.card{border-radius:18px !important}.pad{padding-left:20px !important;padding-right:20px !important}.hd{padding:28px 20px !important}}</style>' +
+    '</head><body style="margin:0;padding:0;background:#eef3ff;">' +
+    '<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#eef3ff;">Here is the username on your OmniPay account.</div>' +
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#eef3ff" style="background:#eef3ff;">' +
+    '<tr><td align="center" style="padding:32px 12px;font-family:Inter,\'Segoe UI\',Roboto,Arial,sans-serif;">' +
+    '<table role="presentation" class="card" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;background:#ffffff;border-radius:24px;overflow:hidden;border:1px solid #dbe5ff;">' +
+    '<tr><td class="hd" align="center" bgcolor="#2563eb" style="padding:36px 28px 32px;background:#2563eb;background-image:linear-gradient(135deg,#4a86ff 0%,#1d4ed8 100%);">' +
+    '<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" width="64" height="64" bgcolor="#ffffff" style="width:64px;height:64px;border-radius:32px;background:#ffffff;font-size:30px;line-height:64px;text-align:center;">&#128100;</td></tr></table>' +
+    '<div style="margin-top:18px;font-size:28px;font-weight:800;letter-spacing:-0.5px;color:#ffffff;">OmniPay</div>' +
+    '<div style="margin-top:6px;font-size:14px;color:#dbe7ff;">Username recovery</div>' +
+    '</td></tr>' +
+    '<tr><td class="pad" style="padding:34px 36px 8px;color:#1e293b;">' +
+    '<div style="font-size:21px;font-weight:800;line-height:1.3;color:#0f172a;">Forgot your username?</div>' +
+    '<p style="margin:12px 0 0;font-size:15px;line-height:1.7;color:#475569;">No worries. Here is the username linked to this email address.</p>' +
+    '</td></tr>' +
+    '<tr><td class="pad" style="padding:22px 36px 8px;">' +
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>' +
+    '<td align="center" bgcolor="#eff6ff" style="padding:20px 16px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:14px;">' +
+    '<div style="font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#64748b;">Your username</div>' +
+    `<div style="margin-top:8px;font-size:24px;font-weight:800;color:#1d4ed8;word-break:break-all;">${safeUser}</div>` +
+    '</td></tr></table>' +
+    '</td></tr>' +
+    button +
+    '<tr><td class="pad" style="padding:22px 36px 30px;">' +
+    '<div style="border-top:1px solid #e2e8f0;padding-top:18px;font-size:13px;line-height:1.7;color:#64748b;">' +
+    '<strong style="color:#334155;">Didn\'t ask for this?</strong> You can safely ignore this email. Nothing on your account has changed.</div>' +
+    '</td></tr>' +
+    '<tr><td align="center" bgcolor="#f8fafc" style="padding:20px 24px;background:#f8fafc;border-top:1px solid #e2e8f0;font-size:12px;line-height:1.6;color:#94a3b8;">' +
+    `&copy; ${year} OmniPay. All rights reserved.<br>This is an automated message, please do not reply.` +
+    '</td></tr>' +
+    '</table></td></tr></table></body></html>';
+  return { subject: 'Your OmniPay username', text, html };
+}
+
+app.post('/api/forgot-username', forgotUsernameLimiter, async (req, res) => {
+  log('info', 'mail', 'Username recovery request received.');
+  const email = String((req.body && req.body.email) || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+    return res.status(400).json({ error: 'invalid-email' });
+  }
+  if (!MAIL_ENABLED) {
+    log('warn', 'mail', 'Username recovery requested but SMTP is not configured (SMTP_HOST, SMTP_USER, SMTP_PASS, MAIL_FROM).');
+    return res.status(503).json({ error: 'email-not-configured' });
+  }
+
+  const last = usernameEmailCooldowns.get(email) || 0;
+  if (Date.now() - last < USERNAME_EMAIL_COOLDOWN_MS) {
+    return res.json({ ok: true });
+  }
+  usernameEmailCooldowns.set(email, Date.now());
+  for (const [key, at] of usernameEmailCooldowns) {
+    if (Date.now() - at > USERNAME_EMAIL_COOLDOWN_MS) usernameEmailCooldowns.delete(key);
+  }
+
+  try {
+    let uid = null;
+    try {
+      const record = await getAuth().getUserByEmail(email);
+      uid = record.uid;
+    } catch (err) {
+      if (!err || (err.code !== 'auth/user-not-found' && err.code !== 'auth/invalid-email')) throw err;
+    }
+
+    let username = '';
+    if (uid) {
+      const snap = await usersCol().doc(uid).get();
+      if (snap.exists) username = String((snap.data() || {}).username || '').trim();
+    }
+
+    if (username) {
+      const base = resolveAppBaseUrl();
+      const message = buildUsernameEmail(username, base || '');
+      await mailTransport.sendMail({
+        from: MAIL_FROM,
+        to: email,
+        subject: message.subject,
+        text: message.text,
+        html: message.html,
+      });
+      log('ok', 'mail', 'Username recovery email sent.');
+    } else {
+      log('info', 'mail', 'Username recovery requested for an unregistered email; nothing sent.');
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    usernameEmailCooldowns.delete(email);
+    log('error', 'mail', `Username recovery email failed: ${err.message}`);
+    return res.status(502).json({ error: 'email-send-failed' });
+  }
+});
+
 const ACTIVITY_MAX_DEVICES = 10;
 const ACTIVITY_LIST_LIMIT = 50;
 const ACTIVITY_MERGED_LIMIT = 60;
@@ -2104,7 +2435,7 @@ async function notifyAppPayment({ sender, recipient, amount, result }) {
     if (sender.phone) {
       await sendSms(
         sender.phone,
-        `OmniPay: Sent ${amount} ${ASSET_LABEL} to ${recipientName}. TX: ${String(result.txHash).slice(0, 12)}... New balance: ${fmt(result.newSenderBal)} ${ASSET_LABEL}.`
+        `OmniPay: Sent ${amount} ${ASSET_LABEL} to ${recipientName}. New balance: ${fmt(result.newSenderBal)} ${ASSET_LABEL}.\nTX: ${String(result.txHash)}`
       );
     }
     if (recipient.phone) {
@@ -2411,6 +2742,316 @@ app.post('/api/reconcile-balance/:userId', requireAdminKey, async (req, res) => 
   } catch (err) {
     console.error('[api/reconcile-balance] failed:', err.message);
     res.status(500).json({ error: 'internal error' });
+  }
+});
+
+const ADMIN_RESET_PASSWORD = String(process.env.ADMIN_RESET_PASSWORD || '123456');
+
+const adminUserActionLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too many requests, please try again later' },
+});
+
+function adminUserView(id, data) {
+  const d = data || {};
+  const num = (v) => (v != null && isFinite(Number(v)) ? Number(v) : null);
+  return {
+    id,
+    username: d.username || '',
+    name: d.name || '',
+    email: d.email || '',
+    phone: d.phone || '',
+    previousPhone: d.previousPhone || '',
+    phoneChangedAt: d.phoneChangedAt || null,
+    type: d.type || '',
+    country: d.country || '',
+    memberSince: d.memberSince || '',
+    walletPublic: d.walletPublic || '',
+    xlmBalance: num(d.xlmBalance),
+    balance: num(d.balance),
+    dailyLimit: num(d.dailyLimit),
+    trustScore: num(d.trustScore),
+    goodTxCount: num(d.goodTxCount),
+    cardFrozen: d.cardFrozen === true,
+    vaultLocked: d.vaultLocked === true,
+    hasPin: !!(d.smsPinHash && d.smsPinSalt),
+    walletResetPending: d.walletResetPending === true,
+  };
+}
+
+app.get('/api/admin/users', requireAdminKey, adminUserActionLimiter, async (_req, res) => {
+  try {
+    const snap = await usersCol().limit(1000).get();
+    const users = snap.docs.map((d) => adminUserView(d.id, d.data()));
+    users.sort((a, b) => (a.name || a.username).toLowerCase().localeCompare((b.name || b.username).toLowerCase()));
+    res.json({ users, defaultPassword: ADMIN_RESET_PASSWORD });
+  } catch (err) {
+    console.error('[api/admin/users] failed:', err.message);
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
+app.get('/api/admin/users/:id', requireAdminKey, adminUserActionLimiter, async (req, res) => {
+  const uid = String(req.params.id || '');
+  if (!uid || uid.length > 128) return res.status(400).json({ error: 'invalid user id' });
+  try {
+    const snap = await usersCol().doc(uid).get();
+    if (!snap.exists) return res.status(404).json({ error: 'user not found' });
+    let auth = null;
+    try {
+      const record = await getAuth().getUser(uid);
+      auth = {
+        emailVerified: !!record.emailVerified,
+        disabled: !!record.disabled,
+        createdAt: record.metadata && record.metadata.creationTime ? record.metadata.creationTime : null,
+        lastSignInAt: record.metadata && record.metadata.lastSignInTime ? record.metadata.lastSignInTime : null,
+      };
+    } catch (_e) {
+      auth = null;
+    }
+    res.json({ user: adminUserView(snap.id, snap.data()), auth });
+  } catch (err) {
+    console.error('[api/admin/users/:id] failed:', err.message);
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
+app.post('/api/admin/users/:id/reset-password', requireAdminKey, adminUserActionLimiter, async (req, res) => {
+  const uid = String(req.params.id || '');
+  if (!uid || uid.length > 128) return res.status(400).json({ error: 'invalid user id' });
+  try {
+    const snap = await usersCol().doc(uid).get();
+    if (!snap.exists) return res.status(404).json({ error: 'user not found' });
+    await getAuth().updateUser(uid, { password: ADMIN_RESET_PASSWORD });
+    await getAuth().revokeRefreshTokens(uid);
+    try {
+      const authRecord = await getAuth().getUser(uid);
+      const profile = snap.data() || {};
+      const loginName = String(profile.username || '').trim().toLowerCase();
+      const loginEmail = String(authRecord.email || profile.email || '').trim();
+      if (loginName && loginEmail) {
+        await db.collection('usernames').doc(loginName).set({ uid, email: loginEmail }, { merge: true });
+      }
+    } catch (lookupErr) {
+      console.error('[api/admin/reset-password] username lookup sync failed:', lookupErr.message);
+    }
+    log('warn', 'admin', `Password reset by admin for user ${uid}`);
+    await logEvent(uid, '🔑', 'Password was reset by an administrator', 'info');
+    res.json({ ok: true, password: ADMIN_RESET_PASSWORD });
+  } catch (err) {
+    const code = err && err.code ? String(err.code) : '';
+    console.error('[api/admin/reset-password] failed:', err.message);
+    if (code === 'auth/user-not-found') return res.status(404).json({ error: 'login account not found' });
+    if (code === 'auth/invalid-password') return res.status(400).json({ error: 'reset password is too short (Firebase needs at least 6 characters)' });
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
+app.post('/api/admin/users/:id/reset-wallet', requireAdminKey, adminUserActionLimiter, async (req, res) => {
+  const uid = String(req.params.id || '');
+  if (!uid || uid.length > 128) return res.status(400).json({ error: 'invalid user id' });
+  try {
+    const ref = usersCol().doc(uid);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ error: 'user not found' });
+    await ref.update({
+      walletResetPending: true,
+      walletResetRequestedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    log('warn', 'admin', `Wallet reset requested by admin for user ${uid}`);
+    await logEvent(uid, '💼', 'Wallet reset was requested by an administrator', 'info');
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[api/admin/reset-wallet] failed:', err.message);
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
+const ADMIN_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function adminAuthView(record) {
+  return {
+    emailVerified: !!record.emailVerified,
+    disabled: !!record.disabled,
+    createdAt: record.metadata && record.metadata.creationTime ? record.metadata.creationTime : null,
+    lastSignInAt: record.metadata && record.metadata.lastSignInTime ? record.metadata.lastSignInTime : null,
+  };
+}
+
+app.post('/api/admin/users/:id/update-contact', requireAdminKey, adminUserActionLimiter, async (req, res) => {
+  const uid = String(req.params.id || '');
+  if (!uid || uid.length > 128) return res.status(400).json({ error: 'invalid user id' });
+  const body = req.body || {};
+  const hasPhone = typeof body.phone === 'string' && body.phone.trim() !== '';
+  const hasEmail = typeof body.email === 'string' && body.email.trim() !== '';
+  if (!hasPhone && !hasEmail) return res.status(400).json({ error: 'enter a phone number or an email address' });
+
+  let phone = null;
+  if (hasPhone) {
+    phone = cleanNewPhone(body.phone);
+    if (!phone) return res.status(400).json({ error: 'invalid phone number, use the format +63 9XX XXX XXXX' });
+  }
+  let email = null;
+  if (hasEmail) {
+    email = String(body.email).trim().toLowerCase();
+    if (!ADMIN_EMAIL_PATTERN.test(email) || email.length > 254) {
+      return res.status(400).json({ error: 'invalid email address' });
+    }
+  }
+
+  try {
+    const userRef = usersCol().doc(uid);
+    const snap = await userRef.get();
+    if (!snap.exists) return res.status(404).json({ error: 'user not found' });
+    const current = snap.data() || {};
+
+    let authRecord = null;
+    try {
+      authRecord = await getAuth().getUser(uid);
+    } catch (lookupErr) {
+      if (!lookupErr || lookupErr.code !== 'auth/user-not-found') throw lookupErr;
+    }
+
+    const phoneChanged = !!phone && phoneTail(phone) !== phoneTail(current.phone);
+    const currentEmail = String((authRecord && authRecord.email) || current.email || '').trim().toLowerCase();
+    const emailChanged = !!email && email !== currentEmail;
+    if (!phoneChanged && !emailChanged) return res.status(400).json({ error: 'no changes to save' });
+    if (emailChanged && !authRecord) return res.status(404).json({ error: 'login account not found' });
+
+    const newTail = phoneChanged ? phoneTail(phone) : '';
+    const all = await usersCol().select('phone', 'email').get();
+    for (const d of all.docs) {
+      if (d.id === uid) continue;
+      const other = d.data() || {};
+      if (phoneChanged && phoneTail(other.phone) === newTail) {
+        return res.status(409).json({ error: 'that phone number is already used by another user' });
+      }
+      if (emailChanged && String(other.email || '').trim().toLowerCase() === email) {
+        return res.status(409).json({ error: 'that email address is already used by another user' });
+      }
+    }
+    if (emailChanged) {
+      try {
+        const existing = await getAuth().getUserByEmail(email);
+        if (existing.uid !== uid) {
+          return res.status(409).json({ error: 'that email address is already used by another user' });
+        }
+      } catch (lookupErr) {
+        if (!lookupErr || lookupErr.code !== 'auth/user-not-found') throw lookupErr;
+      }
+    }
+
+    if (emailChanged) {
+      await getAuth().updateUser(uid, { email, emailVerified: false });
+      await getAuth().revokeRefreshTokens(uid);
+      const loginName = String(current.username || '').trim().toLowerCase();
+      if (loginName) {
+        await db.collection('usernames').doc(loginName).set({ uid, email }, { merge: true });
+      }
+    }
+
+    const fields = { updatedAt: FieldValue.serverTimestamp() };
+    if (emailChanged) fields.email = email;
+    if (phoneChanged) {
+      fields.phone = phone;
+      fields.previousPhone = current.phone || null;
+      fields.phoneChangedAt = FieldValue.serverTimestamp();
+    }
+    await userRef.update(fields);
+
+    recipientDirectory.loadedAt = 0;
+    relayNameCache.at = 0;
+    if (phoneChanged) {
+      if (current.phone) clearPinFailures(current.phone);
+      clearPinFailures(phone);
+    }
+
+    const changedLabels = [phoneChanged ? 'mobile number' : null, emailChanged ? 'email address' : null].filter(Boolean).join(' and ');
+    log('warn', 'admin', `Contact details updated by admin for user ${uid} (${changedLabels})`);
+    await logEvent(uid, '📝', `Your ${changedLabels} was updated by an administrator`, 'info');
+
+    if (phoneChanged) {
+      if (current.phone) {
+        sendSms(current.phone, 'OmniPay: The mobile number on your account was changed. If this was not you, contact support right away.').catch(() => {});
+      }
+      sendSms(phone, 'OmniPay: This number is now linked to your OmniPay account.').catch(() => {});
+    }
+
+    const fresh = await userRef.get();
+    let auth = null;
+    try {
+      auth = adminAuthView(await getAuth().getUser(uid));
+    } catch (_e) {
+      auth = null;
+    }
+    return res.json({ ok: true, user: adminUserView(fresh.id, fresh.data()), auth });
+  } catch (err) {
+    const code = err && err.code ? String(err.code) : '';
+    console.error('[api/admin/update-contact] failed:', err.message);
+    if (code === 'auth/email-already-exists') return res.status(409).json({ error: 'that email address is already used by another user' });
+    if (code === 'auth/invalid-email') return res.status(400).json({ error: 'invalid email address' });
+    if (code === 'auth/user-not-found') return res.status(404).json({ error: 'login account not found' });
+    return res.status(500).json({ error: 'internal error' });
+  }
+});
+
+const walletRebuildLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `uid:${req.authUid || ipKeyGenerator(req.ip)}`,
+  message: { error: 'too many requests, please try again later' },
+});
+
+app.post('/api/wallet/rebuild', requireUserToken, walletRebuildLimiter, async (req, res) => {
+  const body = req.body || {};
+  const walletPublic = String(body.walletPublic || '').trim();
+  const encrypted = String(body.walletSecretEncrypted || '');
+  const salt = String(body.walletSecretSalt || '');
+  const iv = String(body.walletSecretIv || '');
+  if (!StellarSdk.StrKey.isValidEd25519PublicKey(walletPublic)) {
+    return res.status(400).json({ error: 'invalid-wallet' });
+  }
+  if (!encrypted || encrypted.length > 512 || !/^[A-Za-z0-9+/=]+$/.test(encrypted)) {
+    return res.status(400).json({ error: 'invalid-wallet-record' });
+  }
+  if (!/^[0-9a-f]{16,64}$/i.test(salt) || !/^[A-Za-z0-9+/=]{8,64}$/.test(iv)) {
+    return res.status(400).json({ error: 'invalid-wallet-record' });
+  }
+  try {
+    const ref = usersCol().doc(req.authUid);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ error: 'account not found' });
+    const current = snap.data() || {};
+    if (current.walletResetPending !== true) {
+      return res.status(403).json({ error: 'wallet-reset-not-requested' });
+    }
+    const chainBalance = await getStellarNativeBalance(walletPublic);
+    const xlmBalance = chainBalance != null ? chainBalance : 0;
+    await ref.update({
+      walletPublic,
+      walletSecretEncrypted: encrypted,
+      walletSecretSalt: salt,
+      walletSecretIv: iv,
+      previousWalletPublic: current.walletPublic || null,
+      lastKnownWalletPublic: walletPublic,
+      xlmBalance,
+      walletResetPending: FieldValue.delete(),
+      walletResetAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    recipientDirectory.loadedAt = 0;
+    recordActivity(req.authUid, 'key-changed', req, deviceKeyFor(req, body.deviceId), 'Wallet was reset by an administrator').catch(() => {});
+    log('ok', 'wallet', `Wallet rebuilt for user ${req.authUid}`);
+    return res.json({ ok: true, xlmBalance });
+  } catch (err) {
+    log('error', 'wallet', `Rebuild failed: ${err.message}`);
+    return res.status(500).json({ error: 'could not set up wallet' });
   }
 });
 
@@ -2792,6 +3433,11 @@ app.listen(PORT, () => {
   if (!settlementKeypair) {
     log('warn', 'settlement', 'SETTLEMENT_SIGNER_SECRET is not set — SMS and signed API payments cannot be settled until it is configured.');
   }
+  if (!MAIL_ENABLED) {
+    log('warn', 'mail', nodemailer
+      ? 'SMTP_HOST / SMTP_USER / SMTP_PASS / MAIL_FROM are not all set — password reset emails will fall back to Firebase.'
+      : 'nodemailer is not installed (run: npm install nodemailer) — password reset emails will fall back to Firebase.');
+  }
   if (!ADMIN_API_KEY) {
     log('warn', 'auth', 'ADMIN_API_KEY is not set — /api/relay-transactions* and /api/reconcile-balance are disabled until it is configured.');
   }
@@ -2804,6 +3450,12 @@ app.listen(PORT, () => {
     log('warn', 'auth', 'REQUIRE_SIGNED_SMS=false -> plain unsigned "SEND <amount> <recipient> <pin>" SMS is still ACCEPTED (PIN-only auth). Set REQUIRE_SIGNED_SMS=true in .env once the signing app has rolled out.');
   }
   log('info', 'ready', 'Waiting for incoming SMS. Every webhook hit and SMS reply will be logged here.');
+  if (MAIL_ENABLED) {
+    mailTransport
+      .verify()
+      .then(() => log('ok', 'mail', `SMTP ready: ${SMTP_HOST}:${SMTP_PORT} as ${SMTP_USER}`))
+      .catch((err) => log('error', 'mail', `SMTP connection/login FAILED: ${err.message}`));
+  }
   purgeLegacyPinSecrets();
   if (REPLAY_CHECK_ENABLED) runReplayCheck();
   if (PROOF_CHECK_ENABLED) runSettlementProof();

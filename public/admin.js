@@ -70,7 +70,11 @@
     editBusy: false,
     editMsg: null,
     editPhone: '',
-    editEmail: ''
+    editEmail: '',
+    activePayments: null,
+    payFilter: 'all',
+    payShown: 10,
+    umTab: 'profile'
   };
 
   function $(id) { return document.getElementById(id); }
@@ -666,6 +670,60 @@
     return '<div class="um-stat"><span>' + label + '</span><b>' + esc(value) + '</b></div>';
   }
 
+  function shortHash(h) {
+    var t = String(h || '');
+    return t.length > 20 ? t.slice(0, 10) + '…' + t.slice(-8) : t;
+  }
+
+  function hashLine(label, h) {
+    return '<div class="um-hash"><span>' + label + '</span><code title="' + esc(h) + '">' + esc(shortHash(h)) + '</code>'
+      + '<button class="um-copy" type="button" data-copy="' + esc(h) + '" aria-label="Copy ' + esc(label) + ' hash">Copy</button>'
+      + '<a class="um-link" href="' + EXPLORER_TX + encodeURIComponent(h) + '" target="_blank" rel="noopener noreferrer">View</a></div>';
+  }
+
+  function payItem(p) {
+    var sms = p.channel === 'sms';
+    var via = '<span class="um-via ' + (sms ? 'sms' : 'online') + '">' + (sms ? '📱 SMS' : '🌐 Online') + '</span>';
+    var cls = p.category === 'settled' ? 'ok' : (p.category === 'progress' ? 'warn' : 'bad');
+    var to = p.recipientUsername || p.recipient || 'Unknown';
+    var method = !sms && CHANNELS[p.channel] ? ' · ' + esc(CHANNELS[p.channel]) : '';
+    var why = (p.category === 'rejected' || p.category === 'failed') && p.reason
+      ? '<div class="um-pay-why">' + esc(reasonText(p.reason)) + '</div>'
+      : '';
+    return '<div class="um-pay"><div class="um-pay-top">' + via + chip(cls, esc(statusLabel(p)))
+      + '<span class="um-pay-amt">' + (p.amount == null ? '—' : esc(fmtAmount(p.amount))) + '</span></div>'
+      + '<div class="um-pay-meta">To <b>' + esc(shortHash(to)) + '</b> · ' + esc(fmtTime(p.createdAt)) + method + '</div>'
+      + why
+      + (p.txHash ? hashLine('Payment', p.txHash) : '')
+      + (p.sorobanTxHash ? hashLine('Contract', p.sorobanTxHash) : '')
+      + '</div>';
+  }
+
+  function paymentsBlock() {
+    var list = state.activePayments;
+    if (list === 'error') return '<div class="um-empty">Payment history could not be loaded.</div>';
+    if (!list) return '<div class="um-empty">Loading payment history…</div>';
+    if (!list.length) return '<div class="um-empty">No payments sent by this user yet.</div>';
+    var onlineCount = list.filter(function (p) { return p.channel !== 'sms'; }).length;
+    var tabs = [['all', 'All', list.length], ['online', 'Online', onlineCount], ['sms', 'SMS', list.length - onlineCount]];
+    var head = '<div class="um-pay-tabs" role="group" aria-label="Filter payments">' + tabs.map(function (t) {
+      var on = state.payFilter === t[0];
+      return '<button class="um-tab' + (on ? ' active' : '') + '" type="button" data-act="pay-filter" data-val="' + t[0] + '" aria-pressed="' + on + '">'
+        + t[1] + '<em>' + t[2] + '</em></button>';
+    }).join('') + '</div>';
+    var shown = list.filter(function (p) {
+      if (state.payFilter === 'sms') return p.channel === 'sms';
+      if (state.payFilter === 'online') return p.channel !== 'sms';
+      return true;
+    });
+    if (!shown.length) return head + '<div class="um-empty">No ' + (state.payFilter === 'sms' ? 'SMS' : 'online') + ' payments for this user.</div>';
+    var visible = shown.slice(0, state.payShown);
+    var more = shown.length > visible.length
+      ? '<div class="um-more"><button class="btn plain" type="button" data-act="pay-more">Show more (' + (shown.length - visible.length) + ')</button></div>'
+      : '';
+    return head + visible.map(payItem).join('') + more;
+  }
+
   function recovery(o) {
     var body;
     if (o.busy) {
@@ -848,13 +906,26 @@
       msg: state.walletMsg
     });
 
-    $('umBody').innerHTML = '<div class="um-chips">' + chips.join('') + '</div>'
-      + stats
-      + section('👤', 'Account', account)
+    var payCount = Array.isArray(state.activePayments) ? state.activePayments.length : null;
+    var tabDefs = [['profile', 'Profile', null], ['wallet', 'Wallet', null], ['payments', 'Payment history', payCount]];
+    var tabBar = '<div class="um-tabs" role="tablist">' + tabDefs.map(function (t) {
+      var on = state.umTab === t[0];
+      return '<button class="um-mtab' + (on ? ' active' : '') + '" type="button" role="tab" aria-selected="' + on + '" data-act="um-tab" data-val="' + t[0] + '">'
+        + t[1] + (t[2] != null ? '<em>' + t[2] + '</em>' : '') + '</button>';
+    }).join('') + '</div>';
+
+    var content;
+    if (state.umTab === 'wallet') content = section('💼', 'Wallet', wallet);
+    else if (state.umTab === 'payments') content = section('🧾', 'Payment history', paymentsBlock());
+    else content = section('👤', 'Account', account)
       + section('✏️', 'Contact details', contactBlock())
-      + section('💼', 'Wallet', wallet)
       + section('🛡️', 'Security', security)
       + section('🛟', 'Account recovery', recover);
+
+    $('umBody').innerHTML = '<div class="um-chips">' + chips.join('') + '</div>'
+      + stats
+      + tabBar
+      + content;
   }
 
   async function openUser(id) {
@@ -862,6 +933,10 @@
     if (!u) return;
     state.activeUser = u;
     state.activeAuth = null;
+    state.activePayments = null;
+    state.payFilter = 'all';
+    state.payShown = 10;
+    state.umTab = 'profile';
     state.resetConfirm = false;
     state.resetBusy = false;
     state.resetMsg = null;
@@ -879,19 +954,30 @@
     try {
       var resp = await api('/api/admin/users/' + encodeURIComponent(id));
       if (resp.status === 401 || resp.status === 503) { failAuth(resp.status); return; }
-      if (!resp.ok) return;
+      if (!resp.ok) { paymentsFailed(id); return; }
       var data = await resp.json();
       if (state.activeUser && state.activeUser.id === id) {
         if (data.user) state.activeUser = data.user;
         state.activeAuth = data.auth || null;
+        state.activePayments = Array.isArray(data.payments)
+          ? data.payments.map(normalize).sort(function (a, b) { return b.createdAt - a.createdAt; })
+          : 'error';
         renderUserModal();
       }
-    } catch (e) {}
+    } catch (e) { paymentsFailed(id); }
+  }
+
+  function paymentsFailed(id) {
+    if (state.activeUser && state.activeUser.id === id && !Array.isArray(state.activePayments)) {
+      state.activePayments = 'error';
+      renderUserModal();
+    }
   }
 
   function closeUser() {
     state.activeUser = null;
     state.activeAuth = null;
+    state.activePayments = null;
     state.resetConfirm = false;
     state.resetBusy = false;
     state.resetMsg = null;
@@ -1063,6 +1149,9 @@
       renderUserModal();
       return;
     }
+    if (act === 'um-tab') { state.umTab = btn.getAttribute('data-val') || 'profile'; renderUserModal(); return; }
+    if (act === 'pay-filter') { state.payFilter = btn.getAttribute('data-val') || 'all'; state.payShown = 10; renderUserModal(); return; }
+    if (act === 'pay-more') { state.payShown += 10; renderUserModal(); return; }
     if (act === 'edit-cancel') { resetEdit(); renderUserModal(); return; }
     if (act === 'edit-save') { saveContact(); return; }
     if (act === 'reset-ask') { state.resetConfirm = true; state.resetMsg = null; state.pinConfirm = false; state.walletConfirm = false; renderUserModal(); }

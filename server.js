@@ -2812,7 +2812,14 @@ app.get('/api/admin/users/:id', requireAdminKey, adminUserActionLimiter, async (
     } catch (_e) {
       auth = null;
     }
-    res.json({ user: adminUserView(snap.id, snap.data()), auth });
+    let payments = null;
+    try {
+      const paySnap = await relayTransactionsCol().where('senderId', '==', uid).limit(300).get();
+      payments = await enrichRelayTransactions(paySnap.docs.map(mapMyTransaction));
+    } catch (_e) {
+      payments = null;
+    }
+    res.json({ user: adminUserView(snap.id, snap.data()), auth, payments });
   } catch (err) {
     console.error('[api/admin/users/:id] failed:', err.message);
     res.status(500).json({ error: 'internal error' });

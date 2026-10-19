@@ -74,7 +74,10 @@
     activePayments: null,
     payFilter: 'all',
     payShown: 10,
-    umTab: 'profile'
+    umTab: 'profile',
+    lookupQ: '',
+    lookupBusy: false,
+    lookupRes: null
   };
 
   function $(id) { return document.getElementById(id); }
@@ -365,7 +368,7 @@
     if (state.channel && r.channel !== state.channel) return false;
     var q = state.query.trim().toLowerCase();
     if (!q) return true;
-    var hay = [r.senderUsername, r.recipientUsername, r.senderId, r.senderPhone, r.recipient, r.reason, reasonText(r.reason), r.requestId, r.id, r.status]
+    var hay = [r.senderUsername, r.recipientUsername, r.senderId, r.senderPhone, r.recipient, r.reason, reasonText(r.reason), r.requestId, r.id, r.status, r.txHash, r.sorobanTxHash]
       .join(' ').toLowerCase();
     return hay.indexOf(q) !== -1;
   }
@@ -626,11 +629,88 @@
     }
   }
 
+  function isTxHash(q) { return /^[0-9a-f]{64}$/i.test(q); }
+
+  function userByRef(id, ref) {
+    var key = String(ref || '').toLowerCase();
+    return state.users.filter(function (u) {
+      return (id && u.id === id) || (key && ((u.username || '').toLowerCase() === key || (u.walletPublic || '').toLowerCase() === key));
+    })[0];
+  }
+
+  async function runLookup(q) {
+    state.lookupQ = q;
+    state.lookupBusy = true;
+    state.lookupRes = null;
+    renderUsers();
+    try {
+      var resp = await api('/api/admin/lookup?q=' + encodeURIComponent(q));
+      if (resp.status === 401 || resp.status === 503) { failAuth(resp.status); return; }
+      if (state.lookupQ !== q) return;
+      if (!resp.ok) throw new Error('http-' + resp.status);
+      var data = await resp.json();
+      state.lookupRes = (data.matches || []).map(function (m) {
+        return Object.assign(normalize(m), { matched: m.matched });
+      });
+    } catch (e) {
+      if (state.lookupQ !== q) return;
+      state.lookupRes = 'error';
+    }
+    state.lookupBusy = false;
+    renderUsers();
+  }
+
+  function txHit(p) {
+    var sms = p.channel === 'sms';
+    var via = '<span class="um-via ' + (sms ? 'sms' : 'online') + '">' + (sms ? '📱 SMS' : '🌐 Online') + '</span>';
+    var cls = p.category === 'settled' ? 'ok' : (p.category === 'progress' ? 'warn' : 'bad');
+    var sender = userByRef(p.senderId, p.senderUsername);
+    var recipient = userByRef('', p.recipientUsername || p.recipient);
+    var senderLabel = sender ? (sender.name || sender.username) : (p.senderUsername || p.senderPhone || 'Unknown sender');
+    var senderSub = sender && sender.username && sender.name ? sender.username : '';
+    var recipientLabel = recipient ? (recipient.name || recipient.username) : shortHash(p.recipientUsername || p.recipient || 'Unknown');
+    var recipientSub = recipient && recipient.username && recipient.name ? recipient.username : '';
+    var method = !sms && CHANNELS[p.channel] ? ' · ' + esc(CHANNELS[p.channel]) : '';
+    var actions = '';
+    if (sender) actions += '<button class="btn plain" type="button" data-user="' + esc(sender.id) + '">View sender</button>';
+    if (recipient && (!sender || recipient.id !== sender.id)) actions += '<button class="btn plain" type="button" data-user="' + esc(recipient.id) + '">View recipient</button>';
+    return '<div class="card tx-hit"><div class="um-pay-top">' + via + chip(cls, esc(statusLabel(p)))
+      + '<span class="um-pay-amt">' + (p.amount == null ? '—' : esc(fmtAmount(p.amount))) + '</span></div>'
+      + '<div class="tx-flow"><div><span>From</span><b>' + esc(senderLabel) + '</b>' + (senderSub ? '<small>' + esc(senderSub) + '</small>' : '') + '</div>'
+      + '<i aria-hidden="true">→</i>'
+      + '<div><span>To</span><b>' + esc(recipientLabel) + '</b>' + (recipientSub ? '<small>' + esc(recipientSub) + '</small>' : '') + '</div></div>'
+      + '<div class="um-pay-meta">' + esc(fmtTime(p.createdAt)) + ' · Matched ' + (p.matched === 'contract' ? 'contract' : 'payment') + ' hash' + method + '</div>'
+      + (p.txHash ? hashLine('Payment', p.txHash) : '')
+      + (p.sorobanTxHash ? hashLine('Contract', p.sorobanTxHash) : '')
+      + (actions ? '<div class="tx-actions">' + actions + '</div>' : '')
+      + '</div>';
+  }
+
+  function renderLookup(q) {
+    $('userCount').textContent = '';
+    if (state.lookupQ !== q) { runLookup(q); return; }
+    var box = $('usersList');
+    if (state.lookupBusy) {
+      box.innerHTML = '<div class="card empty tx-wide"><div class="e-ico">⏳</div><b>Searching…</b>Looking up this transaction hash.</div>';
+      return;
+    }
+    if (state.lookupRes === 'error') {
+      box.innerHTML = '<div class="card empty tx-wide"><div class="e-ico">⚠️</div><b>Search failed</b>Please try again.</div>';
+      return;
+    }
+    if (!state.lookupRes || !state.lookupRes.length) {
+      box.innerHTML = '<div class="card empty tx-wide"><div class="e-ico">🔎</div><b>No transaction found</b>This hash is not in the relay records.</div>';
+      return;
+    }
+    box.innerHTML = state.lookupRes.map(txHit).join('');
+  }
+
   function renderUsers() {
     var q = state.userQuery.trim().toLowerCase();
+    if (isTxHash(q)) { renderLookup(q); return; }
     var rows = state.users.filter(function (u) {
       if (!q) return true;
-      return [u.name, u.username, u.email, u.phone, u.id].join(' ').toLowerCase().indexOf(q) !== -1;
+      return [u.name, u.username, u.email, u.phone, u.id, u.walletPublic].join(' ').toLowerCase().indexOf(q) !== -1;
     });
     $('userCount').textContent = '(' + rows.length + ')';
     if (!rows.length) {
@@ -642,7 +722,9 @@
         + '<span class="avatar">' + esc(initials(u)) + '</span>'
         + '<span class="user-main"><div class="user-name">' + esc(u.name || u.username || 'Unnamed user') + '</div>'
         + '<div class="user-sub">' + esc(u.username ? u.username : '—') + (u.email ? ' · ' + esc(u.email) : '') + '</div>'
-        + '<div class="user-sub">' + esc(u.phone || 'No phone') + '</div></span>'
+        + '<div class="user-sub">' + esc(u.phone || 'No phone') + '</div>'
+        + (q && u.walletPublic && u.walletPublic.toLowerCase().indexOf(q) !== -1 ? '<div class="user-sub">Wallet · ' + esc(shortHash(u.walletPublic)) + '</div>' : '')
+        + '</span>'
         + '<span class="user-arrow">›</span></button>';
     }).join('');
   }

@@ -2826,6 +2826,34 @@ app.get('/api/admin/users/:id', requireAdminKey, adminUserActionLimiter, async (
   }
 });
 
+app.get('/api/admin/lookup', requireAdminKey, adminUserActionLimiter, async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (!/^[0-9a-fA-F]{64}$/.test(q)) return res.status(400).json({ error: 'invalid transaction hash' });
+  try {
+    const keys = Array.from(new Set([q, q.toLowerCase()]));
+    const snaps = await Promise.all(keys.flatMap((k) => [
+      relayTransactionsCol().where('txHash', '==', k).limit(10).get(),
+      relayTransactionsCol().where('sorobanTxHash', '==', k).limit(10).get(),
+    ]));
+    const seen = new Map();
+    snaps.forEach((snap) => snap.docs.forEach((doc) => {
+      if (seen.has(doc.id)) return;
+      const data = doc.data() || {};
+      const tx = Object.assign(mapMyTransaction(doc), {
+        senderId: data.senderId || '',
+        senderPhone: data.senderPhone || null,
+        matched: String(data.txHash || '').toLowerCase() === q.toLowerCase() ? 'payment' : 'contract',
+      });
+      seen.set(doc.id, tx);
+    }));
+    const matches = await enrichRelayTransactions(Array.from(seen.values()));
+    res.json({ matches });
+  } catch (err) {
+    console.error('[api/admin/lookup] failed:', err.message);
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
 app.post('/api/admin/users/:id/reset-password', requireAdminKey, adminUserActionLimiter, async (req, res) => {
   const uid = String(req.params.id || '');
   if (!uid || uid.length > 128) return res.status(400).json({ error: 'invalid user id' });

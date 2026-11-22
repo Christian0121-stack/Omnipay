@@ -1,0 +1,49 @@
+{
+  "network": "testnet",
+  "passphrase": "Test SDF Network ; September 2015",
+  "rpc": "https://soroban-testnet.stellar.org",
+  "deployments": [
+    {
+      "label": "existing-20261122",
+      "contractId": "CCR4IAHHPOKX6SEM2ED5N5AKIO4QRBEJ7AA5UH4LZYBUTRAIH7XTD6TH",
+      "wasmHash": "0782efec976eda8c2ebc68ef34d2ec0b9b9d93a931f21781495a7e3bc2a87e4c",
+      "deployTxHash": null,
+      "deployer": "GDRKLBUOR6LBULFBS4YAMQ6EPWESVMTV7ETKZDD4WCHMTQ7HTZPSCC7G",
+      "wasmFile": "onchain.wasm",
+      "gitCommit": "0bff9a7",
+      "deployedAt": "2026-11-22T10:03:28.691Z",
+      "explorer": {
+        "contract": "https://stellar.expert/explorer/testnet/contract/CCR4IAHHPOKX6SEM2ED5N5AKIO4QRBEJ7AA5UH4LZYBUTRAIH7XTD6TH",
+        "tx": null
+      }
+    },
+    {
+      "label": "existing-20261122",
+      "contractId": "CCR4IAHHPOKX6SEM2ED5N5AKIO4QRBEJ7AA5UH4LZYBUTRAIH7XTD6TH",
+      "wasmHash": "0782efec976eda8c2ebc68ef34d2ec0b9b9d93a931f21781495a7e3bc2a87e4c",
+      "deployTxHash": null,
+      "deployer": "GDRKLBUOR6LBULFBS4YAMQ6EPWESVMTV7ETKZDD4WCHMTQ7HTZPSCC7G",
+      "wasmFile": "onchain.wasm",
+      "gitCommit": "0bff9a7",
+      "deployedAt": "2026-11-22T10:04:49.999Z",
+      "explorer": {
+        "contract": "https://stellar.expert/explorer/testnet/contract/CCR4IAHHPOKX6SEM2ED5N5AKIO4QRBEJ7AA5UH4LZYBUTRAIH7XTD6TH",
+        "tx": null
+      }
+    },
+    {
+      "label": "v1-rebuild-test",
+      "contractId": "CCNPMDKK5NCPGGDVA2IMB3KPTOLAWZNHUGYS7BCRCF2SPCNWKNOHRPA2",
+      "wasmHash": "0782efec976eda8c2ebc68ef34d2ec0b9b9d93a931f21781495a7e3bc2a87e4c",
+      "deployTxHash": "f6141313b941c0c0d0ad31baf15999c14014c3c81246c53ccbe50f062e67cfff",
+      "deployer": "GDRKLBUOR6LBULFBS4YAMQ6EPWESVMTV7ETKZDD4WCHMTQ7HTZPSCC7G",
+      "wasmFile": "omnipay_settlement.optimized.wasm",
+      "gitCommit": "0bff9a7",
+      "deployedAt": "2026-11-22T10:07:54.553Z",
+      "explorer": {
+        "contract": "https://stellar.expert/explorer/testnet/contract/CCNPMDKK5NCPGGDVA2IMB3KPTOLAWZNHUGYS7BCRCF2SPCNWKNOHRPA2",
+        "tx": "https://stellar.expert/explorer/testnet/tx/f6141313b941c0c0d0ad31baf15999c14014c3c81246c53ccbe50f062e67cfff"
+      }
+    }
+  ]
+}

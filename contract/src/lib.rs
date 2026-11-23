@@ -1,4 +1,9 @@
-
+#![no_std]
+//! OmniPay settlement contract v2 (Stellar Testnet).
+//!
+//! v1 only *recorded* a payment that was made separately on Horizon.
+//! v2 moves the value itself through the Stellar Asset Contract (SAC) and writes
+//! the settlement record in the SAME transaction. If any step fails, everything reverts.
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN,
     Env, String,

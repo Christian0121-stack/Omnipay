@@ -44,6 +44,20 @@
         "contract": "https://stellar.expert/explorer/testnet/contract/CCNPMDKK5NCPGGDVA2IMB3KPTOLAWZNHUGYS7BCRCF2SPCNWKNOHRPA2",
         "tx": "https://stellar.expert/explorer/testnet/tx/f6141313b941c0c0d0ad31baf15999c14014c3c81246c53ccbe50f062e67cfff"
       }
+    },
+    {
+      "label": "v2",
+      "contractId": "CB6MGNV7JM7HFP6AUBMLQMK42P3MTBKLLRF577ZWKIXG4UIIGEJ3TPAM",
+      "wasmHash": "f002a6599adfd944cd983a401ff4a594aa8481d398f508a4e6d79d863178bf6d",
+      "deployTxHash": "56bedbfd167b2ffd6b351ed3b4b705f991017f944152ded78bd1166b510da157",
+      "deployer": "GDRKLBUOR6LBULFBS4YAMQ6EPWESVMTV7ETKZDD4WCHMTQ7HTZPSCC7G",
+      "wasmFile": "omnipay_settlement.optimized.wasm",
+      "gitCommit": "a89bb90",
+      "deployedAt": "2026-11-23T07:50:28.164Z",
+      "explorer": {
+        "contract": "https://stellar.expert/explorer/testnet/contract/CB6MGNV7JM7HFP6AUBMLQMK42P3MTBKLLRF577ZWKIXG4UIIGEJ3TPAM",
+        "tx": "https://stellar.expert/explorer/testnet/tx/56bedbfd167b2ffd6b351ed3b4b705f991017f944152ded78bd1166b510da157"
+      }
     }
   ]
 }

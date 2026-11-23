@@ -2,8 +2,8 @@
 
 **Project:** OmniPay (INSTAWAG SOW v2)
 **Component:** Node.js SMS Relay + Backend + Soroban / Stellar Testnet integration + Monitoring dashboard
-**Milestone:** Week 3 — deploy the OmniPay web application, integrate transaction monitoring and dashboard synchronization, deploy the Soroban smart contract on Stellar Testnet, perform end-to-end integration testing
-**Status:** Deployed on Render. Stellar **Testnet only**. Signed SMS is required by default (`REQUIRE_SIGNED_SMS=true`).
+**Milestone:** Sprint 2, Week 1 — settlement contract v2 deployed on Stellar Testnet with the first atomic XLM settlements, and Stellar CLI scripts with a deployment manifest
+**Status:** Deployed on Render. Stellar **Testnet only**. Signed SMS is required by default (`REQUIRE_SIGNED_SMS=true`). The relay endpoints below are unchanged from Sprint 1 and still settle through contract v1. Contract v2 is documented in §9.1.
 
 | | |
 |---|---|
@@ -11,13 +11,14 @@
 | **Base URL (local dev)** | `http://localhost:3000` |
 | **Admin dashboard** | `GET /admin` — [Render](https://omnipay-m6hl.onrender.com/admin) · [omnipay.website](https://omnipay.website/admin) |
 | **Web app** | https://omnipay.website/ |
-| **X post** | https://x.com/Omnipay0121/status/2108564661176279097 |
-| **GitHub (Week 3 branch)** | https://github.com/Christian0121-stack/Omnipay/tree/week-3-deliverables |
+| **GitHub (Sprint 2, Week 1 branch)** | https://github.com/Christian0121-stack/Omnipay/tree/sprint-2-week-1 |
+| **Week 1 evidence** | [docs/week1-evidence.md](docs/week1-evidence.md) |
 | **Hosting (Render)** | https://omnipay-m6hl.onrender.com |
 | **Domain (GoDaddy)** | https://omnipay.website/ |
 | **User guide (screenshots)** | See [README, User guide](README.md#user-guide-step-by-step) |
 | **SMS gateway number** | `09612490625` (+63 961 249 0625) |
-| **Soroban contract (Testnet)** | `CCR4IAHHPOKX6SEM2ED5N5AKIO4QRBEJ7AA5UH4LZYBUTRAIH7XTD6TH` — [Stellar Expert](https://stellar.expert/explorer/testnet/contract/CCR4IAHHPOKX6SEM2ED5N5AKIO4QRBEJ7AA5UH4LZYBUTRAIH7XTD6TH) |
+| **Soroban contract v2 (Testnet)** | `CB6MGNV7JM7HFP6AUBMLQMK42P3MTBKLLRF577ZWKIXG4UIIGEJ3TPAM` — [Stellar Expert](https://stellar.expert/explorer/testnet/contract/CB6MGNV7JM7HFP6AUBMLQMK42P3MTBKLLRF577ZWKIXG4UIIGEJ3TPAM) |
+| **Soroban contract v1 (Testnet, used by the relay)** | `CCR4IAHHPOKX6SEM2ED5N5AKIO4QRBEJ7AA5UH4LZYBUTRAIH7XTD6TH` — [Stellar Expert](https://stellar.expert/explorer/testnet/contract/CCR4IAHHPOKX6SEM2ED5N5AKIO4QRBEJ7AA5UH4LZYBUTRAIH7XTD6TH) |
 | **Network** | Horizon `https://horizon-testnet.stellar.org` · Soroban RPC `https://soroban-testnet.stellar.org` · Passphrase `Test SDF Network ; September 2015` |
 
 ---
@@ -32,12 +33,12 @@
 6. [User endpoints (Firebase ID token)](#6-user-endpoints-firebase-id-token)
 7. [Relay record lifecycle](#7-relay-record-lifecycle)
 8. [SMS command reference](#8-sms-command-reference)
-9. [Soroban settlement](#9-soroban-settlement)
+9. [Soroban settlement](#9-soroban-settlement) (v1 relay path and [v2 contract](#91-settlement-contract-v2-sprint-2-week-1))
 10. [Rate limits and security headers](#10-rate-limits-and-security-headers)
 11. [Firestore data model](#11-firestore-data-model)
 12. [End-to-end test cases](#12-end-to-end-test-cases)
 13. [How to replicate and verify](#13-how-to-replicate-and-verify)
-14. [Known limitations (Week 3)](#14-known-limitations-week-3)
+14. [Known limitations](#14-known-limitations)
 
 ---
 
@@ -71,7 +72,7 @@ The web app checks connectivity with `navigator.onLine` and a probe request to H
 
 > **Important: add contacts before you go offline.** With no internet the app cannot search for other OmniPay users. Offline, the recipient search shows only the people you already saved under **Settings, Contacts**, so those are the recipients you can pick for **SMS Pay**. Adding a contact needs internet, so save everyone you plan to pay while you are online. You can still type an exact username or mobile number by hand, but it cannot be checked offline, and a typo is rejected by the relay (`recipient-not-found`).
 
-### Order of operations (changed in Week 3)
+### Order of operations (relay, contract v1)
 
 ```
 validate → submit XLM payment (Horizon) → confirmed → write Soroban record → settled
@@ -653,6 +654,8 @@ The signing happens on the device with no network access; the signed message is 
 
 ## 9. Soroban settlement
 
+This section describes the relay path, which uses contract v1. Contract v2 is in [§9.1](#91-settlement-contract-v2-sprint-2-week-1).
+
 When `SOROBAN_CONTRACT_ID` is set, each settled payment is recorded on the contract **after** the XLM payment succeeds.
 
 | Item | Value |
@@ -670,6 +673,67 @@ When `SOROBAN_CONTRACT_ID` is set, each settled payment is recorded on the contr
 | No contract ID | The server logs a warning at startup and settles on Horizon only (`services.soroban` is absent from `/health`) |
 
 **Verify on-chain:** open `https://stellar.expert/explorer/testnet/tx/<txHash>` for the payment and `https://stellar.expert/explorer/testnet/tx/<sorobanTxHash>` for the contract call. Both are shown with Explorer links in the dashboard.
+
+### 9.1 Settlement contract v2 (Sprint 2, Week 1)
+
+| Item | Value |
+|---|---|
+| Contract (Testnet) | `CB6MGNV7JM7HFP6AUBMLQMK42P3MTBKLLRF577ZWKIXG4UIIGEJ3TPAM` |
+| Explorer | [Stellar Expert](https://stellar.expert/explorer/testnet/contract/CB6MGNV7JM7HFP6AUBMLQMK42P3MTBKLLRF577ZWKIXG4UIIGEJ3TPAM) |
+| Wasm hash | `f002a6599adfd944cd983a401ff4a594aa8481d398f508a4e6d79d863178bf6d` |
+| Version | 0.2.0 |
+| Source and tests | `contract/src/lib.rs`, `contract/src/test.rs` (23 tests) |
+| Manifest | `deployments/testnet.json` |
+
+v2 transfers the asset through the token contract (the native XLM Stellar Asset Contract on Testnet) and records the settlement in the same transaction. The transfer and the record succeed or fail together, so a settlement record cannot exist without its payment.
+
+**Functions**
+
+| Function | Caller | Description |
+|---|---|---|
+| `initialize(admin: Address)` | Once | Sets the admin. Fails with `AlreadyInitialized` if called again. |
+| `settle(request_id: String, from: Address, to: Address, token: Address, amount: i128)` | `from` authorizes | Transfers `amount` of `token` from `from` to `to`, stores the record under `request_id` and emits `settled`. Amount is in stroops (7 decimals). |
+| `pause(caller)` / `unpause(caller)` | Admin | Stops or resumes `settle`. |
+| `set_cap(caller, cap: i128)` | Admin | Maximum amount per settlement. `0` means no cap. |
+| `set_admin(caller, new_admin)` | Admin | Transfers the admin role. |
+| `upgrade(caller, new_wasm_hash)` | Admin | Replaces the contract code in place. |
+| `get(request_id)` | Anyone | Returns the stored settlement, or nothing if unknown. |
+| `is_settled(request_id)` | Anyone | Returns whether the Request ID is stored. |
+| `config()` | Anyone | Returns the admin, pause state and cap. |
+| `version()` | Anyone | Returns the contract version. |
+
+Admin functions take the calling address as the `caller` argument and fail with `NotAdmin` when it is not the admin.
+
+**Errors**
+
+| Name | Code | Cause |
+|---|---|---|
+| `InvalidAmount` | 1 | Amount is zero or negative |
+| `AlreadyRecorded` | 2 | `request_id` is already stored |
+| `SameParty` | 3 | `from` and `to` are the same account |
+| `Paused` | 4 | Contract is paused |
+| `OverCap` | 5 | Amount is above the cap |
+| `NotAdmin` | 6 | Caller is not the admin |
+| `NotInitialized` | 7 | `initialize` has not been called |
+| `AlreadyInitialized` | 8 | `initialize` was already called |
+
+**Events:** `init`, `paused`, `unpaused`, `cap_set`, `admin_set`, `upgraded` and `settled` (data: request ID, token, amount).
+
+**Verified on Testnet**
+
+| Step | Result |
+|---|---|
+| `initialize` | Admin set |
+| `settle("week1-test-001", …)` | 1 XLM moved through the native token contract and recorded |
+| `settle("week1-test-002", …)` | 2 XLM moved and recorded |
+| `settle("week1-test-003", …)` | 0.5 XLM moved and recorded |
+| Repeated Request ID | Rejected with `AlreadyRecorded` (`#2`) |
+
+Transaction links are in [docs/week1-evidence.md](docs/week1-evidence.md).
+
+**Relay status:** the relay endpoints in §4 still call contract v1 (§9). They have not been switched to v2, and the v1 `settle(request_id, sender, recipient, amount)` signature differs from the v2 signature above.
+
+**CLI scripts** (`scripts/`, run from inside that folder): `00-check.sh` checks the setup, `01-build.sh` builds, `02-deploy.sh` deploys and records the result through `03-manifest.sh`, `04-verify-existing.sh` checks the listed contracts and `05-invoke.sh` invokes a function (it still uses the v1 `settle` arguments). Shared settings are in `env.sh`.
 
 ---
 
@@ -803,10 +867,13 @@ First, while online, save the recipient under **Settings, Contacts**. Then in th
 
 ---
 
-## 14. Known limitations (Week 3)
+## 14. Known limitations
+
+- **Contract v2 not yet used by the relay:** v2 settlements so far were sent directly with the Stellar CLI. The relay and the web app still settle through v1.
+- **`05-invoke.sh`:** it still uses the v1 `settle` arguments and does not pass a token.
 
 - **OmniCard:** Deliverable 3 (optional stretch goal) is not included. The OmniCard screens in the app are a simulated UI demo only.
-- **Two-step settlement:** the XLM payment and the contract record are two separate transactions. If the contract call fails after the payment settled, the record is marked `sorobanRecordStatus: "failed"` and the payment still shows on the dashboard. It is retried up to 3 times within the request; there is no deferred retry after all attempts fail (planned for Week 4).
+- **Two-step settlement (v1, live relay):** the XLM payment and the contract record are two separate transactions. If the contract call fails after the payment settled, the record is marked `sorobanRecordStatus: "failed"` and the payment still shows on the dashboard. It is retried up to 3 times within the request; there is no deferred retry after all attempts fail.
 - **In-memory counters:** PIN lockout and the SMS rate limit reset when the Render service restarts. Request ID and nonce records stay in Firestore.
 - **Signing key:** the wallet signing key is held by the web client. A native Android SMS bridge is not part of this submission; the client hands the signed message to the phone's SMS app.
 - **PIN in SMS:** the 4–6 digit PIN is still sent together with the signature in the SMS body (MVP-stage choice).

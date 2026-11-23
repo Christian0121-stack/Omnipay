@@ -16,14 +16,15 @@ Phone (no internet) --SMS--> Gateway phone (android-sms-gateway)
 
 | | |
 |---|---|
-| X post | https://x.com/Omnipay0121/status/2108564661176279097 |
-| GitHub repository (Week 3 branch) | https://github.com/Christian0121-stack/Omnipay/tree/week-3-deliverables |
+| GitHub repository (Sprint 2, Week 1 branch) | https://github.com/Christian0121-stack/Omnipay/tree/sprint-2-week-1 |
 | Render (web hosting / backend server) | https://omnipay-m6hl.onrender.com |
 | Render monitoring dashboard | https://omnipay-m6hl.onrender.com/admin |
 | GoDaddy (domain name) | https://omnipay.website/ |
 | Custom domain monitoring dashboard | https://omnipay.website/admin |
 | Health check | https://omnipay.website/health |
-| Soroban contract (Testnet) | [`CCR4IAHHPOKX6SEM2ED5N5AKIO4QRBEJ7AA5UH4LZYBUTRAIH7XTD6TH`](https://stellar.expert/explorer/testnet/contract/CCR4IAHHPOKX6SEM2ED5N5AKIO4QRBEJ7AA5UH4LZYBUTRAIH7XTD6TH) |
+| Soroban contract v2 (Testnet, Sprint 2) | [`CB6MGNV7JM7HFP6AUBMLQMK42P3MTBKLLRF577ZWKIXG4UIIGEJ3TPAM`](https://stellar.expert/explorer/testnet/contract/CB6MGNV7JM7HFP6AUBMLQMK42P3MTBKLLRF577ZWKIXG4UIIGEJ3TPAM) |
+| Soroban contract v1 (Testnet, used by the live relay) | [`CCR4IAHHPOKX6SEM2ED5N5AKIO4QRBEJ7AA5UH4LZYBUTRAIH7XTD6TH`](https://stellar.expert/explorer/testnet/contract/CCR4IAHHPOKX6SEM2ED5N5AKIO4QRBEJ7AA5UH4LZYBUTRAIH7XTD6TH) |
+| Week 1 evidence | [`docs/week1-evidence.md`](docs/week1-evidence.md) |
 | SMS gateway number (send test SMS here) | `09612490625` (+63 961 249 0625) |
 
 The admin dashboard is a public page, but all of its data endpoints require the admin key. The key is given to reviewers separately and is never stored in this repository.
@@ -56,11 +57,21 @@ Four one-page guides walk a new user through the app. Follow them in this order.
 
 Instawards SOW: OmniPay v2 (THE MOON PROJECT, Christian Mendigoria and Marielle Lingad), 30-day sprint.
 
-**Week 3 deliverable (this branch):** deployed web application, transaction monitoring and dashboard synchronization, Soroban contract deployed on Stellar Testnet, and end-to-end integration testing.
+**Sprint 2, Week 1 deliverable (this branch):** settlement contract v2 deployed on Stellar Testnet with the first atomic XLM settlements, and the Stellar CLI scripts with a deployment manifest.
+
+The web app, relay and dashboard from Sprint 1 are unchanged and still run against contract v1. Contract v2 is deployed and verified separately on Testnet, see [Settlement contract v2](#settlement-contract-v2-sprint-2-week-1).
 
 See [Status](#status) for what is done and what is still open.
 
-## What Week 3 adds
+## What Sprint 2, Week 1 adds
+
+- **Settlement contract v2:** a new contract that moves the XLM through the Stellar Asset Contract and records the settlement in the same transaction. If either part fails, the whole transaction reverts, so a payment can no longer exist without its record.
+- **Controls:** one-time `initialize`, an admin, pause and unpause, a per-payment cap, admin transfer and an in-place `upgrade`, with events for each action.
+- **Tests:** 23 contract tests covering the token transfer, atomic revert, duplicates, pause, cap, admin rules, upgrade and emitted events.
+- **Stellar CLI scripts:** repeatable scripts in `scripts/` to check the setup, build, deploy and verify a contract, and a deployment manifest in `deployments/testnet.json`.
+- **Evidence:** v2 deployed on Testnet, initialized, and three atomic XLM settlements and a rejected replay, all listed in [`docs/week1-evidence.md`](docs/week1-evidence.md).
+
+## What Week 3 added (Sprint 1)
 
 - **Deployment:** the relay, web app, PWA files and admin page run as a single Render web service. The domain `omnipay.website` is registered at GoDaddy and points to the web app.
 - **Soroban settlement record:** the contract is deployed on Stellar Testnet and the relay calls `settle()` for every settled payment. Each payment leaves two public transactions: the XLM payment and the contract call.
@@ -256,7 +267,72 @@ curl -X POST -u "$SMS_GATEWAY_USERNAME:$SMS_GATEWAY_PASSWORD" \
 
 The webhook URL must be an HTTPS address reachable by the gateway.
 
-## Soroban settlement contract
+## Settlement contract v2 (Sprint 2, Week 1)
+
+| | |
+|---|---|
+| Network | Stellar Testnet |
+| Contract ID | `CB6MGNV7JM7HFP6AUBMLQMK42P3MTBKLLRF577ZWKIXG4UIIGEJ3TPAM` |
+| Explorer | [View on Stellar Expert](https://stellar.expert/explorer/testnet/contract/CB6MGNV7JM7HFP6AUBMLQMK42P3MTBKLLRF577ZWKIXG4UIIGEJ3TPAM) |
+| Wasm hash | `f002a6599adfd944cd983a401ff4a594aa8481d398f508a4e6d79d863178bf6d` |
+| Version | 0.2.0 (`version()` returns the contract version) |
+| Source | [`contract/src/lib.rs`](contract/src/lib.rs) |
+| Tests | [`contract/src/test.rs`](contract/src/test.rs) (23 tests) |
+| Deployment manifest | [`deployments/testnet.json`](deployments/testnet.json) |
+
+v2 settles and records in one transaction. `settle` calls the token contract (the native XLM Stellar Asset Contract on Testnet) to transfer from the payer to the recipient, then stores the record. The two steps succeed or fail together.
+
+| Function | Who can call | Purpose |
+|---|---|---|
+| `initialize(admin)` | Once | Sets the admin. A second call fails with `AlreadyInitialized`. |
+| `settle(request_id, from, to, token, amount)` | Payer (authorizes) | Transfers `amount` of `token` from `from` to `to` and records the settlement under `request_id`. Emits `settled`. |
+| `pause(caller)` / `unpause(caller)` | Admin | Stops or resumes `settle`. |
+| `set_cap(caller, cap)` | Admin | Maximum amount per settlement. `0` means no cap. |
+| `set_admin(caller, new_admin)` | Admin | Transfers the admin role. |
+| `upgrade(caller, new_wasm_hash)` | Admin | Replaces the contract code in place. |
+| `get(request_id)` / `is_settled(request_id)` | Anyone | Reads a stored settlement. |
+| `config()` / `version()` | Anyone | Reads the admin, pause state and cap, or the contract version. |
+
+| Error | Code | Meaning |
+|---|---|---|
+| `InvalidAmount` | 1 | Amount is zero or negative. |
+| `AlreadyRecorded` | 2 | The `request_id` is already stored. |
+| `SameParty` | 3 | Payer and recipient are the same account. |
+| `Paused` | 4 | The contract is paused. |
+| `OverCap` | 5 | Amount is above the cap. |
+| `NotAdmin` | 6 | The caller is not the admin. |
+| `NotInitialized` | 7 | `initialize` has not been called. |
+| `AlreadyInitialized` | 8 | `initialize` was already called. |
+
+Events: `init`, `paused`, `unpaused`, `cap_set`, `admin_set`, `upgraded` and `settled` (with the request ID, token and amount).
+
+**Verified on Testnet:** the contract was initialized and three settlements (`week1-test-001`, `week1-test-002`, `week1-test-003`) moved XLM from one account to another through the native token contract. A repeated Request ID was rejected with `AlreadyRecorded`. All links are in [`docs/week1-evidence.md`](docs/week1-evidence.md).
+
+**Current status:** the live relay still calls contract v1 below. Contract v2 has been deployed and exercised directly with the CLI scripts, and the relay has not been switched to it yet.
+
+### Stellar CLI scripts
+
+Run the scripts from inside the `scripts/` folder. They use the Stellar CLI and read their settings from `scripts/env.sh`.
+
+| Script | Purpose |
+|---|---|
+| `env.sh` | Shared settings: network, source identity, contract folder, manifest path. |
+| `00-check.sh` | Checks the Stellar CLI, the wasm target and the source account. |
+| `01-build.sh` | Builds the contract to wasm. |
+| `02-deploy.sh` | Uploads and deploys the wasm, then records the result in the manifest. |
+| `03-manifest.sh` | Adds or updates an entry in `deployments/testnet.json`. |
+| `04-verify-existing.sh` | Checks that the contracts listed in the manifest exist on Testnet. |
+| `05-invoke.sh` | Invokes a contract function. It still uses the v1 `settle` arguments. |
+
+```bash
+cd scripts
+./00-check.sh
+./01-build.sh && ./02-deploy.sh
+```
+
+Use `&&` between the build and the deploy so a failed build never reaches the deploy step.
+
+## Soroban settlement contract (v1, used by the live relay)
 
 | | |
 |---|---|
@@ -302,7 +378,7 @@ The full review is in [`docs/SETTLEMENT_ORDER_REVIEW.md`](docs/SETTLEMENT_ORDER_
 
 ```bash
 cd contract
-cargo test
+cargo test                  # 23 tests (v2)
 stellar contract build
 stellar keys generate deployer --network testnet --fund
 stellar contract deploy --wasm target/wasm32v1-none/release/omnipay_settlement.wasm \
@@ -375,7 +451,7 @@ npm test                            # 27 offline signature tests (Jest)
 npm run test:live                   # 5 live relay tests (needs a running server, see below)
 node server.js --replay-check       # replay harness, writes replay-evidence.json
 node server.js --proof-check        # signed settlement proof with Explorer links, writes proof-evidence.json
-cd contract && cargo test           # Soroban contract tests
+cd contract && cargo test           # Soroban contract v2 tests (23)
 ```
 
 - **`Signature.test.js` (offline, 27 tests):** payload format (field order, `OMNIPAY-v1` prefix, 7-decimal amount, determinism), valid signatures, tampering of amount, recipient, sender, nonce and request ID, wrong key and flipped signature byte, timestamp window (inside, at the edge, expired, future, non-numeric), and malformed input (missing fields, `|` in a field, non-numeric amount, invalid public key, wrong-length or non-base64 signature). Last recorded run: 27 passed, 5 skipped, 32 total.
@@ -405,6 +481,7 @@ The end-to-end test cases E1 to E9 against the deployed server are listed in [AP
 3. Paste a Request ID in **Replay audit** to see settlements, replay count and the original transaction.
 4. Open https://omnipay.website/ to see the web application. The connection badge shows Online or Offline.
 5. Open https://omnipay.website/health to see Firestore, Horizon and Soroban status.
+6. Open [`docs/week1-evidence.md`](docs/week1-evidence.md) and follow the links to contract v2 and its three settlement transactions on Stellar Expert.
 
 **Real SMS test:** first, while online, save the recipient under **Settings, Contacts**. Then, in the app open **Send via SMS**, enter the recipient, amount and SMS PIN, tap **Sign & Prepare SMS**, then send the prepared message to `09612490625`. The relay server and the gateway phone must be online, so coordinate a test window with the builders.
 
@@ -435,12 +512,17 @@ Firestore holds application state only. The Stellar Testnet is the authoritative
 ├── Signature.test.js      # Signature unit tests and live SMS relay tests
 ├── babel.config.js        # Babel preset for Jest
 ├── sign-sms.js            # Helper: builds signed SMS lines and /api/send bodies
-├── contract/              # Soroban settlement contract (Rust)
+├── contract/              # Soroban settlement contract v2 (Rust)
 │   ├── Cargo.toml
+│   ├── Cargo.lock
 │   └── src/
 │       ├── lib.rs
 │       └── test.rs
+├── scripts/               # Stellar CLI scripts (check, build, deploy, manifest, verify, invoke)
+├── deployments/
+│   └── testnet.json       # Deployment manifest (contract IDs, wasm hashes, transactions)
 ├── docs/
+│   ├── week1-evidence.md  # Sprint 2, Week 1 evidence
 │   ├── SETTLEMENT_ORDER_REVIEW.md
 │   └── images/            # User guide pages used in this README
 │       ├── 01-register.png
@@ -463,39 +545,38 @@ Firestore holds application state only. The Stellar Testnet is the authoritative
 
 ## Status
 
-**Week 3** - Deploy the web application, transaction monitoring and dashboard synchronization, Soroban contract on Stellar Testnet, end-to-end integration testing.
+**Sprint 2, Week 1** - Settlement contract v2 on Stellar Testnet, first atomic XLM settlements, and Stellar CLI scripts with a deployment manifest.
+
+- [x] Stellar CLI scripts in `scripts/` and deployment manifest in `deployments/testnet.json`
+- [x] Settlement contract v2 with token transfer through the Stellar Asset Contract, atomic settle and record, admin controls, pause, cap, events and upgrade
+- [x] 23 contract tests passing
+- [x] Contract v2 deployed and initialized on Stellar Testnet (`CB6MGNV7...3TPAM`)
+- [x] Three atomic XLM settlements verified on Stellar Expert, and a repeated Request ID rejected
+- [x] Evidence recorded in `docs/week1-evidence.md`
+
+**Not yet switched:** the live relay, web app and dashboard still use contract v1. The v1 notes below describe what the live system does today.
+
+**Delivered in Sprint 1, Week 3:**
 
 - [x] OmniPay web app and relay deployed on Render, domain `omnipay.website` from GoDaddy
-- [x] Soroban contract deployed on Stellar Testnet (`CCR4IAHH...TD6TH`), source and tests in `contract/`
-- [x] `settle()` recorded for each settled payment, XLM payment submitted first and contract record written after it
-- [x] Duplicate Request IDs are not recorded twice (`AlreadyRecorded` handled)
-- [x] Contract transaction hash stored with the relay record and shown in the dashboard
-- [x] Settlement order review (`docs/SETTLEMENT_ORDER_REVIEW.md`)
+- [x] Soroban contract v1 on Stellar Testnet (`CCR4IAHH...TD6TH`), `settle()` recorded for each settled payment
 - [x] Admin monitoring dashboard at `/admin` with live Firestore stream, KPI cards, filters, status timeline and replay audit
-- [x] User History screen backed by `GET /api/my-transactions` and its live stream, no admin key in the browser
-- [x] Web app send flow routed through `/api/send`
+- [x] User History screen backed by `GET /api/my-transactions` and its live stream
 - [x] Offline detection, SMS Pay mode and service worker
 - [x] `GET /health` with Firestore, Horizon and Soroban checks
 - [x] End-to-end test cases E1 to E9 and demo evidence (payment settled with no Wi-Fi and no mobile data)
+- [x] Step-by-step user guide (register, add contacts, send online, send by SMS)
 
-**Documentation added:**
+**Not included:**
 
-- [x] Step-by-step user guide (register, add contacts, send online, send by SMS) with the offline contacts requirement
+- OmniCard authentication prototype (optional stretch goal). The OmniCard screens in the app are a simulated UI demo only.
 
-**Not included in Week 3:**
+## Known limitations
 
-- OmniCard authentication prototype (Deliverable 3, optional stretch goal). The OmniCard screens in the app are a simulated UI demo only and are not part of the deliverable.
+- **Contract v2 not yet used by the relay:** v2 settlements so far were sent directly with the Stellar CLI. The relay and the web app still settle through v1.
+- **`05-invoke.sh`:** it still uses the v1 `settle` arguments and does not pass a token.
 
-**Next (Week 4, per SOW):**
-
-- End-to-end validation and SMS fallback testing on the deployed system
-- Bug fixing and performance optimization, including a deferred retry for contract records that fail
-- Technical documentation, acceptance testing against the SOW criteria and the public MVP demonstration
-- Final set of verified Stellar Testnet transactions and Explorer links
-
-## Known limitations (Week 3)
-
-- **Two-step settlement:** the XLM payment and the contract record are two separate transactions. If the contract call fails after the payment settled, the record is marked `sorobanRecordStatus: failed` and the dashboard still shows the payment. The contract call is retried up to 3 times within the request. There is no deferred retry after all attempts fail (planned for Week 4).
+- **Two-step settlement (v1, live relay):** the XLM payment and the contract record are two separate transactions. If the contract call fails after the payment settled, the record is marked `sorobanRecordStatus: failed` and the dashboard still shows the payment. The contract call is retried up to 3 times within the request. There is no deferred retry after all attempts fail.
 - **Server memory:** PIN lockout counters and the SMS rate limit are held in memory and reset when the Render service restarts. Request ID and nonce records stay in Firestore.
 - **Signing key:** the wallet signing key is held by the web client. A native Android SMS bridge is not part of this submission. The client hands the signed message to the phone's SMS app.
 - **PIN in SMS:** the 4 to 6 digit PIN is still sent with the signature in the SMS body (MVP-stage choice).

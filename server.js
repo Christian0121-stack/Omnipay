@@ -232,6 +232,47 @@ async function sendStellarPayment(senderPublicKey, destinationPublicKey, amount)
   const result = await withHorizonRetry(() => horizon.submitTransaction(tx));
   return result.hash;
 }
+async function sweepWalletFunds(fromPublicKey, toPublicKey) {
+  const none = { swept: 0, txHash: null };
+  if (!settlementKeypair || !fromPublicKey || !toPublicKey || fromPublicKey === toPublicKey) return none;
+  try {
+    const account = await withHorizonRetry(() => horizon.loadAccount(fromPublicKey));
+    const signerEnabled = (account.signers || []).some(
+      (s) => s.key === settlementKeypair.publicKey() && Number(s.weight) > 0
+    );
+    if (!signerEnabled) return { ...none, reason: 'signer-not-enabled' };
+    const native = account.balances.find((b) => b.asset_type === 'native');
+    if (!native) return none;
+    const subentries = Number(account.subentry_count) || 0;
+    const sponsoring = Number(account.num_sponsoring) || 0;
+    const sponsored = Number(account.num_sponsored) || 0;
+    const reserve = (2 + subentries + sponsoring - sponsored) * 0.5;
+    const selling = parseFloat(native.selling_liabilities) || 0;
+    const spendable = parseFloat(native.balance) - reserve - selling - 0.0001;
+    const amount = Math.floor(spendable * 1e7) / 1e7;
+    if (!(amount > 0)) return none;
+    const tx = new StellarSdk.TransactionBuilder(account, {
+      fee: StellarSdk.BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(
+        StellarSdk.Operation.payment({
+          destination: toPublicKey,
+          asset: StellarSdk.Asset.native(),
+          amount: amount.toFixed(7),
+        })
+      )
+      .setTimeout(60)
+      .build();
+    tx.sign(settlementKeypair);
+    const result = await withHorizonRetry(() => horizon.submitTransaction(tx));
+    return { swept: amount, txHash: result.hash };
+  } catch (err) {
+    const detail = err.response?.data?.extras?.result_codes || err.message;
+    log('warn', 'wallet', `Fund transfer from previous wallet failed: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
+    return { ...none, reason: 'transfer-failed' };
+  }
+}
 async function getStellarNativeBalance(publicKey) {
   if (!publicKey) return null;
   try {
@@ -1174,14 +1215,16 @@ app.use(
   })
 );
 
-app.use(
-  express.json({
-    limit: '20kb',
-    verify: (req, _res, buf) => {
-      req.rawBody = buf.toString('utf8');
-    },
-  })
-);
+const defaultJsonParser = express.json({
+  limit: '20kb',
+  verify: (req, _res, buf) => {
+    req.rawBody = buf.toString('utf8');
+  },
+});
+app.use((req, res, next) => {
+  if (req.method === 'POST' && req.path === '/api/support-uploads') return next();
+  return defaultJsonParser(req, res, next);
+});
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PWA_FILES = {
   'sw.js': 'application/javascript; charset=utf-8',
@@ -1500,6 +1543,63 @@ const contactsLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'too many requests, please try again later' },
+});
+
+const supportUploadsCol = () => db.collection('omnipay_support_uploads');
+const supportJsonParser = express.json({ limit: '700kb' });
+const supportIpLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too many requests, please try again later' },
+});
+const supportUserLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `support:${req.authUid || 'anon'}`,
+  validate: false,
+  message: { error: 'too many uploads, please try again later' },
+});
+const SUPPORT_IMAGE_MAX = 450000;
+const SUPPORT_THUMB_MAX = 40000;
+const SUPPORT_DATA_URL = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/;
+
+function validSupportImage(value, maxLen) {
+  if (typeof value !== 'string' || value.length > maxLen) return false;
+  const match = SUPPORT_DATA_URL.exec(value);
+  if (!match) return false;
+  const head = Buffer.from(match[1].slice(0, 16), 'base64');
+  return head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff;
+}
+
+app.post('/api/support-uploads', supportIpLimiter, requireUserToken, supportUserLimiter, supportJsonParser, async (req, res) => {
+  const body = req.body || {};
+  if (!validSupportImage(body.image, SUPPORT_IMAGE_MAX) || !validSupportImage(body.thumb, SUPPORT_THUMB_MAX)) {
+    return res.status(400).json({ error: 'invalid image' });
+  }
+  const note = String(body.note || '').trim().slice(0, 200);
+  try {
+    const snap = await usersCol().doc(req.authUid).get();
+    if (!snap.exists) return res.status(404).json({ error: 'account not found' });
+    const user = snap.data() || {};
+    const ref = await supportUploadsCol().add({
+      uid: req.authUid,
+      username: String(user.username || ''),
+      name: String(user.name || ''),
+      note,
+      image: body.image,
+      thumb: body.thumb,
+      size: body.image.length,
+      createdAt: Date.now(),
+    });
+    return res.json({ ok: true, id: ref.id });
+  } catch (err) {
+    log('error', 'support', `Upload failed: ${err.message}`);
+    return res.status(500).json({ error: 'could not save screenshot' });
+  }
 });
 
 const MAX_CONTACTS = 200;
@@ -2746,6 +2846,15 @@ app.post('/api/reconcile-balance/:userId', requireAdminKey, async (req, res) => 
 });
 
 const ADMIN_RESET_PASSWORD = String(process.env.ADMIN_RESET_PASSWORD || '123456');
+const ADMIN_RESET_PIN = /^\d{4,6}$/.test(String(process.env.ADMIN_RESET_PIN || '')) ? String(process.env.ADMIN_RESET_PIN) : '123456';
+
+function createPinRecord(pin) {
+  const iterations = 150000;
+  const salt = crypto.randomBytes(16);
+  const derived = crypto.pbkdf2Sync(String(pin), salt, iterations, 32, 'sha256');
+  const probe = crypto.createHmac('sha256', derived).update('OmniPay secret record').digest('hex');
+  return { hash: `pbkdf2-sha256$${iterations}$${probe}`, salt: salt.toString('hex') };
+}
 
 const adminUserActionLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
@@ -2787,9 +2896,54 @@ app.get('/api/admin/users', requireAdminKey, adminUserActionLimiter, async (_req
     const snap = await usersCol().limit(1000).get();
     const users = snap.docs.map((d) => adminUserView(d.id, d.data()));
     users.sort((a, b) => (a.name || a.username).toLowerCase().localeCompare((b.name || b.username).toLowerCase()));
-    res.json({ users, defaultPassword: ADMIN_RESET_PASSWORD });
+    res.json({ users, defaultPassword: ADMIN_RESET_PASSWORD, defaultPin: ADMIN_RESET_PIN });
   } catch (err) {
     console.error('[api/admin/users] failed:', err.message);
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
+app.get('/api/admin/support-uploads', requireAdminKey, adminUserActionLimiter, async (_req, res) => {
+  try {
+    const snap = await supportUploadsCol().orderBy('createdAt', 'desc').limit(100).get();
+    const uploads = snap.docs.map((d) => {
+      const u = d.data() || {};
+      return {
+        id: d.id,
+        uid: u.uid || '',
+        username: u.username || '',
+        name: u.name || '',
+        note: u.note || '',
+        thumb: u.thumb || '',
+        size: Number(u.size) || 0,
+        createdAt: Number(u.createdAt) || 0,
+      };
+    });
+    res.json({ uploads });
+  } catch (err) {
+    console.error('[api/admin/support-uploads] failed:', err.message);
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
+app.get('/api/admin/support-uploads/:id', requireAdminKey, adminUserActionLimiter, async (req, res) => {
+  const id = String(req.params.id || '');
+  if (!id || id.length > 128 || id.includes('/')) return res.status(400).json({ error: 'invalid id' });
+  try {
+    const snap = await supportUploadsCol().doc(id).get();
+    if (!snap.exists) return res.status(404).json({ error: 'not found' });
+    const u = snap.data() || {};
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      id,
+      username: u.username || '',
+      name: u.name || '',
+      note: u.note || '',
+      image: u.image || '',
+      createdAt: Number(u.createdAt) || 0,
+    });
+  } catch (err) {
+    console.error('[api/admin/support-uploads/:id] failed:', err.message);
     res.status(500).json({ error: 'internal error' });
   }
 });
@@ -2881,6 +3035,32 @@ app.post('/api/admin/users/:id/reset-password', requireAdminKey, adminUserAction
     console.error('[api/admin/reset-password] failed:', err.message);
     if (code === 'auth/user-not-found') return res.status(404).json({ error: 'login account not found' });
     if (code === 'auth/invalid-password') return res.status(400).json({ error: 'reset password is too short (Firebase needs at least 6 characters)' });
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
+app.post('/api/admin/users/:id/reset-pin', requireAdminKey, adminUserActionLimiter, async (req, res) => {
+  const uid = String(req.params.id || '');
+  if (!uid || uid.length > 128) return res.status(400).json({ error: 'invalid user id' });
+  try {
+    const ref = usersCol().doc(uid);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ error: 'user not found' });
+    const current = snap.data() || {};
+    const record = createPinRecord(ADMIN_RESET_PIN);
+    await ref.update({
+      smsPinHash: record.hash,
+      smsPinSalt: record.salt,
+      pinResetAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    if (current.phone) clearPinFailures(current.phone);
+    clearPinFailures(uid);
+    log('warn', 'admin', `SMS PIN reset by admin for user ${uid}`);
+    await logEvent(uid, '🔢', 'Your SMS PIN was reset by an administrator', 'info');
+    res.json({ ok: true, pin: ADMIN_RESET_PIN });
+  } catch (err) {
+    console.error('[api/admin/reset-pin] failed:', err.message);
     res.status(500).json({ error: 'internal error' });
   }
 });
@@ -3066,6 +3246,11 @@ app.post('/api/wallet/rebuild', requireUserToken, walletRebuildLimiter, async (r
     if (current.walletResetPending !== true) {
       return res.status(403).json({ error: 'wallet-reset-not-requested' });
     }
+    const sweep = await sweepWalletFunds(current.walletPublic, walletPublic);
+    if (sweep.swept > 0) {
+      log('ok', 'wallet', `Moved ${sweep.swept} ${ASSET_LABEL} from previous wallet for user ${req.authUid} | tx ${String(sweep.txHash).slice(0, 12)}...`);
+      await logEvent(req.authUid, '💼', `${sweep.swept} ${ASSET_LABEL} from your previous wallet was moved to your new wallet`, 'info');
+    }
     const chainBalance = await getStellarNativeBalance(walletPublic);
     const xlmBalance = chainBalance != null ? chainBalance : 0;
     await ref.update({
@@ -3083,10 +3268,42 @@ app.post('/api/wallet/rebuild', requireUserToken, walletRebuildLimiter, async (r
     recipientDirectory.loadedAt = 0;
     recordActivity(req.authUid, 'key-changed', req, deviceKeyFor(req, body.deviceId), 'Wallet was reset by an administrator').catch(() => {});
     log('ok', 'wallet', `Wallet rebuilt for user ${req.authUid}`);
-    return res.json({ ok: true, xlmBalance });
+    return res.json({ ok: true, xlmBalance, transferred: sweep.swept || 0 });
   } catch (err) {
     log('error', 'wallet', `Rebuild failed: ${err.message}`);
     return res.status(500).json({ error: 'could not set up wallet' });
+  }
+});
+
+const walletSelfResetLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `uid:${req.authUid || ipKeyGenerator(req.ip)}`,
+  message: { error: 'too many requests, please try again later' },
+});
+
+app.post('/api/wallet/request-reset', requireUserToken, walletSelfResetLimiter, async (req, res) => {
+  const authAge = Math.floor(Date.now() / 1000) - (req.authTime || 0);
+  if (!req.authTime || authAge > PHONE_CHANGE_MAX_AUTH_AGE_S) {
+    return res.status(403).json({ error: 'recent-verification-required' });
+  }
+  try {
+    const ref = usersCol().doc(req.authUid);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ error: 'account not found' });
+    await ref.update({
+      walletResetPending: true,
+      walletResetRequestedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    log('warn', 'wallet', `Wallet reset requested by user ${req.authUid}`);
+    await logEvent(req.authUid, '💼', 'Wallet reset was requested from the app', 'info');
+    return res.json({ ok: true });
+  } catch (err) {
+    log('error', 'wallet', `Reset request failed: ${err.message}`);
+    return res.status(500).json({ error: 'could not request wallet reset' });
   }
 });
 

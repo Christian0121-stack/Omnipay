@@ -77,7 +77,11 @@
     umTab: 'profile',
     lookupQ: '',
     lookupBusy: false,
-    lookupRes: null
+    lookupRes: null,
+    uploads: [],
+    uploadsLoaded: false,
+    uploadsLoading: false,
+    activeUpload: null
   };
 
   function $(id) { return document.getElementById(id); }
@@ -198,6 +202,8 @@
     closeUser();
     state.users = [];
     state.usersLoaded = false;
+    state.uploads = [];
+    state.uploadsLoaded = false;
     setView('relay');
     $('dash').classList.add('hidden');
     $('gate').classList.remove('hidden');
@@ -596,10 +602,94 @@
   function setView(name) {
     $('viewRelay').classList.toggle('hidden', name !== 'relay');
     $('viewUsers').classList.toggle('hidden', name !== 'users');
+    $('viewUploads').classList.toggle('hidden', name !== 'uploads');
     Array.prototype.forEach.call($('tabs').children, function (t) {
       t.classList.toggle('active', t.getAttribute('data-view') === name);
     });
     if (name === 'users' && !state.usersLoaded) loadUsers();
+    if (name === 'uploads' && !state.uploadsLoaded) loadUploads();
+  }
+
+  function renderUploads() {
+    var list = $('uploadsList');
+    $('uploadCount').textContent = state.uploads.length ? '(' + state.uploads.length + ')' : '';
+    if (!state.uploads.length) {
+      list.innerHTML = '<div class="card empty" style="grid-column:1/-1;"><div class="e-ico">🖼️</div><b>No screenshots yet</b>Screenshots sent from Help &amp; Support will appear here.</div>';
+      return;
+    }
+    list.innerHTML = state.uploads.map(function (u) {
+      var who = u.name || u.username || 'Unknown user';
+      return '<button type="button" class="card up-card" data-upload="' + esc(u.id) + '">' +
+        '<img class="up-thumb" alt="" src="' + esc(u.thumb) + '">' +
+        '<div class="up-main">' +
+          '<div class="user-name">' + esc(who) + '</div>' +
+          '<div class="user-sub">' + (u.username ? '@' + esc(u.username) : '') + '</div>' +
+          '<div class="up-time">Uploaded ' + esc(fmtTime(u.createdAt)) + '</div>' +
+          (u.note ? '<div class="up-note">' + esc(u.note) + '</div>' : '') +
+        '</div>' +
+        '<span class="user-arrow">›</span>' +
+      '</button>';
+    }).join('');
+  }
+
+  async function loadUploads() {
+    if (state.uploadsLoading || !state.key) return;
+    state.uploadsLoading = true;
+    if (!state.uploads.length) {
+      $('uploadsList').innerHTML = '<div class="card empty" style="grid-column:1/-1;"><div class="e-ico">⏳</div><b>Loading screenshots…</b></div>';
+    }
+    try {
+      var resp = await api('/api/admin/support-uploads');
+      if (resp.status === 401 || resp.status === 503) { failAuth(resp.status); return; }
+      if (!resp.ok) { var failure = new Error('http-' + resp.status); failure.status = resp.status; throw failure; }
+      var data = await resp.json();
+      state.uploads = Array.isArray(data.uploads) ? data.uploads : [];
+      state.uploadsLoaded = true;
+      renderUploads();
+    } catch (e) {
+      var why = 'Check the connection and tap Refresh.';
+      if (e && e.status === 404) why = 'The server does not have the uploads endpoint yet. Deploy the updated server.js and restart the server.';
+      else if (e && e.status === 429) why = 'Too many requests. Wait a moment, then tap Refresh.';
+      else if (e && e.status) why = 'Server error (' + e.status + '). Check the server logs for details.';
+      $('uploadsList').innerHTML = '<div class="card empty" style="grid-column:1/-1;"><div class="e-ico">⚠️</div><b>Could not load screenshots</b>' + esc(why) + '</div>';
+    } finally {
+      state.uploadsLoading = false;
+    }
+  }
+
+  function closeUpload() {
+    state.activeUpload = null;
+    $('userModal').classList.remove('show');
+    document.body.classList.remove('lock');
+  }
+
+  async function openUpload(id) {
+    var item = state.uploads.filter(function (u) { return u.id === id; })[0];
+    if (!item) return;
+    state.activeUpload = id;
+    $('umAvatar').textContent = initials(item);
+    $('umName').textContent = item.name || item.username || 'Unknown user';
+    $('umUser').textContent = item.username ? '@' + item.username : '';
+    $('umBody').innerHTML = '<div class="empty"><div class="e-ico">⏳</div><b>Loading image…</b></div>';
+    $('userModal').classList.add('show');
+    document.body.classList.add('lock');
+    try {
+      var resp = await api('/api/admin/support-uploads/' + encodeURIComponent(id));
+      if (resp.status === 401 || resp.status === 503) { closeUpload(); failAuth(resp.status); return; }
+      if (!resp.ok) throw new Error('http-' + resp.status);
+      var data = await resp.json();
+      if (state.activeUpload !== id) return;
+      $('umBody').innerHTML =
+        '<img class="up-full" alt="Uploaded screenshot" src="' + esc(data.image) + '">' +
+        '<dl class="kv" style="margin-top:14px;">' +
+          '<dt>Uploaded</dt><dd>' + esc(fmtTime(data.createdAt)) + '</dd>' +
+          '<dt>User</dt><dd>' + esc(data.name || '—') + (data.username ? ' (@' + esc(data.username) + ')' : '') + '</dd>' +
+          '<dt>Note</dt><dd>' + esc(data.note || '—') + '</dd>' +
+        '</dl>';
+    } catch (e) {
+      if (state.activeUpload !== id) return;
+      $('umBody').innerHTML = '<div class="empty"><div class="e-ico">⚠️</div><b>Could not load the image</b>Close and try again.</div>';
+    }
   }
 
   async function loadUsers() {
@@ -1057,6 +1147,7 @@
   }
 
   function closeUser() {
+    state.activeUpload = null;
     state.activeUser = null;
     state.activeAuth = null;
     state.activePayments = null;
@@ -1209,12 +1300,20 @@
   });
   $('userSearch').addEventListener('input', function (e) { state.userQuery = e.target.value; renderUsers(); });
   $('usersRefreshBtn').addEventListener('click', loadUsers);
+  $('uploadsRefreshBtn').addEventListener('click', loadUploads);
+  $('uploadsList').addEventListener('click', function (e) {
+    var card = e.target.closest('[data-upload]');
+    if (card) openUpload(card.getAttribute('data-upload'));
+  });
   $('usersList').addEventListener('click', function (e) {
     var card = e.target.closest('[data-user]');
     if (card) openUser(card.getAttribute('data-user'));
   });
-  $('umClose').addEventListener('click', closeUser);
-  $('userModal').addEventListener('click', function (e) { if (e.target === $('userModal')) closeUser(); });
+  $('umClose').addEventListener('click', function () { if (state.activeUpload) closeUpload(); else closeUser(); });
+  $('userModal').addEventListener('click', function (e) {
+    if (e.target !== $('userModal')) return;
+    if (state.activeUpload) closeUpload(); else closeUser();
+  });
   $('umBody').addEventListener('click', function (e) {
     var cp = e.target.closest('[data-copy]');
     if (cp) { copyText(cp.getAttribute('data-copy'), cp); return; }
@@ -1256,7 +1355,11 @@
       saveContact();
     }
   });
-  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && state.activeUser) closeUser(); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    if (state.activeUpload) closeUpload();
+    else if (state.activeUser) closeUser();
+  });
 
   $('connectBtn').addEventListener('click', connect);
   $('keyInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') connect(); });

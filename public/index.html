@@ -1042,6 +1042,15 @@
           <span class="settings-arrow">›</span>
         </div>
 
+        <div class="settings-item" onclick="window.open('https://forms.gle/F2WPYRiYUMGaiUdP7','_blank','noopener')">
+          <div class="settings-icon">📝</div>
+          <div class="settings-info">
+            <h4>Share Feedback</h4>
+            <p>Tell us how OmniPay worked for you</p>
+          </div>
+          <span class="settings-arrow">›</span>
+        </div>
+
         <div class="settings-item" onclick="showModal('helpModal')">
           <div class="settings-icon">💬</div>
           <div class="settings-info">
@@ -1117,6 +1126,21 @@
         <span class="help-row-info"><strong>Email us</strong><span>Support.omnipay0121@gmail.com</span></span>
         <span class="settings-arrow">›</span>
       </a>
+      <div class="help-row" id="helpShotRow" role="button" tabindex="0" style="cursor:pointer;" onclick="pickHelpShot()">
+        <span class="help-row-icon">📷</span>
+        <span class="help-row-info"><strong>Send a screenshot</strong><span>Show us the problem you're seeing</span></span>
+        <span class="settings-arrow">›</span>
+      </div>
+      <input type="file" id="helpShotInput" accept="image/png,image/jpeg,image/webp" multiple style="display:none;" onchange="onHelpShotPicked(this)">
+      <div id="helpShotBox" style="display:none;margin-top:12px;">
+        <div id="helpShotGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;"></div>
+        <div id="helpShotCount" class="sub" style="font-size:12px;margin:8px 0 0;"></div>
+        <div class="input-group mt-8"><input type="text" id="helpShotNote" maxlength="200" placeholder="What went wrong? (optional)" autocomplete="off"></div>
+        <div class="mt-8" style="display:flex;gap:8px;">
+          <button class="btn btn-outline" style="flex:1;" type="button" onclick="clearHelpShot()">Remove</button>
+          <button class="btn btn-primary" style="flex:1;" type="button" id="helpShotSend" onclick="sendHelpShot()">Send</button>
+        </div>
+      </div>
       <div class="help-faq">
         <div class="help-faq-title">Quick answers</div>
         <details><summary>My payment is still pending</summary><p>Payments sent by SMS are relayed and settled on Stellar, which can take a short while. Check the status in History, and contact us if it stays pending.</p></details>
@@ -1570,6 +1594,12 @@
       </div>
       <button class="btn btn-primary btn-block mt-16" id="recoverSaveBtn" type="button" onclick="doRecoverWallet()">Unlock Wallet</button>
       <button class="btn btn-ghost btn-block mt-12" type="button" onclick="skipWalletRecovery()">Not now</button>
+      <button type="button" id="recoverForgotLink" onclick="toggleWalletResetConfirm()" style="display:block;width:100%;margin-top:14px;padding:6px;background:none;border:none;color:var(--primary);font-size:13px;font-weight:600;font-family:inherit;cursor:pointer;text-align:center;">Forgot your previous password?</button>
+      <div id="recoverResetBox" style="display:none;margin-top:10px;padding:14px;border-radius:14px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.28);">
+        <p style="font-size:13px;line-height:1.55;color:var(--text);font-weight:600;margin:0 0 6px;">Create a new wallet?</p>
+        <p style="font-size:12.5px;line-height:1.55;color:var(--text-muted);margin:0 0 12px;">Your old wallet is locked by your previous password and cannot be recovered without it. A new wallet will be created and protected with the current password you entered above. Funds in the old wallet will no longer be accessible from this account.</p>
+        <button class="btn btn-danger btn-block" id="recoverResetBtn" type="button" onclick="doResetWalletSelf()">Yes, create a new wallet</button>
+      </div>
     </div>
   </div>
 

@@ -1236,12 +1236,51 @@ async function prepareSettlementSigner(secretKey) {
   }
 }
 
-async function rebuildWalletAfterReset(password) {
+async function sweepOldWalletWithSecret(oldSecret, newPublic) {
+  try {
+    var oldKp = StellarSdk.Keypair.fromSecret(oldSecret);
+    if (oldKp.publicKey() === newPublic) return 0;
+    var resp = await fetch(STELLAR_HORIZON_TESTNET + '/accounts/' + encodeURIComponent(oldKp.publicKey()));
+    if (!resp.ok) return 0;
+    var acc = await resp.json();
+    var native = (acc.balances || []).filter(function(b){ return b.asset_type === 'native'; })[0];
+    if (!native) return 0;
+    var reserve = (2 + (Number(acc.subentry_count) || 0) + (Number(acc.num_sponsoring) || 0) - (Number(acc.num_sponsored) || 0)) * 0.5;
+    var spendable = parseFloat(native.balance) - reserve - (parseFloat(native.selling_liabilities) || 0) - 0.0001;
+    var amount = Math.floor(spendable * 1e7) / 1e7;
+    if (!(amount > 0)) return 0;
+    await syncNetworkClock();
+    var account = new StellarSdk.Account(oldKp.publicKey(), acc.sequence);
+    var tx = new StellarSdk.TransactionBuilder(account, {
+      fee: StellarSdk.BASE_FEE,
+      networkPassphrase: StellarSdk.Networks.TESTNET
+    })
+      .addOperation(StellarSdk.Operation.payment({
+        destination: newPublic,
+        asset: StellarSdk.Asset.native(),
+        amount: amount.toFixed(7)
+      }))
+      .setTimebounds(0, Math.floor(networkNowMs() / 1000) + 120)
+      .build();
+    tx.sign(oldKp);
+    var submit = await fetch(STELLAR_HORIZON_TESTNET + '/transactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'tx=' + encodeURIComponent(tx.toXDR())
+    });
+    return submit.ok ? amount : 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+async function rebuildWalletAfterReset(password, oldSecret) {
   showLoading(true, 'Setting up your new wallet…');
   try {
     if (typeof StellarSdk === 'undefined' || !StellarSdk.Keypair) throw new Error('sdk-unavailable');
     var kp = generateStellarKeypairReal();
     await fundTestnetAccount(kp.publicKey);
+    var movedByClient = oldSecret ? await sweepOldWalletWithSecret(oldSecret, kp.publicKey) : 0;
     var rec = await encryptWalletSecret(kp.secretKey, password);
     var data = await activityRequest('POST', '/api/wallet/rebuild', {
       walletPublic: kp.publicKey,
@@ -1256,7 +1295,8 @@ async function rebuildWalletAfterReset(password) {
       walletSecretSalt: rec.salt,
       walletSecretIv: rec.iv,
       secret: kp.secretKey,
-      xlmBalance: data && data.xlmBalance != null ? data.xlmBalance : 10000
+      xlmBalance: data && data.xlmBalance != null ? data.xlmBalance : 10000,
+      transferred: movedByClient + (data && data.transferred ? Number(data.transferred) : 0)
     };
   } catch (e) {
     throw new Error('Could not set up your new wallet. Please try again.');
@@ -1295,7 +1335,8 @@ async function doLogin() {
       password
     );
     if (account.walletResetPending === true) {
-      var fresh = await rebuildWalletAfterReset(password);
+      var fresh = await rebuildWalletAfterReset(password, account._unlockedWalletSecret);
+      account._transferred = fresh.transferred;
       account.walletPublic = fresh.walletPublic;
       account.walletSecretEncrypted = fresh.walletSecretEncrypted;
       account.walletSecretSalt = fresh.walletSecretSalt;
@@ -1371,6 +1412,9 @@ async function doLogin() {
     setFbStatus('connected','🟢 Signed in as ' + firstName);
     startInboxListener(); // begin real-time incoming-payment listener
     reportLoginActivity();
+    if (account._transferred > 0) {
+      showAlert('success','💼 ' + account._transferred.toFixed(4) + ' XLM from your previous wallet was moved to your new wallet');
+    }
     if (!STATE.wallet.secretKey && account.walletSecretEncrypted) {
       setTimeout(function(){ showWalletRecoveryModal(null); }, 700);
     }
@@ -3995,8 +4039,142 @@ function showModal(id)  {
 }
 function closeModal(id) {
   document.getElementById(id).classList.remove('show');
-  if (id === 'helpModal') collapseHelpFaq();
+  if (id === 'helpModal') { collapseHelpFaq(); clearHelpShot(); }
 }
+var HELP_SHOT_MAX = 20;
+var helpShots = [];
+
+function pickHelpShot() {
+  if (!STATE.isLoggedIn || !auth || !auth.currentUser) { showAlert('orange', '\u26a0\ufe0f Please log in to send a screenshot'); return; }
+  if (helpShots.length >= HELP_SHOT_MAX) { showAlert('orange', '\u26a0\ufe0f You can send up to ' + HELP_SHOT_MAX + ' screenshots at a time'); return; }
+  var input = document.getElementById('helpShotInput');
+  if (input) { input.value = ''; input.click(); }
+}
+
+function renderHelpShots() {
+  var box = document.getElementById('helpShotBox');
+  var grid = document.getElementById('helpShotGrid');
+  var count = document.getElementById('helpShotCount');
+  if (!box || !grid) return;
+  grid.innerHTML = '';
+  helpShots.forEach(function(shot, i) {
+    var cell = document.createElement('div');
+    cell.style.cssText = 'position:relative;aspect-ratio:1/1;border-radius:12px;overflow:hidden;border:1.5px solid var(--border);background:var(--bg);';
+    var img = document.createElement('img');
+    img.alt = 'Screenshot ' + (i + 1);
+    img.src = shot.thumb;
+    img.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;';
+    var x = document.createElement('button');
+    x.type = 'button';
+    x.setAttribute('aria-label', 'Remove screenshot ' + (i + 1));
+    x.textContent = '\u2715';
+    x.style.cssText = 'position:absolute;top:4px;right:4px;width:24px;height:24px;border-radius:50%;border:none;background:rgba(0,0,0,0.6);color:#fff;font-size:12px;cursor:pointer;';
+    x.onclick = function() { helpShots.splice(i, 1); renderHelpShots(); };
+    cell.appendChild(img);
+    cell.appendChild(x);
+    grid.appendChild(cell);
+  });
+  if (count) count.textContent = helpShots.length + ' of ' + HELP_SHOT_MAX + ' screenshots' + (helpShots.length < HELP_SHOT_MAX ? ' \u00b7 tap "Send a screenshot" to add more' : '');
+  box.style.display = helpShots.length ? 'block' : 'none';
+}
+
+function clearHelpShot() {
+  helpShots = [];
+  var note = document.getElementById('helpShotNote');
+  var input = document.getElementById('helpShotInput');
+  if (note) note.value = '';
+  if (input) input.value = '';
+  renderHelpShots();
+}
+
+function helpShotEncode(img, maxSide, quality, maxLen) {
+  var scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+  var w = Math.max(1, Math.round(img.width * scale));
+  var h = Math.max(1, Math.round(img.height * scale));
+  var out = '';
+  for (var q = quality; q >= 0.4; q -= 0.1) {
+    var canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    var ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+    out = canvas.toDataURL('image/jpeg', q);
+    if (out.length <= maxLen) return out;
+  }
+  return out.length <= maxLen ? out : '';
+}
+
+function prepareHelpShot(file) {
+  return new Promise(function(resolve) {
+    if (!/^image\/(png|jpeg|webp)$/.test(file.type) || file.size > 15 * 1024 * 1024) { resolve(null); return; }
+    var reader = new FileReader();
+    reader.onerror = function() { resolve(null); };
+    reader.onload = function() {
+      var img = new Image();
+      img.onerror = function() { resolve(null); };
+      img.onload = function() {
+        var full = helpShotEncode(img, 1280, 0.8, 420000);
+        var thumb = helpShotEncode(img, 240, 0.7, 30000);
+        resolve(full && thumb ? { full: full, thumb: thumb } : null);
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function onHelpShotPicked(input) {
+  var files = Array.prototype.slice.call((input && input.files) || []);
+  if (!files.length) return;
+  var room = HELP_SHOT_MAX - helpShots.length;
+  var skipped = files.length > room;
+  var failed = false;
+  for (var i = 0; i < Math.min(files.length, room); i++) {
+    var shot = await prepareHelpShot(files[i]);
+    if (shot) helpShots.push(shot); else failed = true;
+  }
+  input.value = '';
+  renderHelpShots();
+  if (failed) showAlert('red', '\u274c Some images could not be used. Choose PNG, JPG or WebP under 15 MB');
+  else if (skipped) showAlert('orange', '\u26a0\ufe0f Only ' + HELP_SHOT_MAX + ' screenshots can be sent at a time');
+}
+
+async function sendHelpShot() {
+  if (!helpShots.length) return;
+  if (!auth || !auth.currentUser) { showAlert('orange', '\u26a0\ufe0f Please log in to send a screenshot'); return; }
+  var btn = document.getElementById('helpShotSend');
+  if (btn) btn.disabled = true;
+  var total = helpShots.length;
+  var sent = 0;
+  try {
+    var note = (document.getElementById('helpShotNote').value || '').trim();
+    while (helpShots.length) {
+      var token = await auth.currentUser.getIdToken();
+      var shot = helpShots[0];
+      var resp = await fetch(API_BASE + '/api/support-uploads', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: shot.full, thumb: shot.thumb, note: note })
+      });
+      var data = {};
+      try { data = await resp.json(); } catch (_) {}
+      if (resp.status === 429) { showAlert('orange', '\u26a0\ufe0f Too many uploads. Please try again later'); renderHelpShots(); return; }
+      if (!resp.ok) throw new Error(data.error || ('http-' + resp.status));
+      helpShots.shift();
+      sent++;
+    }
+    clearHelpShot();
+    closeModal('helpModal');
+    showAlert('success', '\u2705 ' + (total > 1 ? total + ' screenshots sent' : 'Screenshot sent') + '. Our team will review ' + (total > 1 ? 'them' : 'it'));
+  } catch (e) {
+    renderHelpShots();
+    showAlert('red', '\u274c ' + (sent ? sent + ' sent, the rest failed. Tap Send to retry' : 'Could not send. Please try again'));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 function requestPinReset() {
   var subject = encodeURIComponent('PIN Reset Request');
   var body = encodeURIComponent('Hello,\n\nI forgot my PIN and need help resetting it.\n\nUsername: \nRegistered email: \nRegistered mobile number: \n\nThank you.');
@@ -4247,6 +4425,8 @@ function showWalletRecoveryModal(onDone) {
   if (!cur || !old) return;
   WALLET_RECOVERY.onDone = typeof onDone === 'function' ? onDone : null;
   [cur, old].forEach(function(el) { el.value = ''; el.type = 'password'; el.classList.remove('error'); });
+  var resetBox = document.getElementById('recoverResetBox');
+  if (resetBox) resetBox.style.display = 'none';
   showModal('walletRecoveryModal');
   setTimeout(function() { try { cur.focus(); } catch (e) {} }, 120);
 }
@@ -4342,6 +4522,93 @@ async function doRecoverWallet() {
   } catch (e) {
     finish();
     showAlert('red', '❌ Could not unlock your wallet. Try again.');
+  }
+}
+
+function toggleWalletResetConfirm() {
+  var box = document.getElementById('recoverResetBox');
+  if (box) box.style.display = box.style.display === 'none' ? 'block' : 'none';
+}
+
+async function doResetWalletSelf() {
+  if (WALLET_RECOVERY.busy) return;
+  var curEl = document.getElementById('recoverCurrentPass');
+  var current = curEl.value;
+  if (!current) { curEl.classList.add('error'); showAlert('red', '⚠️ Enter your current password first'); try { curEl.focus(); } catch (e) {} return; }
+  if (!auth || !auth.currentUser || !db) {
+    skipWalletRecovery();
+    showAlert('red', '❌ Session expired. Sign in again.');
+    return;
+  }
+
+  var btn = document.getElementById('recoverResetBtn');
+  WALLET_RECOVERY.busy = true;
+  if (btn) { btn.disabled = true; btn.textContent = 'Setting up…'; }
+  function finish() {
+    WALLET_RECOVERY.busy = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'Yes, create a new wallet'; }
+  }
+
+  try {
+    var credential = firebase.auth.EmailAuthProvider.credential(auth.currentUser.email, current);
+    await auth.currentUser.reauthenticateWithCredential(credential);
+    await auth.currentUser.getIdToken(true);
+  } catch (e) {
+    finish();
+    curEl.classList.add('error');
+    showAlert('red', /wrong-password|invalid-credential|invalid-login-credentials/i.test(e.code || '')
+      ? '❌ Current password is incorrect'
+      : '❌ Could not verify your password. Try again.');
+    return;
+  }
+
+  try {
+    var oldSecret = STATE.wallet.secretKey || '';
+    if (!oldSecret) {
+      var oldSnap = await db.collection(USERS_COLLECTION).doc(auth.currentUser.uid).get();
+      var oldRec = oldSnap.data() || {};
+      oldSecret = await decryptWalletSecret(oldRec.walletSecretEncrypted, oldRec.walletSecretSalt, oldRec.walletSecretIv, current);
+    }
+    await activityRequest('POST', '/api/wallet/request-reset', {});
+    var fresh = await rebuildWalletAfterReset(current, oldSecret);
+    STATE.wallet.publicKey = fresh.walletPublic;
+    STATE.wallet.secretKey = fresh.secret;
+    STATE.wallet.xlmBalance = fresh.xlmBalance;
+    if (Array.isArray(STATE.wallets) && STATE.wallets[0]) {
+      STATE.wallets[0].publicKey = fresh.walletPublic;
+      STATE.wallets[0].xlmBalance = fresh.xlmBalance;
+    }
+    if (STATE._vaultKey) {
+      var vaults = readOfflineVaults();
+      if (vaults[STATE._vaultKey]) {
+        Object.assign(vaults[STATE._vaultKey], {
+          walletPublic: fresh.walletPublic,
+          walletSecretEncrypted: fresh.walletSecretEncrypted,
+          walletSecretSalt: fresh.walletSecretSalt,
+          walletSecretIv: fresh.walletSecretIv,
+          signerReady: false
+        });
+        writeOfflineVaults(vaults);
+      }
+    }
+    STATE._needsWalletUnlock = false;
+    STATE._settlementSignerReady = false;
+    saveSession();
+    var done = WALLET_RECOVERY.onDone;
+    WALLET_RECOVERY.onDone = null;
+    finish();
+    curEl.value = '';
+    document.getElementById('recoverOldPass').value = '';
+    var box = document.getElementById('recoverResetBox');
+    if (box) box.style.display = 'none';
+    closeModal('walletRecoveryModal');
+    showAlert('success', fresh.transferred > 0
+      ? '✅ New wallet is ready · ' + fresh.transferred.toFixed(4) + ' XLM moved from your previous wallet'
+      : '✅ New wallet is ready');
+    if (done) setTimeout(done, 200);
+  } catch (e) {
+    finish();
+    showAlert('red', '❌ ' + ((e && e.message) || 'Could not create a new wallet. Try again.'));
   }
 }
 

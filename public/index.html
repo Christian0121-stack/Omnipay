@@ -1126,12 +1126,13 @@
         <span class="help-row-info"><strong>Email us</strong><span>Support.omnipay0121@gmail.com</span></span>
         <span class="settings-arrow">›</span>
       </a>
-      <div class="help-row" id="helpShotRow" role="button" tabindex="0" style="cursor:pointer;" onclick="pickHelpShot()">
+      <label class="help-row" id="helpShotRow" for="helpShotInput" style="cursor:pointer;" onclick="return pickHelpShot(event)">
         <span class="help-row-icon">📷</span>
         <span class="help-row-info"><strong>Send a screenshot</strong><span>Show us the problem you're seeing</span></span>
         <span class="settings-arrow">›</span>
-      </div>
-      <input type="file" id="helpShotInput" accept="image/png,image/jpeg,image/webp" multiple style="display:none;" onchange="onHelpShotPicked(this)">
+      </label>
+      <input type="file" id="helpShotInput" accept="image/png,image/jpeg,image/webp" multiple style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;" onchange="onHelpShotPicked(this)">
+      <div id="helpShotMsg" role="alert" style="display:none;margin-top:10px;padding:10px 12px;border-radius:10px;background:var(--bg);border:1.5px solid var(--danger);color:var(--danger);font-size:12.5px;font-weight:600;"></div>
       <div id="helpShotBox" style="display:none;margin-top:12px;">
         <div id="helpShotGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;"></div>
         <div id="helpShotCount" class="sub" style="font-size:12px;margin:8px 0 0;"></div>

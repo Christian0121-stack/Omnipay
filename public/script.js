@@ -4044,11 +4044,28 @@ function closeModal(id) {
 var HELP_SHOT_MAX = 20;
 var helpShots = [];
 
-function pickHelpShot() {
-  if (!STATE.isLoggedIn || !auth || !auth.currentUser) { showAlert('orange', '\u26a0\ufe0f Please log in to send a screenshot'); return; }
-  if (helpShots.length >= HELP_SHOT_MAX) { showAlert('orange', '\u26a0\ufe0f You can send up to ' + HELP_SHOT_MAX + ' screenshots at a time'); return; }
+function setHelpShotMsg(text) {
+  var el = document.getElementById('helpShotMsg');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.display = text ? 'block' : 'none';
+}
+
+function pickHelpShot(e) {
+  setHelpShotMsg('');
+  if (!STATE.isLoggedIn || !auth || !auth.currentUser) {
+    if (e) e.preventDefault();
+    setHelpShotMsg('Please sign in with an internet connection to send a screenshot. If you are already signed in, log out and sign in again.');
+    return false;
+  }
+  if (helpShots.length >= HELP_SHOT_MAX) {
+    if (e) e.preventDefault();
+    setHelpShotMsg('You can send up to ' + HELP_SHOT_MAX + ' screenshots at a time.');
+    return false;
+  }
   var input = document.getElementById('helpShotInput');
-  if (input) { input.value = ''; input.click(); }
+  if (input) input.value = '';
+  return true;
 }
 
 function renderHelpShots() {
@@ -4084,6 +4101,7 @@ function clearHelpShot() {
   var input = document.getElementById('helpShotInput');
   if (note) note.value = '';
   if (input) input.value = '';
+  setHelpShotMsg('');
   renderHelpShots();
 }
 
@@ -4136,13 +4154,14 @@ async function onHelpShotPicked(input) {
   }
   input.value = '';
   renderHelpShots();
-  if (failed) showAlert('red', '\u274c Some images could not be used. Choose PNG, JPG or WebP under 15 MB');
-  else if (skipped) showAlert('orange', '\u26a0\ufe0f Only ' + HELP_SHOT_MAX + ' screenshots can be sent at a time');
+  if (failed) setHelpShotMsg('Some images could not be used. Choose PNG, JPG or WebP under 15 MB.');
+  else if (skipped) setHelpShotMsg('Only ' + HELP_SHOT_MAX + ' screenshots can be sent at a time.');
 }
 
 async function sendHelpShot() {
   if (!helpShots.length) return;
-  if (!auth || !auth.currentUser) { showAlert('orange', '\u26a0\ufe0f Please log in to send a screenshot'); return; }
+  if (!auth || !auth.currentUser) { setHelpShotMsg('Please sign in with an internet connection to send a screenshot.'); return; }
+  setHelpShotMsg('');
   var btn = document.getElementById('helpShotSend');
   if (btn) btn.disabled = true;
   var total = helpShots.length;
@@ -4159,7 +4178,7 @@ async function sendHelpShot() {
       });
       var data = {};
       try { data = await resp.json(); } catch (_) {}
-      if (resp.status === 429) { showAlert('orange', '\u26a0\ufe0f Too many uploads. Please try again later'); renderHelpShots(); return; }
+      if (resp.status === 429) { setHelpShotMsg('Too many uploads. Please try again later.'); renderHelpShots(); return; }
       if (!resp.ok) throw new Error(data.error || ('http-' + resp.status));
       helpShots.shift();
       sent++;
@@ -4169,7 +4188,7 @@ async function sendHelpShot() {
     showAlert('success', '\u2705 ' + (total > 1 ? total + ' screenshots sent' : 'Screenshot sent') + '. Our team will review ' + (total > 1 ? 'them' : 'it'));
   } catch (e) {
     renderHelpShots();
-    showAlert('red', '\u274c ' + (sent ? sent + ' sent, the rest failed. Tap Send to retry' : 'Could not send. Please try again'));
+    setHelpShotMsg(sent ? sent + ' sent, the rest failed. Tap Send to retry.' : 'Could not send. Check your connection and try again.');
   } finally {
     if (btn) btn.disabled = false;
   }

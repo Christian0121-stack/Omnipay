@@ -19,12 +19,26 @@ require_stroops() {
   [[ "$value" =~ ^[0-9]{1,30}$ ]] || { echo "$label must be a whole number of stroops"; exit 1; }
 }
 
-strip_yes_flag() {
+strip_flags() {
   ASSUME_YES=0
+  DRY_RUN=0
   ARGS=()
   local a
   for a in "$@"; do
-    if [ "$a" = "--yes" ]; then ASSUME_YES=1; else ARGS+=("$a"); fi
+    case "$a" in
+      --yes) ASSUME_YES=1 ;;
+      --dry-run) DRY_RUN=1 ;;
+      *) ARGS+=("$a") ;;
+    esac
+  done
+}
+
+with_retry() {
+  local attempt=1 max=3
+  until "$@"; do
+    [ "$attempt" -ge "$max" ] && return 1
+    attempt=$((attempt + 1))
+    sleep 2
   done
 }
 

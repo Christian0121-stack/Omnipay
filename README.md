@@ -12,6 +12,15 @@ Phone (no internet) --SMS--> Gateway phone (android-sms-gateway)
                                    Firestore --live stream--> Monitoring dashboard
 ```
 
+## Onchain activity (Stellar Testnet)
+
+| Contract | Role | Stellar Expert |
+|---|---|---|
+| v1 `CCR4IAHHPOKX6SEM2ED5N5AKIO4QRBEJ7AA5UH4LZYBUTRAIH7XTD6TH` | Live relay and app, where user settlements are recorded | [View activity](https://stellar.expert/explorer/testnet/contract/CCR4IAHHPOKX6SEM2ED5N5AKIO4QRBEJ7AA5UH4LZYBUTRAIH7XTD6TH) |
+| v2 `CB6MGNV7JM7HFP6AUBMLQMK42P3MTBKLLRF577ZWKIXG4UIIGEJ3TPAM` | Sprint 2 contract, Week 1 deliverable | [View activity](https://stellar.expert/explorer/testnet/contract/CB6MGNV7JM7HFP6AUBMLQMK42P3MTBKLLRF577ZWKIXG4UIIGEJ3TPAM) |
+
+Network: Testnet. Test XLM only, no real money.
+
 ## Project links
 
 | | |

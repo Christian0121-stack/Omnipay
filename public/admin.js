@@ -81,7 +81,10 @@
     uploads: [],
     uploadsLoaded: false,
     uploadsLoading: false,
-    activeUpload: null
+    activeUpload: null,
+    activeUploadUser: null,
+    userDate: { range: 'all', from: '', to: '' },
+    upDate: { range: 'all', from: '', to: '' }
   };
 
   function $(id) { return document.getElementById(id); }
@@ -594,6 +597,127 @@
   }
 
 
+  function anyMs(v) {
+    if (!v) return 0;
+    if (typeof v === 'number') return v;
+    if (typeof v === 'string') {
+      var p = Date.parse(v);
+      return isNaN(p) ? 0 : p;
+    }
+    return toMs(v);
+  }
+
+  function inDate(d, ms) {
+    if (d.range === 'all') return true;
+    if (!ms) return false;
+    var k = dayKey(ms);
+    if (d.range === 'today') return k === dayKey(Date.now());
+    if (d.from && k < d.from) return false;
+    if (d.to && k > d.to) return false;
+    return true;
+  }
+
+  function dateNote(d) {
+    if (d.range === 'all') return '';
+    if (d.range === 'today') return 'Showing Today';
+    if (d.from && d.to) return 'Showing ' + (d.from === d.to ? fmtDay(d.from) : fmtDay(d.from) + ' – ' + fmtDay(d.to));
+    if (d.from) return 'Showing from ' + fmtDay(d.from);
+    if (d.to) return 'Showing until ' + fmtDay(d.to);
+    return 'Pick a date range';
+  }
+
+  function syncDate(prefix, d, note) {
+    var t = dayKey(Date.now());
+    Array.prototype.forEach.call($(prefix + 'DateSeg').children, function (b) {
+      b.classList.toggle('active', b.getAttribute('data-range') === d.range);
+    });
+    var from = $(prefix + 'DateFrom');
+    var to = $(prefix + 'DateTo');
+    from.classList.toggle('hidden', d.range !== 'date');
+    to.classList.toggle('hidden', d.range !== 'date');
+    from.value = d.from;
+    to.value = d.to;
+    from.max = d.to || t;
+    to.min = d.from;
+    to.max = t;
+    $(prefix + 'DateNote').textContent = note == null ? dateNote(d) : note;
+  }
+
+  function bindDate(prefix, d, after) {
+    $(prefix + 'DateSeg').addEventListener('click', function (e) {
+      var btn = e.target.closest('button[data-range]');
+      if (!btn) return;
+      d.range = btn.getAttribute('data-range');
+      if (d.range === 'date' && !d.from && !d.to) { d.from = dayKey(Date.now()); d.to = d.from; }
+      after();
+    });
+    $(prefix + 'DateFrom').addEventListener('change', function (e) {
+      d.from = e.target.value;
+      if (d.from && d.to && d.from > d.to) d.to = d.from;
+      after();
+    });
+    $(prefix + 'DateTo').addEventListener('change', function (e) {
+      d.to = e.target.value;
+      if (d.from && d.to && d.to < d.from) d.from = d.to;
+      after();
+    });
+  }
+
+  function fmtDayLong(key) {
+    if (!key || key === 'none') return 'Date unknown';
+    var p = key.split('-');
+    return new Date(+p[0], +p[1] - 1, +p[2]).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  }
+
+  function fmtClock(ms) {
+    return ms ? new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+  }
+
+  function userSinceMs(u) {
+    var ms = anyMs(u.createdAt);
+    if (ms) return ms;
+    var s = String(u.memberSince || '').trim();
+    if (/^\d{4}-\d{2}-\d{2}/.test(s) || /^[A-Za-z]+\.?\s+\d{1,2},?\s+\d{4}$/.test(s) || /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) {
+      var p = Date.parse(s);
+      if (!isNaN(p)) return p;
+    }
+    return 0;
+  }
+
+  function sinceText(u, a) {
+    var ms = (a && anyMs(a.createdAt)) || userSinceMs(u);
+    if (!ms) return u.memberSince || '';
+    return new Date(ms).toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'long', day: 'numeric' });
+  }
+
+  function upKey(u) {
+    return String(u.userId || u.uid || u.username || u.name || 'unknown');
+  }
+
+  function groupUploads(list) {
+    var map = {};
+    var out = [];
+    list.forEach(function (u) {
+      var k = upKey(u);
+      if (!map[k]) { map[k] = { key: k, name: '', username: '', items: [], last: 0 }; out.push(map[k]); }
+      var g = map[k];
+      if (!g.name && u.name) g.name = u.name;
+      if (!g.username && u.username) g.username = u.username;
+      g.items.push(u);
+      var ms = anyMs(u.createdAt);
+      if (ms > g.last) g.last = ms;
+    });
+    out.forEach(function (g) {
+      g.items.sort(function (a, b) { return anyMs(b.createdAt) - anyMs(a.createdAt); });
+    });
+    out.sort(function (a, b) { return b.last - a.last; });
+    return out;
+  }
+
+  function filteredUploads() {
+    return state.uploads.filter(function (u) { return inDate(state.upDate, anyMs(u.createdAt)); });
+  }
+
   function initials(u) {
     var s = String(u.name || u.username || '?').trim();
     return s ? s.charAt(0).toUpperCase() : '?';
@@ -612,23 +736,27 @@
 
   function renderUploads() {
     var list = $('uploadsList');
-    $('uploadCount').textContent = state.uploads.length ? '(' + state.uploads.length + ')' : '';
+    var scoped = filteredUploads();
+    var groups = groupUploads(scoped);
+    syncDate('up', state.upDate);
+    $('uploadCount').textContent = state.uploads.length ? '(' + scoped.length + ')' : '';
     if (!state.uploads.length) {
       list.innerHTML = '<div class="card empty" style="grid-column:1/-1;"><div class="e-ico">🖼️</div><b>No screenshots yet</b>Screenshots sent from Help &amp; Support will appear here.</div>';
       return;
     }
-    list.innerHTML = state.uploads.map(function (u) {
-      var who = u.name || u.username || 'Unknown user';
-      return '<button type="button" class="card up-card" data-upload="' + esc(u.id) + '">' +
-        '<img class="up-thumb" alt="" src="' + esc(u.thumb) + '">' +
-        '<div class="up-main">' +
-          '<div class="user-name">' + esc(who) + '</div>' +
-          '<div class="user-sub">' + (u.username ? '@' + esc(u.username) : '') + '</div>' +
-          '<div class="up-time">Uploaded ' + esc(fmtTime(u.createdAt)) + '</div>' +
-          (u.note ? '<div class="up-note">' + esc(u.note) + '</div>' : '') +
-        '</div>' +
-        '<span class="user-arrow">›</span>' +
-      '</button>';
+    if (!groups.length) {
+      list.innerHTML = '<div class="card empty" style="grid-column:1/-1;"><div class="e-ico">🔎</div><b>No screenshots found</b>Try a different date range.</div>';
+      return;
+    }
+    list.innerHTML = groups.map(function (g) {
+      var who = g.name || g.username || 'Unknown user';
+      var n = g.items.length;
+      return '<button type="button" class="card user-card" data-upload-user="' + esc(g.key) + '">'
+        + '<span class="avatar">' + esc(initials(g)) + '</span>'
+        + '<span class="user-main"><div class="user-name">' + esc(who) + '</div>'
+        + '<div class="user-sub">' + (g.username ? '@' + esc(g.username) : '—') + '</div>'
+        + '<div class="user-sub">' + n + (n === 1 ? ' screenshot' : ' screenshots') + (g.last ? ' · Latest ' + esc(fmtTime(g.last)) : '') + '</div></span>'
+        + '<span class="user-arrow">›</span></button>';
     }).join('');
   }
 
@@ -659,8 +787,52 @@
 
   function closeUpload() {
     state.activeUpload = null;
+    state.activeUploadUser = null;
     $('userModal').classList.remove('show');
     document.body.classList.remove('lock');
+  }
+
+  function renderUploadGroup() {
+    var g = groupUploads(filteredUploads()).filter(function (x) { return x.key === state.activeUploadUser; })[0];
+    if (!g) { closeUpload(); return; }
+    state.activeUpload = null;
+    $('umAvatar').textContent = initials(g);
+    $('umName').textContent = g.name || g.username || 'Unknown user';
+    $('umUser').textContent = g.username ? '@' + g.username : '';
+    var days = [];
+    var byDay = {};
+    g.items.forEach(function (u) {
+      var ms = anyMs(u.createdAt);
+      var k = ms ? dayKey(ms) : 'none';
+      if (!byDay[k]) { byDay[k] = []; days.push(k); }
+      byDay[k].push(u);
+    });
+    $('umBody').innerHTML = days.map(function (k) {
+      var tiles = byDay[k].map(function (u) {
+        var ms = anyMs(u.createdAt);
+        return '<button type="button" class="up-tile" data-upload="' + esc(u.id) + '">'
+          + '<img alt="" loading="lazy" src="' + esc(u.thumb) + '">'
+          + '<span class="up-tile-t">' + esc(fmtClock(ms) || '—') + '</span>'
+          + (u.note ? '<span class="up-tile-n">' + esc(u.note) + '</span>' : '')
+          + '</button>';
+      }).join('');
+      return '<section class="up-day"><div class="up-day-h"><span>' + esc(fmtDayLong(k)) + '</span><em>' + byDay[k].length + '</em></div>'
+        + '<div class="up-grid">' + tiles + '</div></section>';
+    }).join('');
+  }
+
+  function openUploadGroup(key) {
+    state.activeUploadUser = key;
+    state.activeUpload = null;
+    renderUploadGroup();
+    if (!state.activeUploadUser) return;
+    $('userModal').classList.add('show');
+    document.body.classList.add('lock');
+    $('umBody').scrollTop = 0;
+  }
+
+  function upBack() {
+    return '<button class="btn plain up-back" type="button" data-act="up-back">‹ Back to all screenshots</button>';
   }
 
   async function openUpload(id) {
@@ -670,25 +842,26 @@
     $('umAvatar').textContent = initials(item);
     $('umName').textContent = item.name || item.username || 'Unknown user';
     $('umUser').textContent = item.username ? '@' + item.username : '';
-    $('umBody').innerHTML = '<div class="empty"><div class="e-ico">⏳</div><b>Loading image…</b></div>';
+    $('umBody').innerHTML = upBack() + '<div class="empty"><div class="e-ico">⏳</div><b>Loading image…</b></div>';
     $('userModal').classList.add('show');
     document.body.classList.add('lock');
+    $('umBody').scrollTop = 0;
     try {
       var resp = await api('/api/admin/support-uploads/' + encodeURIComponent(id));
       if (resp.status === 401 || resp.status === 503) { closeUpload(); failAuth(resp.status); return; }
       if (!resp.ok) throw new Error('http-' + resp.status);
       var data = await resp.json();
       if (state.activeUpload !== id) return;
-      $('umBody').innerHTML =
+      $('umBody').innerHTML = upBack() +
         '<img class="up-full" alt="Uploaded screenshot" src="' + esc(data.image) + '">' +
         '<dl class="kv" style="margin-top:14px;">' +
-          '<dt>Uploaded</dt><dd>' + esc(fmtTime(data.createdAt)) + '</dd>' +
+          '<dt>Uploaded</dt><dd>' + esc(fmtTime(anyMs(data.createdAt))) + '</dd>' +
           '<dt>User</dt><dd>' + esc(data.name || '—') + (data.username ? ' (@' + esc(data.username) + ')' : '') + '</dd>' +
           '<dt>Note</dt><dd>' + esc(data.note || '—') + '</dd>' +
         '</dl>';
     } catch (e) {
       if (state.activeUpload !== id) return;
-      $('umBody').innerHTML = '<div class="empty"><div class="e-ico">⚠️</div><b>Could not load the image</b>Close and try again.</div>';
+      $('umBody').innerHTML = upBack() + '<div class="empty"><div class="e-ico">⚠️</div><b>Could not load the image</b>Go back and try again.</div>';
     }
   }
 
@@ -798,21 +971,29 @@
   function renderUsers() {
     var q = state.userQuery.trim().toLowerCase();
     if (isTxHash(q)) { renderLookup(q); return; }
+    var dated = state.users.some(function (u) { return userSinceMs(u) > 0; });
     var rows = state.users.filter(function (u) {
+      if (!inDate(state.userDate, userSinceMs(u))) return false;
       if (!q) return true;
       return [u.name, u.username, u.email, u.phone, u.id, u.walletPublic].join(' ').toLowerCase().indexOf(q) !== -1;
     });
+    syncDate('user', state.userDate, state.userDate.range !== 'all' && state.usersLoaded && !dated
+      ? 'No account dates available yet'
+      : dateNote(state.userDate));
     $('userCount').textContent = '(' + rows.length + ')';
     if (!rows.length) {
-      $('usersList').innerHTML = '<div class="card empty" style="grid-column:1/-1;"><div class="e-ico">🔎</div><b>No users found</b>Try a different search.</div>';
+      $('usersList').innerHTML = '<div class="card empty" style="grid-column:1/-1;"><div class="e-ico">🔎</div><b>No users found</b>Try a different search or date range.</div>';
       return;
     }
     $('usersList').innerHTML = rows.map(function (u) {
+      var ms = userSinceMs(u);
+      var since = ms ? 'Member since ' + new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : (u.memberSince ? 'Member since ' + u.memberSince : '');
       return '<button class="card user-card" type="button" data-user="' + esc(u.id) + '">'
         + '<span class="avatar">' + esc(initials(u)) + '</span>'
         + '<span class="user-main"><div class="user-name">' + esc(u.name || u.username || 'Unnamed user') + '</div>'
         + '<div class="user-sub">' + esc(u.username ? u.username : '—') + (u.email ? ' · ' + esc(u.email) : '') + '</div>'
         + '<div class="user-sub">' + esc(u.phone || 'No phone') + '</div>'
+        + (since ? '<div class="user-sub">' + esc(since) + '</div>' : '')
         + (q && u.walletPublic && u.walletPublic.toLowerCase().indexOf(q) !== -1 ? '<div class="user-sub">Wallet · ' + esc(shortHash(u.walletPublic)) + '</div>' : '')
         + '</span>'
         + '<span class="user-arrow">›</span></button>';
@@ -1014,7 +1195,7 @@
       ['Phone changed', u.phoneChangedAt ? fmtTime(toMs(u.phoneChangedAt)) : ''],
       ['Account type', u.type],
       ['Country', u.country],
-      ['Member since', u.memberSince],
+      ['Member since', sinceText(u, a)],
       ['User ID', u.id, true, true]
     ]);
 
@@ -1148,6 +1329,7 @@
 
   function closeUser() {
     state.activeUpload = null;
+    state.activeUploadUser = null;
     state.activeUser = null;
     state.activeAuth = null;
     state.activePayments = null;
@@ -1302,19 +1484,25 @@
   $('usersRefreshBtn').addEventListener('click', loadUsers);
   $('uploadsRefreshBtn').addEventListener('click', loadUploads);
   $('uploadsList').addEventListener('click', function (e) {
-    var card = e.target.closest('[data-upload]');
-    if (card) openUpload(card.getAttribute('data-upload'));
+    var card = e.target.closest('[data-upload-user]');
+    if (card) openUploadGroup(card.getAttribute('data-upload-user'));
   });
+  bindDate('user', state.userDate, renderUsers);
+  bindDate('up', state.upDate, renderUploads);
   $('usersList').addEventListener('click', function (e) {
     var card = e.target.closest('[data-user]');
     if (card) openUser(card.getAttribute('data-user'));
   });
-  $('umClose').addEventListener('click', function () { if (state.activeUpload) closeUpload(); else closeUser(); });
+  $('umClose').addEventListener('click', function () { if (state.activeUpload || state.activeUploadUser) closeUpload(); else closeUser(); });
   $('userModal').addEventListener('click', function (e) {
     if (e.target !== $('userModal')) return;
-    if (state.activeUpload) closeUpload(); else closeUser();
+    if (state.activeUpload || state.activeUploadUser) closeUpload(); else closeUser();
   });
   $('umBody').addEventListener('click', function (e) {
+    var tile = e.target.closest('[data-upload]');
+    if (tile) { openUpload(tile.getAttribute('data-upload')); return; }
+    var back = e.target.closest('[data-act="up-back"]');
+    if (back) { renderUploadGroup(); $('umBody').scrollTop = 0; return; }
     var cp = e.target.closest('[data-copy]');
     if (cp) { copyText(cp.getAttribute('data-copy'), cp); return; }
     var btn = e.target.closest('[data-act]');
@@ -1357,7 +1545,8 @@
   });
   document.addEventListener('keydown', function (e) {
     if (e.key !== 'Escape') return;
-    if (state.activeUpload) closeUpload();
+    if (state.activeUpload && state.activeUploadUser) { renderUploadGroup(); $('umBody').scrollTop = 0; }
+    else if (state.activeUpload || state.activeUploadUser) closeUpload();
     else if (state.activeUser) closeUser();
   });
 

@@ -436,6 +436,19 @@ body.lock { overflow: hidden; }
   .um-hash span { flex-basis: 100%; }
   .um-hash { flex-wrap: wrap; }
 }
+.datebar .date-label { font-size: 11px; font-weight: 800; letter-spacing: .6px; text-transform: uppercase; color: var(--text-muted); }
+.up-day { margin-bottom: 18px; }
+.up-day:last-child { margin-bottom: 0; }
+.up-day-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; font-size: 11px; font-weight: 800; letter-spacing: .6px; text-transform: uppercase; color: var(--text-muted); }
+.up-day-h em { font-style: normal; font-size: 11px; background: var(--bg-2); border: 1px solid var(--border); padding: 1px 9px; border-radius: 999px; }
+.up-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+.up-tile { display: flex; flex-direction: column; min-width: 0; padding: 0; text-align: left; cursor: pointer; overflow: hidden; background: var(--bg-2); border: 1.5px solid var(--border); border-radius: 12px; transition: border-color .15s, box-shadow .15s; }
+.up-tile:hover, .up-tile:focus-visible { border-color: var(--primary); box-shadow: var(--shadow); outline: none; }
+.up-tile img { display: block; width: 100%; aspect-ratio: 1 / 1; object-fit: cover; background: var(--card); }
+.up-tile-t { padding: 7px 9px 0; font-size: 11.5px; font-weight: 800; color: var(--text); }
+.up-tile-n { padding: 1px 9px 8px; font-size: 11.5px; font-weight: 500; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.up-tile-t:last-child { padding-bottom: 8px; }
+.up-back { margin-bottom: 12px; padding: 8px 14px; font-size: 12.5px; }
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
@@ -543,6 +556,17 @@ body.lock { overflow: hidden; }
         <input class="field" id="userSearch" type="search" placeholder="Search name, username, phone, wallet or transaction hash">
         <button class="btn ghost" id="usersRefreshBtn" type="button">Refresh</button>
       </div>
+      <div class="datebar" style="margin:0 0 4px;">
+        <span class="date-label">Member since</span>
+        <div class="seg" id="userDateSeg" role="group" aria-label="Filter users by member since date">
+          <button type="button" class="active" data-range="all">All</button>
+          <button type="button" data-range="today">Today</button>
+          <button type="button" data-range="date">Date range</button>
+        </div>
+        <input class="field hidden" id="userDateFrom" type="date" aria-label="Start date" title="Start date">
+        <input class="field hidden" id="userDateTo" type="date" aria-label="End date" title="End date">
+        <span class="date-note" id="userDateNote"></span>
+      </div>
       <div class="list-head" style="margin-top:8px;">
         <div class="list-title">Users <span id="userCount"></span></div>
       </div>
@@ -550,6 +574,17 @@ body.lock { overflow: hidden; }
     </div>
 
     <div id="viewUploads" class="hidden">
+      <div class="datebar" style="margin:0 0 4px;">
+        <span class="date-label">Uploaded</span>
+        <div class="seg" id="upDateSeg" role="group" aria-label="Filter screenshots by upload date">
+          <button type="button" class="active" data-range="all">All</button>
+          <button type="button" data-range="today">Today</button>
+          <button type="button" data-range="date">Date range</button>
+        </div>
+        <input class="field hidden" id="upDateFrom" type="date" aria-label="Start date" title="Start date">
+        <input class="field hidden" id="upDateTo" type="date" aria-label="End date" title="End date">
+        <span class="date-note" id="upDateNote"></span>
+      </div>
       <div class="list-head" style="margin-top:8px;">
         <div class="list-title">Screenshots <span id="uploadCount"></span></div>
         <div class="list-actions">

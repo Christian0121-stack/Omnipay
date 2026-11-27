@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Shell syntax
+        run: |
+          status=0
+          for f in scripts/*.sh; do
+            if tr -d '\r' < "$f" | bash -n; then
+              echo "PASS  $f"
+            else
+              echo "FAIL  $f"
+              status=1
+            fi
+          done
+          exit $status
+
+      - name: Validate manifest
+        run: node scripts/validate-manifest.js deployments/testnet.json

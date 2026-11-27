@@ -83,6 +83,7 @@
     uploadsLoading: false,
     activeUpload: null,
     activeUploadUser: null,
+    upQuery: '',
     userDate: { range: 'all', from: '', to: '' },
     upDate: { range: 'all', from: '', to: '' }
   };
@@ -715,7 +716,12 @@
   }
 
   function filteredUploads() {
-    return state.uploads.filter(function (u) { return inDate(state.upDate, anyMs(u.createdAt)); });
+    var q = state.upQuery.trim().toLowerCase();
+    return state.uploads.filter(function (u) {
+      if (!inDate(state.upDate, anyMs(u.createdAt))) return false;
+      if (!q) return true;
+      return [u.name, u.username].join(' ').toLowerCase().indexOf(q) !== -1;
+    });
   }
 
   function initials(u) {
@@ -745,7 +751,7 @@
       return;
     }
     if (!groups.length) {
-      list.innerHTML = '<div class="card empty" style="grid-column:1/-1;"><div class="e-ico">🔎</div><b>No screenshots found</b>Try a different date range.</div>';
+      list.innerHTML = '<div class="card empty" style="grid-column:1/-1;"><div class="e-ico">🔎</div><b>No screenshots found</b>Try a different search or date range.</div>';
       return;
     }
     list.innerHTML = groups.map(function (g) {
@@ -1483,6 +1489,7 @@
   $('userSearch').addEventListener('input', function (e) { state.userQuery = e.target.value; renderUsers(); });
   $('usersRefreshBtn').addEventListener('click', loadUsers);
   $('uploadsRefreshBtn').addEventListener('click', loadUploads);
+  $('uploadSearch').addEventListener('input', function (e) { state.upQuery = e.target.value; renderUploads(); });
   $('uploadsList').addEventListener('click', function (e) {
     var card = e.target.closest('[data-upload-user]');
     if (card) openUploadGroup(card.getAttribute('data-upload-user'));

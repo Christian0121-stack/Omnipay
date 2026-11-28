@@ -84,6 +84,7 @@
     activeUpload: null,
     activeUploadUser: null,
     upQuery: '',
+    upList: [],
     userDate: { range: 'all', from: '', to: '' },
     upDate: { range: 'all', from: '', to: '' }
   };
@@ -674,6 +675,18 @@
     return ms ? new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
   }
 
+  function phoneMatch(u, q) {
+    if (!/^[+\d\s()\-]+$/.test(q)) return false;
+    var qd = q.replace(/\D/g, '');
+    if (qd.length < 3) return false;
+    var tries = [qd];
+    if (qd.charAt(0) === '0') { tries.push(qd.slice(1)); tries.push('63' + qd.slice(1)); }
+    var pool = [u.phone, u.previousPhone].map(function (p) { return String(p || '').replace(/\D/g, ''); });
+    return pool.some(function (p) {
+      return p && tries.some(function (t) { return p.indexOf(t) !== -1; });
+    });
+  }
+
   function userSinceMs(u) {
     var ms = anyMs(u.createdAt);
     if (ms) return ms;
@@ -802,6 +815,7 @@
     var g = groupUploads(filteredUploads()).filter(function (x) { return x.key === state.activeUploadUser; })[0];
     if (!g) { closeUpload(); return; }
     state.activeUpload = null;
+    state.upList = g.items.map(function (u) { return u.id; });
     $('umAvatar').textContent = initials(g);
     $('umName').textContent = g.name || g.username || 'Unknown user';
     $('umUser').textContent = g.username ? '@' + g.username : '';
@@ -837,8 +851,38 @@
     $('umBody').scrollTop = 0;
   }
 
-  function upBack() {
-    return '<button class="btn plain up-back" type="button" data-act="up-back">‹ Back to all screenshots</button>';
+  function pad2(n) { return ('0' + n).slice(-2); }
+
+  function upFileName(item, image) {
+    var ms = anyMs(item.createdAt);
+    var d = ms ? new Date(ms) : new Date();
+    var stamp = d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate()) + '-' + pad2(d.getHours()) + pad2(d.getMinutes());
+    var who = String(item.username || item.name || 'user').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'user';
+    var m = /^data:image\/([a-z0-9.+-]+)/i.exec(String(image || ''));
+    var ext = m ? m[1].toLowerCase().replace('jpeg', 'jpg').replace('svg+xml', 'svg') : 'png';
+    return 'omnipay-' + who + '-' + stamp + '.' + ext;
+  }
+
+  function upBar(id, item, image) {
+    var i = state.upList.indexOf(id);
+    var n = state.upList.length;
+    var nav = '';
+    if (i > -1 && n > 1) {
+      nav = '<button class="btn plain up-step" type="button" data-act="up-prev" aria-label="Previous screenshot"' + (i === 0 ? ' disabled' : '') + '>‹ Prev</button>'
+        + '<span class="up-count">' + (i + 1) + ' of ' + n + '</span>'
+        + '<button class="btn plain up-step" type="button" data-act="up-next" aria-label="Next screenshot"' + (i === n - 1 ? ' disabled' : '') + '>Next ›</button>';
+    }
+    var dl = image
+      ? '<a class="btn up-dl" href="' + esc(image) + '" download="' + esc(upFileName(item, image)) + '" rel="noopener">Download</a>'
+      : '';
+    return '<div class="up-bar"><button class="btn plain up-back" type="button" data-act="up-back">‹ Back</button>'
+      + '<div class="up-nav">' + nav + dl + '</div></div>';
+  }
+
+  function upStep(delta) {
+    var i = state.upList.indexOf(state.activeUpload);
+    var next = state.upList[i + delta];
+    if (i > -1 && next) openUpload(next);
   }
 
   async function openUpload(id) {
@@ -848,7 +892,7 @@
     $('umAvatar').textContent = initials(item);
     $('umName').textContent = item.name || item.username || 'Unknown user';
     $('umUser').textContent = item.username ? '@' + item.username : '';
-    $('umBody').innerHTML = upBack() + '<div class="empty"><div class="e-ico">⏳</div><b>Loading image…</b></div>';
+    $('umBody').innerHTML = upBar(id, item, '') + '<div class="empty"><div class="e-ico">⏳</div><b>Loading image…</b></div>';
     $('userModal').classList.add('show');
     document.body.classList.add('lock');
     $('umBody').scrollTop = 0;
@@ -858,7 +902,7 @@
       if (!resp.ok) throw new Error('http-' + resp.status);
       var data = await resp.json();
       if (state.activeUpload !== id) return;
-      $('umBody').innerHTML = upBack() +
+      $('umBody').innerHTML = upBar(id, item, data.image) +
         '<img class="up-full" alt="Uploaded screenshot" src="' + esc(data.image) + '">' +
         '<dl class="kv" style="margin-top:14px;">' +
           '<dt>Uploaded</dt><dd>' + esc(fmtTime(anyMs(data.createdAt))) + '</dd>' +
@@ -867,7 +911,7 @@
         '</dl>';
     } catch (e) {
       if (state.activeUpload !== id) return;
-      $('umBody').innerHTML = upBack() + '<div class="empty"><div class="e-ico">⚠️</div><b>Could not load the image</b>Go back and try again.</div>';
+      $('umBody').innerHTML = upBar(id, item, '') + '<div class="empty"><div class="e-ico">⚠️</div><b>Could not load the image</b>Go back and try again.</div>';
     }
   }
 
@@ -981,6 +1025,7 @@
     var rows = state.users.filter(function (u) {
       if (!inDate(state.userDate, userSinceMs(u))) return false;
       if (!q) return true;
+      if (phoneMatch(u, q)) return true;
       return [u.name, u.username, u.email, u.phone, u.id, u.walletPublic].join(' ').toLowerCase().indexOf(q) !== -1;
     });
     syncDate('user', state.userDate, state.userDate.range !== 'all' && state.usersLoaded && !dated
@@ -1510,6 +1555,8 @@
     if (tile) { openUpload(tile.getAttribute('data-upload')); return; }
     var back = e.target.closest('[data-act="up-back"]');
     if (back) { renderUploadGroup(); $('umBody').scrollTop = 0; return; }
+    var step = e.target.closest('[data-act="up-prev"], [data-act="up-next"]');
+    if (step) { upStep(step.getAttribute('data-act') === 'up-next' ? 1 : -1); return; }
     var cp = e.target.closest('[data-copy]');
     if (cp) { copyText(cp.getAttribute('data-copy'), cp); return; }
     var btn = e.target.closest('[data-act]');
@@ -1551,6 +1598,12 @@
     }
   });
   document.addEventListener('keydown', function (e) {
+    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && state.activeUpload && state.activeUploadUser) {
+      var tag = e.target && e.target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      upStep(e.key === 'ArrowRight' ? 1 : -1);
+      return;
+    }
     if (e.key !== 'Escape') return;
     if (state.activeUpload && state.activeUploadUser) { renderUploadGroup(); $('umBody').scrollTop = 0; }
     else if (state.activeUpload || state.activeUploadUser) closeUpload();

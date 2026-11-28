@@ -4,6 +4,10 @@ function createRelay({ getDb, FieldValue, log }) {
   const signedRequestsCol = () => getDb().collection('relay_requests');
   const usedNoncesCol = () => getDb().collection('omnipay_used_nonces');
   const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+  const NONCE_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
+  const RECORD_TTL_DAYS = parseInt(process.env.RELAY_RECORD_TTL_DAYS, 10) || 7;
+  const RECORD_TTL_MS = RECORD_TTL_DAYS * 24 * 60 * 60 * 1000;
+  const expiryDate = () => new Date(Date.now() + RECORD_TTL_MS);
 
   function getRegisteredSigningKey(user) {
     const key = user && typeof user.walletPublic === 'string' ? user.walletPublic.trim() : '';
@@ -28,11 +32,16 @@ function createRelay({ getDb, FieldValue, log }) {
       log('warn', 'nonce', `REJECTED (invalid requestId format) | channel=${meta.channel || 'n/a'} sender=${senderId}`);
       return { claimed: false, reason: 'invalid-requestid' };
     }
+    if (!NONCE_PATTERN.test(String(nonce))) {
+      log('warn', 'nonce', `REJECTED (invalid nonce format) | channel=${meta.channel || 'n/a'} sender=${senderId}`);
+      return { claimed: false, reason: 'invalid-nonce' };
+    }
 
     const requestRef = signedRequestsCol().doc(String(requestId));
     const nonceRef = usedNoncesCol().doc(`${senderId}:${nonce}`);
     let previousStatus = null;
     let originalRequestId = null;
+    const expiresAt = expiryDate();
 
     try {
       await getDb().runTransaction(async (tx) => {
@@ -59,11 +68,13 @@ function createRelay({ getDb, FieldValue, log }) {
           status: 'processing',
           createdAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
+          expiresAt,
         });
         tx.create(nonceRef, {
           senderId,
           requestId: String(requestId),
           createdAt: FieldValue.serverTimestamp(),
+          expiresAt,
         });
       });
       log('ok', 'nonce', `ACCEPTED | channel=${meta.channel || 'n/a'} sender=${senderId} nonce=${shortRef(nonce)} requestId=${shortRef(requestId)}`);

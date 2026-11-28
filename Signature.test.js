@@ -5,6 +5,7 @@ const {
   SIGNATURE_MAX_SKEW_MS,
   PAYLOAD_VERSION,
   buildSignedPayloadString,
+  isValidSigningKey,
   verifySignature,
 } = require('./Signature');
 
@@ -59,6 +60,24 @@ describe('buildSignedPayloadString', () => {
     expect(buildSignedPayloadString({ ...base, amount: 1.23456789 }).split('|')[3]).toBe('1.2345679');
   });
 
+  test('rounds amounts to 7 decimals', () => {
+    const base = { senderId: 'a', recipientId: 'b', timestamp: 1, nonce: 'n', requestId: 'r' };
+    const amountOf = (amount) => buildSignedPayloadString({ ...base, amount }).split('|')[3];
+    expect(amountOf(0.1 + 0.2)).toBe('0.3000000');
+    expect(amountOf(1.23456784)).toBe('1.2345678');
+    expect(amountOf(1.23456786)).toBe('1.2345679');
+    expect(amountOf(0.00000001)).toBe('0.0000000');
+    expect(amountOf(0.00000009)).toBe('0.0000001');
+  });
+
+  test('pads whole and short amounts to 7 decimals', () => {
+    const base = { senderId: 'a', recipientId: 'b', timestamp: 1, nonce: 'n', requestId: 'r' };
+    const amountOf = (amount) => buildSignedPayloadString({ ...base, amount }).split('|')[3];
+    expect(amountOf(0)).toBe('0.0000000');
+    expect(amountOf('2.50')).toBe('2.5000000');
+    expect(amountOf(1234567.1)).toBe('1234567.1000000');
+  });
+
   test('is deterministic for identical input', () => {
     const input = { senderId: 'a', recipientId: 'b', amount: 2, timestamp: 9, nonce: 'n', requestId: 'r' };
     expect(buildSignedPayloadString(input)).toBe(buildSignedPayloadString({ ...input }));
@@ -88,6 +107,54 @@ describe('verifySignature', () => {
   test('accepts a request signed with a string amount', () => {
     const req = makeRequest(keypair, { amount: '3.25' });
     expect(verifySignature(req)).toEqual({ ok: true });
+  });
+
+  describe('amount rounding', () => {
+    test('accepts an amount with floating point noise when it rounds to the signed value', () => {
+      const req = makeRequest(keypair, { amount: 0.1 + 0.2 });
+      expect(verifySignature({ ...req, amount: '0.3' })).toEqual({ ok: true });
+    });
+
+    test('accepts amounts that differ only beyond the 7th decimal', () => {
+      const req = makeRequest(keypair, { amount: 1.23456784 });
+      expect(verifySignature({ ...req, amount: 1.2345678 })).toEqual({ ok: true });
+    });
+
+    test('rejects amounts that differ at the 7th decimal', () => {
+      const req = makeRequest(keypair, { amount: 1.2345678 });
+      expect(verifySignature({ ...req, amount: 1.2345679 })).toEqual({ ok: false, reason: 'signature-mismatch' });
+    });
+  });
+
+  describe('public key whitespace', () => {
+    test.each([
+      ['spaces', (key) => `  ${key}  `],
+      ['a trailing newline', (key) => `${key}\n`],
+      ['tabs and line breaks', (key) => `\t${key}\r\n`],
+    ])('accepts a public key padded with %s', (_label, pad) => {
+      const req = makeRequest(keypair);
+      expect(verifySignature({ ...req, senderPublicKey: pad(req.senderPublicKey) })).toEqual({ ok: true });
+    });
+
+    test('rejects a public key with whitespace inside it', () => {
+      const req = makeRequest(keypair);
+      const key = req.senderPublicKey;
+      expect(verifySignature({ ...req, senderPublicKey: `${key.slice(0, 10)} ${key.slice(10)}` })).toEqual({
+        ok: false,
+        reason: 'invalid-public-key',
+      });
+    });
+
+    test('rejects a padded public key that is not valid', () => {
+      const req = { ...makeRequest(keypair), senderPublicKey: '  GNOTAVALIDKEY  ' };
+      expect(verifySignature(req)).toEqual({ ok: false, reason: 'invalid-public-key' });
+    });
+
+    test('rejects a padded public key that belongs to a different signer', () => {
+      const other = StellarSdk.Keypair.random();
+      const req = { ...makeRequest(keypair), senderPublicKey: `  ${other.publicKey()}  ` };
+      expect(verifySignature(req)).toEqual({ ok: false, reason: 'signature-mismatch' });
+    });
   });
 
   describe('tampering', () => {
@@ -186,6 +253,14 @@ describe('verifySignature', () => {
       expect(verifySignature(req)).toEqual({ ok: false, reason: 'invalid-field-format' });
     });
 
+    test.each([
+      ['senderId', 'user|mallory'],
+      ['nonce', 'abc|def'],
+    ])('rejects a %s containing the delimiter', (field, value) => {
+      const req = makeRequest(keypair, { [field]: value });
+      expect(verifySignature(req)).toEqual({ ok: false, reason: 'invalid-field-format' });
+    });
+
     test('rejects a non-numeric amount', () => {
       const req = { ...makeRequest(keypair), amount: 'abc' };
       expect(verifySignature(req)).toEqual({ ok: false, reason: 'invalid-amount' });
@@ -205,6 +280,35 @@ describe('verifySignature', () => {
       const req = { ...makeRequest(keypair), signature: '%%%%' };
       expect(verifySignature(req)).toEqual({ ok: false, reason: 'malformed-signature' });
     });
+  });
+});
+
+describe('isValidSigningKey', () => {
+  test('accepts a valid public key', () => {
+    expect(isValidSigningKey(StellarSdk.Keypair.random().publicKey())).toBe(true);
+  });
+
+  test('accepts a public key padded with whitespace', () => {
+    const key = StellarSdk.Keypair.random().publicKey();
+    expect(isValidSigningKey(`  ${key}\n`)).toBe(true);
+  });
+
+  test('rejects a public key with whitespace inside it', () => {
+    const key = StellarSdk.Keypair.random().publicKey();
+    expect(isValidSigningKey(`${key.slice(0, 10)} ${key.slice(10)}`)).toBe(false);
+  });
+
+  test('rejects an empty or whitespace-only string', () => {
+    expect(isValidSigningKey('')).toBe(false);
+    expect(isValidSigningKey('   ')).toBe(false);
+  });
+
+  test('rejects a secret key', () => {
+    expect(isValidSigningKey(StellarSdk.Keypair.random().secret())).toBe(false);
+  });
+
+  test.each([undefined, null, 12345, {}])('rejects a value that is not a string (%p)', (value) => {
+    expect(isValidSigningKey(value)).toBe(false);
   });
 });
 

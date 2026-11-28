@@ -133,6 +133,15 @@ Signed with the sender's Stellar secret key and verified with the registered `wa
 | GET | `/api/relay-transactions/:id` | `X-Admin-Key` | One relay record |
 | GET | `/api/replay-audit/:requestId` | `X-Admin-Key` | Replay audit for a Request ID |
 | POST | `/api/reconcile-balance/:userId` | `X-Admin-Key` | Re-sync a Firestore balance from the ledger |
+| GET | `/api/admin/users` | `X-Admin-Key` | Users for the dashboard Users tab |
+| GET | `/api/admin/users/:id` | `X-Admin-Key` | One user with sign-in details and payment history |
+| GET | `/api/admin/lookup` | `X-Admin-Key` | Relay record by payment or contract transaction hash |
+| POST | `/api/admin/users/:id/reset-password` | `X-Admin-Key` | Reset a user's login password |
+| POST | `/api/admin/users/:id/reset-pin` | `X-Admin-Key` | Reset a user's SMS PIN |
+| POST | `/api/admin/users/:id/reset-wallet` | `X-Admin-Key` | Flag a wallet for reset |
+| POST | `/api/admin/users/:id/update-contact` | `X-Admin-Key` | Correct a user's phone number or email |
+| GET | `/api/admin/support-uploads` | `X-Admin-Key` | Screenshot list for the Uploads tab |
+| GET | `/api/admin/support-uploads/:id` | `X-Admin-Key` | One screenshot |
 | GET | `/api/my-transactions` | Firebase token | The signed-in user's relay records |
 | GET | `/api/my-transactions/stream` | Firebase token | Live stream of the user's records |
 | GET | `/api/search-recipients` | Firebase token | Find a recipient |
@@ -440,6 +449,8 @@ A single-page dashboard for every relay request, including rejected ones from un
 | Request card | Amount, sender → recipient, status pill, channel badge, five-stage tracker (Received, Validated, Submitted, Confirmed, Settled), human-readable rejection reason |
 | Details view | Relay ID, sender, recipient, phone, signature result, Request ID, nonce, received time, full status timeline, Explorer links for the Payment TX and the Contract TX |
 | Replay audit | Enter a Request ID to call `GET /api/replay-audit/:requestId` |
+| Users tab | Search by name, username, email, wallet, transaction hash or phone number in any format (`09...`, `+63...`, `639...`). **Member since** shows the day the account was created and filters the list (All, Today, date range). A user opens a profile with account, wallet, security, payment history, contact edits and account recovery. See §5.6. |
+| Uploads tab | Screenshots from Help & Support, one card per user. Search by name or username and filter by upload date (All, Today, date range). A card opens that user's screenshots grouped by day; each image opens full size with Previous, Next and Download. See §5.7. |
 
 ### 5.1 `GET /api/relay-transactions`
 
@@ -526,6 +537,91 @@ Forces a user's Firestore `xlmBalance` to match the on-chain Stellar balance.
 **Response `200`:** `{ "ok": true, "userId": "firebaseUid123", "xlmBalance": 4815.2886 }`
 
 **Errors:** `404` `user not found` · `400` `user has no walletPublic on file` · `502` `could not read balance from Stellar/Horizon` · `500` `internal error`
+
+### 5.6 User administration (Users tab)
+
+These endpoints are limited to 60 requests per 10 minutes. Common errors: `400` `invalid user id` (empty or longer than 128 characters), `404` `user not found`, `500` `internal error`.
+
+**`GET /api/admin/users`**
+
+Up to 1,000 user profiles, sorted by name.
+
+```json
+{
+  "users": [
+    {
+      "id": "firebaseUid123",
+      "username": "christian0121",
+      "name": "Christian",
+      "email": "name@example.com",
+      "phone": "+63 912 345 6789",
+      "previousPhone": "",
+      "phoneChangedAt": null,
+      "type": "",
+      "country": "",
+      "memberSince": "Nov 27, 2026",
+      "walletPublic": "G...",
+      "xlmBalance": 10000,
+      "balance": null,
+      "dailyLimit": null,
+      "trustScore": 5,
+      "goodTxCount": 0,
+      "cardFrozen": false,
+      "vaultLocked": false,
+      "hasPin": true,
+      "walletResetPending": false
+    }
+  ]
+}
+```
+
+The response also carries `defaultPassword` and `defaultPin`, the values the reset actions below apply.
+
+`memberSince` is stored as text, for example `Nov 27, 2026`. The dashboard uses it to show the day the account was created and for the **Member since** filter. Older accounts that hold only a month and a year are shown as written and do not match a date filter. The profile view shows the exact creation date and time from the sign-in record (`auth.createdAt`).
+
+**`GET /api/admin/users/:id`**
+
+```json
+{
+  "user": { "id": "firebaseUid123", "...": "same fields as above" },
+  "auth": {
+    "emailVerified": true,
+    "disabled": false,
+    "createdAt": "Fri, 27 Nov 2026 02:10:00 GMT",
+    "lastSignInAt": "Sat, 28 Nov 2026 01:05:00 GMT"
+  },
+  "payments": [ { "id": "relayDocId123", "...": "same shape as §6.1" } ]
+}
+```
+
+`auth` and `payments` are `null` when they cannot be read. `payments` holds up to 300 relay records sent by the user.
+
+**`GET /api/admin/lookup?q=<hash>`**
+
+Finds relay records by a 64-character transaction hash, either the XLM payment (`txHash`) or the contract call (`sorobanTxHash`). Response `200`: `{ "matches": [ { ...relay record, "senderId": "...", "senderPhone": "...", "matched": "payment" | "contract" } ] }`. Error: `400` `invalid transaction hash`.
+
+**Account recovery and contact corrections**
+
+| Endpoint | Effect | Response `200` |
+|---|---|---|
+| `POST /api/admin/users/:id/reset-password` | Sets the login password to `ADMIN_RESET_PASSWORD` and signs the user out of all devices | `{ "ok": true, "password": "..." }` |
+| `POST /api/admin/users/:id/reset-pin` | Sets the SMS PIN to `ADMIN_RESET_PIN` and clears PIN lockouts | `{ "ok": true, "pin": "..." }` |
+| `POST /api/admin/users/:id/reset-wallet` | Marks the wallet for reset (`walletResetPending: true`). A new wallet is created when the user next signs in | `{ "ok": true }` |
+| `POST /api/admin/users/:id/update-contact` | Changes the mobile number, the email address or both | `{ "ok": true, "user": { ... }, "auth": { ... } }` |
+
+`reset-password` also answers `404` `login account not found` and `400` when the reset password is shorter than Firebase allows.
+
+`update-contact` takes `{ "phone": "+63 912 345 6789", "email": "name@example.com" }` with at least one field. Changing the email marks it unverified and signs the user out of all devices. Changing the number sends a notice by SMS to the old and the new number. Errors: `400` `enter a phone number or an email address`, `invalid phone number, use the format +63 9XX XXX XXXX`, `invalid email address` or `no changes to save`; `404` `login account not found`; `409` when the number or the email is already used by another user.
+
+### 5.7 Support uploads (Uploads tab)
+
+Screenshots that users send from Help & Support.
+
+**`GET /api/admin/support-uploads`** returns `{ "uploads": [ { "id", "name", "username", "note", "thumb", "createdAt" } ] }`. `thumb` is a small preview image.
+
+**`GET /api/admin/support-uploads/:id`** returns one upload: `{ "image", "createdAt", "name", "username", "note" }`. `image` is the full-size picture.
+
+The dashboard groups the list by user, so one card stands for one user, and groups a user's screenshots by day. The full-size view offers Previous, Next and Download within that user's screenshots. The Download file is named `omnipay-<username>-<date>-<time>.<extension>`.
 
 ---
 
@@ -733,7 +829,7 @@ Transaction links are in [docs/week1-evidence.md](docs/week1-evidence.md).
 
 **Relay status:** the relay endpoints in §4 still call contract v1 (§9). They have not been switched to v2, and the v1 `settle(request_id, sender, recipient, amount)` signature differs from the v2 signature above.
 
-**CLI scripts** (`scripts/`, run from inside that folder): `00-check.sh` checks the setup, `01-build.sh` builds, `02-deploy.sh` deploys and records the result through `03-manifest.sh`, `04-verify-existing.sh` checks the listed contracts and `05-invoke.sh` invokes a function (it still uses the v1 `settle` arguments). Shared settings are in `env.sh`.
+**CLI scripts** (`scripts/`, run from inside that folder): `00-check.sh` checks the setup, `01-build.sh` builds, `02-deploy.sh` deploys and records the result through `03-manifest.sh`, `04-verify-existing.sh` checks the listed contracts and `05-invoke.sh` invokes a function (it still uses the v1 `settle` arguments), `06-admin.sh` runs the admin calls (config, version, pause, unpause, set-cap), `07-verify-deployment.sh` checks the v2 contract against the manifest, `08-status.sh` and `09-demo.sh` are read-only, `10-export-evidence.sh` exports the evidence details, `11-links.sh` prints Stellar Expert links, and `check-all.sh` with `validate-manifest.js` runs the local checks before a commit. Shared settings are in `env.sh`.
 
 ---
 
@@ -749,6 +845,7 @@ Transaction links are in [docs/week1-evidence.md](docs/week1-evidence.md).
 | `/api/contacts` | 30 per minute |
 | `POST /api/privacy-settings` | 20 per minute |
 | `POST /api/change-phone` | 5 per hour per user |
+| `/api/admin/users*` and `/api/admin/lookup` | 60 per 10 minutes |
 | Admin stream | 5 open streams |
 | User stream | 3 open streams per user |
 | PIN attempts | 5 wrong attempts → 15 minute lockout (in memory) |

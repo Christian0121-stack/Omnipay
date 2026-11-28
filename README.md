@@ -78,6 +78,7 @@ See [Status](#status) for what is done and what is still open.
 - **Controls:** one-time `initialize`, an admin, pause and unpause, a per-payment cap, admin transfer and an in-place `upgrade`, with events for each action.
 - **Tests:** 23 contract tests covering the token transfer, atomic revert, duplicates, pause, cap, admin rules, upgrade and emitted events.
 - **Stellar CLI scripts:** repeatable scripts in `scripts/` to check the setup, build, deploy and verify a contract, and a deployment manifest in `deployments/testnet.json`.
+- **Admin dashboard updates:** the Users tab shows the day each account was created, can be filtered by it and searched by phone number in any format. The Uploads tab shows one card per user with screenshots grouped by day, a date filter, search and download.
 - **Evidence:** v2 deployed on Testnet, initialized, and three atomic XLM settlements and a rejected replay, all listed in [`docs/week1-evidence.md`](docs/week1-evidence.md).
 
 ## What Week 3 added (Sprint 1)
@@ -131,6 +132,8 @@ Set each variable once in `.env` (or in the Render dashboard). The server exits 
 | `SMS_GATEWAY_PASSWORD` | yes | Basic-auth password for the gateway. |
 | `SMS_GATEWAY_WEBHOOK_SECRET` | yes | Signing key from the gateway app (Settings, Webhooks). Used to verify the `X-Signature` and `X-Timestamp` headers on inbound webhook calls. **If empty, every webhook call is rejected.** |
 | `ADMIN_API_KEY` | for admin endpoints | Secret sent in the `x-admin-key` header to use the monitoring and audit endpoints. If unset they return `503`. |
+| `ADMIN_RESET_PASSWORD` | no | Password the dashboard sets when an admin resets a user's password. Set your own value. The user should change it after signing in. |
+| `ADMIN_RESET_PIN` | no | SMS PIN (4 to 6 digits) the dashboard sets when an admin resets a user's PIN. Set your own value. |
 | `SETTLEMENT_SIGNER_SECRET` | yes | Secret key of the settlement signer. Signs the Stellar payment and the Soroban invocation. If unset, payments cannot be settled. |
 | `SOROBAN_RPC_URL` | no | Default `https://soroban-testnet.stellar.org`. |
 | `SOROBAN_CONTRACT_ID` | for Soroban | Settlement contract address (starts with `C`). If empty, payments settle on Horizon only and a startup warning is shown. |
@@ -236,6 +239,11 @@ Full request and response details, error codes and examples are in [API_DOCUMENT
 | `GET` | `/api/relay-transactions/:id` | `x-admin-key` | One relay record with full status history. |
 | `GET` | `/api/replay-audit/:requestId` | `x-admin-key` | Status, settlements (0 or 1), replay count and original transaction hash for a Request ID. |
 | `POST` | `/api/reconcile-balance/:userId` | `x-admin-key` | Overwrites the user's Firestore `xlmBalance` with the live Stellar balance. |
+| `GET` | `/api/admin/users` | `x-admin-key` | Users for the dashboard Users tab. |
+| `GET` | `/api/admin/users/:id` | `x-admin-key` | One user with sign-in details and payment history. |
+| `GET` | `/api/admin/lookup?q=` | `x-admin-key` | Finds a relay record by payment or contract transaction hash. |
+| `POST` | `/api/admin/users/:id/reset-password`, `reset-pin`, `reset-wallet`, `update-contact` | `x-admin-key` | Account recovery and contact corrections. |
+| `GET` | `/api/admin/support-uploads` and `/:id` | `x-admin-key` | Screenshots sent from Help & Support, for the Uploads tab. |
 | `GET` | `/api/my-transactions` | Firebase token | The signed-in user's own relay records (latest 200). |
 | `GET` | `/api/my-transactions/stream` | Firebase token | Live stream of the user's records (max 3 per user). |
 
@@ -332,11 +340,21 @@ Run the scripts from inside the `scripts/` folder. They use the Stellar CLI and 
 | `03-manifest.sh` | Adds or updates an entry in `deployments/testnet.json`. |
 | `04-verify-existing.sh` | Checks that the contracts listed in the manifest exist on Testnet. |
 | `05-invoke.sh` | Invokes a contract function. It still uses the v1 `settle` arguments. |
+| `06-admin.sh` | Admin calls on the v2 contract: config, version, pause, unpause and set-cap. |
+| `07-verify-deployment.sh` | Read-only check that the v2 contract on Testnet matches the manifest: contract ID, `version()` and `config()`. |
+| `08-status.sh` | Read-only status of the deployment. |
+| `09-demo.sh` | Read-only demo that calls the contract's read functions. |
+| `10-export-evidence.sh` | Exports the contract ID, version, config and explorer links as a draft for `docs/week1-evidence.md`. |
+| `11-links.sh` | Prints Stellar Expert links for the contracts and transactions in the manifest. |
+| `check-all.sh` | Local checks to run before a commit: shell syntax of every script and manifest validation. `--with-tests` also runs `cargo test`. Sends nothing to the network. |
+| `validate-manifest.js` | Validates `deployments/testnet.json`: network, passphrase, RPC URL, contract IDs and Wasm hashes. |
+| `lib.sh` | Shared helper functions used by the other scripts. |
 
 ```bash
 cd scripts
 ./00-check.sh
 ./01-build.sh && ./02-deploy.sh
+./check-all.sh
 ```
 
 Use `&&` between the build and the deploy so a failed build never reaches the deploy step.
@@ -433,6 +451,10 @@ A `SEND` from a phone number with no linked account is recorded as `validation_f
 | Request card | Amount, sender to recipient, status pill, channel badge, five-stage tracker (Received, Validated, Submitted, Confirmed, Settled) and a readable rejection reason. |
 | Details view | Relay ID, sender and recipient, phone, signature result, Request ID, nonce, received time, full status timeline, and Explorer links for the Payment TX and Contract TX. |
 | Replay audit | Enter a Request ID to see status, channel, settlements (0 or 1), replay count, last replay time and channel, and a link to the original transaction. |
+| Users tab | Registered users with search by name, username, email, wallet, transaction hash or phone number in any format (`09...`, `+63...` or `639...`). **Member since** shows the day the account was created and filters the list by All, Today or a date range. Each user opens a profile with account, wallet, security and payment history, contact edits and account recovery. |
+| Uploads tab | Screenshots sent from Help & Support. One card per user, with search by name or username and a date filter (All, Today or a date range). A card opens that user's screenshots grouped by day. Each image opens full size with Previous, Next and Download. |
+
+The Users and Uploads tabs use the admin endpoints listed in [API_DOCUMENTATION.md](API_DOCUMENTATION.md#5-monitoring-dashboard-endpoints-admin).
 
 ### User view (app History screen)
 
@@ -515,6 +537,9 @@ Firestore holds application state only. The Stellar Testnet is the authoritative
 
 ```
 .
+├── .github/
+│   └── workflows/
+│       └── ci.yml         # Checks script syntax and the manifest on push
 ├── server.js              # SMS Relay + backend logic + Soroban/Stellar settlement
 ├── Signature.js           # Signed payload format and Ed25519 verification
 ├── Relay.js               # Request ID and nonce claim (replay protection)
@@ -527,7 +552,7 @@ Firestore holds application state only. The Stellar Testnet is the authoritative
 │   └── src/
 │       ├── lib.rs
 │       └── test.rs
-├── scripts/               # Stellar CLI scripts (check, build, deploy, manifest, verify, invoke)
+├── scripts/               # Stellar CLI scripts (check, build, deploy, manifest, verify, invoke, admin, status, demo, evidence, links, check-all)
 ├── deployments/
 │   └── testnet.json       # Deployment manifest (contract IDs, wasm hashes, transactions)
 ├── docs/
@@ -542,7 +567,7 @@ Firestore holds application state only. The Stellar Testnet is the authoritative
 │   ├── index.html         # OmniPay web app
 │   ├── script.js          # App logic, Firebase Auth + Firestore client, SMS signing, offline mode
 │   ├── styles.css
-│   ├── admin.html         # Monitoring dashboard
+│   ├── admin.html         # Monitoring dashboard (relay requests, users, uploads)
 │   ├── admin.js
 │   ├── sw.js              # Service worker (offline support)
 │   └── manifest.webmanifest
@@ -557,6 +582,7 @@ Firestore holds application state only. The Stellar Testnet is the authoritative
 **Sprint 2, Week 1** - Settlement contract v2 on Stellar Testnet, first atomic XLM settlements, and Stellar CLI scripts with a deployment manifest.
 
 - [x] Stellar CLI scripts in `scripts/` and deployment manifest in `deployments/testnet.json`
+- [x] Local checks (`check-all.sh` and the manifest validator), run on every push by a CI workflow
 - [x] Settlement contract v2 with token transfer through the Stellar Asset Contract, atomic settle and record, admin controls, pause, cap, events and upgrade
 - [x] 23 contract tests passing
 - [x] Contract v2 deployed and initialized on Stellar Testnet (`CB6MGNV7...3TPAM`)
